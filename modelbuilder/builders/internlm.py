@@ -4,8 +4,9 @@
 # Licensed under the MIT License. See License.txt in the project root for
 # license information.
 # --------------------------------------------------------------------------
-from .base import Model
 import torch
+
+from .base import Model
 
 
 class InternLM2Model(Model):

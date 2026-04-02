@@ -752,7 +752,9 @@ class Qwen3VLTextModel(Qwen25VLTextModel):
         # Fix model_type: HF architecture "Qwen3VLForConditionalGeneration" would produce "qwen3vl"
         # but the C++ runtime expects "qwen3_vl" (with underscore).
         # Intentional override of the superclass attribute (used in genai_config.json).
-        self.model_type = "Qwen3_VLForConditionalGeneration"  # noqa: overrides Model.model_type on purpose
+        self.model_type = (
+            "Qwen3_VLForConditionalGeneration"  # overrides Model.model_type on purpose
+        )
 
         # Qwen3 attention uses QK normalization
         self.attention_attrs["q_norm"] = True

@@ -3,14 +3,14 @@
 # Licensed under the MIT License.  See License.txt in the project root for
 # license information.
 # -------------------------------------------------------------------------
-from .base import Model
-
 import copy
 import json
 import os
 
 import onnx_ir as ir
 import torch
+
+from .base import Model
 
 
 class WhisperEncoder(Model):
