@@ -16,7 +16,7 @@ from typing import Any
 
 import onnx_ir as ir
 import torch
-from builders import (
+from .builders import (
     ChatGLMModel,
     ErnieModel,
     Gemma2Model,

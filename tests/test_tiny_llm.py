@@ -10,15 +10,13 @@ hosted on Hugging Face, making it well-suited for lightweight CI tests.
 """
 
 import os
-import tempfile
 import unittest
-
-import onnx
 
 MODEL_NAME = "arnir0/Tiny-LLM"
 
 
 class TestTinyLLM(unittest.TestCase):
+
     def test_tiny_llm_fp32_cpu(self):
         """
         Convert arnir0/Tiny-LLM to an fp32 ONNX model targeting the CPU execution
@@ -31,26 +29,30 @@ class TestTinyLLM(unittest.TestCase):
         """
         from modelbuilder.builder import create_model
 
-        with tempfile.TemporaryDirectory() as output_dir:
-            with tempfile.TemporaryDirectory() as cache_dir:
-                create_model(
-                    model_name=MODEL_NAME,
-                    input_path="",
-                    output_dir=output_dir,
-                    precision="fp32",
-                    execution_provider="cpu",
-                    cache_dir=cache_dir,
-                    num_hidden_layers=1,
-                )
+        output_dir = "dump_models"
+        cache_dir = "dump_models/cache_dir"
+        os.makedirs(output_dir, exist_ok=True)
+        os.makedirs(cache_dir, exist_ok=True)
 
-                onnx_path = os.path.join(output_dir, "model.onnx")
-                assert os.path.exists(
-                    onnx_path
-                ), f"Expected ONNX model not found at {onnx_path}"
+        create_model(
+            model_name=MODEL_NAME,
+            input_path="",
+            output_dir=output_dir,
+            precision="fp32",
+            execution_provider="cpu",
+            cache_dir=cache_dir,
+            num_hidden_layers=1,
+        )
 
-                # Validate the ONNX model structure (load with external data from output_dir)
-                model_proto = onnx.load(onnx_path, load_external_data=False)
-                onnx.checker.check_model(model_proto)
+        onnx_path = os.path.join(output_dir, "model.onnx")
+        assert os.path.exists(
+            onnx_path
+        ), f"Expected ONNX model not found at {onnx_path}"
+
+        # Validate the ONNX model structure (load with external data from output_dir)
+        import onnxruntime
+
+        onnxruntime.InferenceSession(onnx_path, providers=["CPUExecutionProvider"])
 
 
 if __name__ == "__main__":
