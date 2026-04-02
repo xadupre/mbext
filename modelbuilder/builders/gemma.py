@@ -41,7 +41,9 @@ class Gemma2Model(GemmaModel):
         # Adjust LayerNorm attributes because of extra LayerNorms inserted
         # 1. Only cast root_input if the first layer of LayerNorms are being created
         original_cast_root_input = self.layernorm_attrs["cast"]["root_input"]
-        self.layernorm_attrs["cast"]["root_input"] = self.layernorm_attrs["first_layernorm"]
+        self.layernorm_attrs["cast"]["root_input"] = self.layernorm_attrs[
+            "first_layernorm"
+        ]
         self.make_layernorm(
             layer_id,
             layer.input_layernorm,
@@ -51,7 +53,9 @@ class Gemma2Model(GemmaModel):
         )
         self.layernorm_attrs["cast"]["root_input"] = original_cast_root_input
 
-        self.make_attention(layer_id, layer.self_attn, root_input=self.layernorm_attrs["output_0"])
+        self.make_attention(
+            layer_id, layer.self_attn, root_input=self.layernorm_attrs["output_0"]
+        )
 
         # Adjust LayerNorm attributes for extra LayerNorm to insert
         # 1. Temporarily set root_input for LayerNorm to skip_input for post_attention_layernorm
@@ -75,7 +79,9 @@ class Gemma2Model(GemmaModel):
         # Adjust LayerNorm attributes because of extra LayerNorms inserted
         # 1. Only cast root_input if the first layer of LayerNorms are being created
         original_cast_root_input = self.layernorm_attrs["cast"]["root_input"]
-        self.layernorm_attrs["cast"]["root_input"] = self.layernorm_attrs["first_layernorm"]
+        self.layernorm_attrs["cast"]["root_input"] = self.layernorm_attrs[
+            "first_layernorm"
+        ]
         self.make_layernorm(
             layer_id,
             layer.pre_feedforward_layernorm,
@@ -136,25 +142,45 @@ class Gemma3Model(Gemma2Model):
         super().make_attention_init()
 
     def make_rotary_embedding_multi_cache(self):
-        self.cos_cache_global_name, self.sin_cache_global_name = "cos_cache_global", "sin_cache_global"
+        self.cos_cache_global_name, self.sin_cache_global_name = (
+            "cos_cache_global",
+            "sin_cache_global",
+        )
         super().make_rotary_embedding_caches(
-            cos_cache_name=self.cos_cache_global_name, sin_cache_name=self.sin_cache_global_name
+            cos_cache_name=self.cos_cache_global_name,
+            sin_cache_name=self.sin_cache_global_name,
         )
 
         # Create the new cos/sin caches for local attention layers with its own theta value
         self.rope_attrs["create_caches"] = True
         self.rope_attrs["theta"] = self.rope_local_theta
 
-        self.cos_cache_local_name, self.sin_cache_local_name = "cos_cache_local", "sin_cache_local"
+        self.cos_cache_local_name, self.sin_cache_local_name = (
+            "cos_cache_local",
+            "sin_cache_local",
+        )
         super().make_rotary_embedding_caches(
-            cos_cache_name=self.cos_cache_local_name, sin_cache_name=self.sin_cache_local_name
+            cos_cache_name=self.cos_cache_local_name,
+            sin_cache_name=self.sin_cache_local_name,
         )
 
     def make_rotary_embedding_caches(self, **kwargs):
         cos_cache_name = kwargs.get(
-            "cos_cache_name", self.cos_cache_global_name if self.window_size == -1 else self.cos_cache_local_name
+            "cos_cache_name",
+            (
+                self.cos_cache_global_name
+                if self.window_size == -1
+                else self.cos_cache_local_name
+            ),
         )
         sin_cache_name = kwargs.get(
-            "sin_cache_name", self.sin_cache_global_name if self.window_size == -1 else self.sin_cache_local_name
+            "sin_cache_name",
+            (
+                self.sin_cache_global_name
+                if self.window_size == -1
+                else self.sin_cache_local_name
+            ),
         )
-        return super().make_rotary_embedding_caches(cos_cache_name=cos_cache_name, sin_cache_name=sin_cache_name)
+        return super().make_rotary_embedding_caches(
+            cos_cache_name=cos_cache_name, sin_cache_name=sin_cache_name
+        )

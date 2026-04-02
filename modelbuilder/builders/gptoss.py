@@ -31,7 +31,9 @@ class GPTOSSModel(Model):
             simple=self.layernorm_attrs["simple"],
             location="input",
         )
-        self.make_attention(layer_id, layer.self_attn, root_input=self.layernorm_attrs["output_0"])
+        self.make_attention(
+            layer_id, layer.self_attn, root_input=self.layernorm_attrs["output_0"]
+        )
         self.make_layernorm(
             layer_id,
             layer.post_attention_layernorm,
@@ -53,12 +55,17 @@ class GPTOSSModel(Model):
         super().make_layernorm(layer_id, layernorm, skip, simple, location)
 
     def make_rotary_embedding_caches_from_scratch(self):
-        inv_freq = self.rope_attrs["theta"] ** (torch.arange(0, self.head_size, 2, dtype=torch.float) / self.head_size)
+        inv_freq = self.rope_attrs["theta"] ** (
+            torch.arange(0, self.head_size, 2, dtype=torch.float) / self.head_size
+        )
         inv_freq = self.make_inv_freq_rescaled(inv_freq)
 
         t = torch.arange(self.rope_attrs["cache_length"], dtype=torch.float32)
         freqs = torch.einsum("i,j->ij", t, inv_freq)
-        cos_cache, sin_cache = freqs.cos() * self.rope_attrs["mscale"], freqs.sin() * self.rope_attrs["mscale"]
+        cos_cache, sin_cache = (
+            freqs.cos() * self.rope_attrs["mscale"],
+            freqs.sin() * self.rope_attrs["mscale"],
+        )
         return cos_cache, sin_cache
 
     def make_attention(self, layer_id, attention, root_input, **kwargs):
@@ -156,7 +163,10 @@ class GPTOSSModel(Model):
 
         # Make root_input expansion nodes (root_input --> Unsqueeze --> Expand --> Unsqueeze)
         expand_root_input_unsqueeze_1_name = f"{basename}/expand_root_input/Unsqueeze_1"
-        expand_root_input_unsqueeze_1_inputs = [root_input, "/model/constants/INT64/[2]"]
+        expand_root_input_unsqueeze_1_inputs = [
+            root_input,
+            "/model/constants/INT64/[2]",
+        ]
         self.make_unsqueeze(
             expand_root_input_unsqueeze_1_name,
             expand_root_input_unsqueeze_1_inputs,
@@ -172,15 +182,29 @@ class GPTOSSModel(Model):
             expand_name,
             expand_inputs,
             dtype=self.io_dtype,
-            shape=["batch_size", "sequence_length", self.moe_attrs["top_k"], self.hidden_size],
+            shape=[
+                "batch_size",
+                "sequence_length",
+                self.moe_attrs["top_k"],
+                self.hidden_size,
+            ],
         )
         expand_root_input_unsqueeze_2_name = f"{basename}/expand_root_input/Unsqueeze_2"
-        expand_root_input_unsqueeze_2_inputs = [f"{expand_name}/output_0", "/model/constants/INT64/[-1]"]
+        expand_root_input_unsqueeze_2_inputs = [
+            f"{expand_name}/output_0",
+            "/model/constants/INT64/[-1]",
+        ]
         self.make_unsqueeze(
             expand_root_input_unsqueeze_2_name,
             expand_root_input_unsqueeze_2_inputs,
             dtype=self.io_dtype,
-            shape=["batch_size", "sequence_length", self.moe_attrs["top_k"], self.hidden_size, 1],
+            shape=[
+                "batch_size",
+                "sequence_length",
+                self.moe_attrs["top_k"],
+                self.hidden_size,
+                1,
+            ],
         )
 
         # Make router nodes
@@ -197,7 +221,11 @@ class GPTOSSModel(Model):
         router_basename = f"{basename}/router/MatMul"
         router_matmul_name = self.make_matmul(mlp.router, router_basename, root_input)
         router_add_name = f"{basename}/router/Add"
-        self.make_add_bias(mlp.router.bias, router_add_name, root_input=f"{router_matmul_name}/output_0")
+        self.make_add_bias(
+            mlp.router.bias,
+            router_add_name,
+            root_input=f"{router_matmul_name}/output_0",
+        )
 
         if use_cast:
             topk_fp32_name = f"{basename}/topk_fp32/Cast"
@@ -214,13 +242,23 @@ class GPTOSSModel(Model):
         ]
         topk_outputs = [f"{topk_name}/output_0", f"{topk_name}/output_1"]
         self.make_node(
-            "TopK", inputs=topk_inputs, outputs=topk_outputs, name=topk_name, axis=-1, largest=True, sorted=True
+            "TopK",
+            inputs=topk_inputs,
+            outputs=topk_outputs,
+            name=topk_name,
+            axis=-1,
+            largest=True,
+            sorted=True,
         )
         self.make_value(
-            topk_outputs[0], ir.DataType.FLOAT, shape=["batch_size", "sequence_length", self.moe_attrs["top_k"]]
+            topk_outputs[0],
+            ir.DataType.FLOAT,
+            shape=["batch_size", "sequence_length", self.moe_attrs["top_k"]],
         )
         self.make_value(
-            topk_outputs[1], ir.DataType.INT64, shape=["batch_size", "sequence_length", self.moe_attrs["top_k"]]
+            topk_outputs[1],
+            ir.DataType.INT64,
+            shape=["batch_size", "sequence_length", self.moe_attrs["top_k"]],
         )
         if use_cast:
             topk_io_name = f"{basename}/topk_io/Cast"
@@ -233,13 +271,19 @@ class GPTOSSModel(Model):
 
         # Save initializers to use with Gather nodes
         gate_up_proj_weight = f"model.layers.{layer_id}.moe.experts.gate_up_proj.weight"
-        self.make_initializer(mlp.experts.gate_up_proj, gate_up_proj_weight, to=self.io_dtype)
+        self.make_initializer(
+            mlp.experts.gate_up_proj, gate_up_proj_weight, to=self.io_dtype
+        )
         gate_up_proj_bias = f"model.layers.{layer_id}.moe.experts.gate_up_proj.bias"
-        self.make_initializer(mlp.experts.gate_up_proj_bias, gate_up_proj_bias, to=self.io_dtype)
+        self.make_initializer(
+            mlp.experts.gate_up_proj_bias, gate_up_proj_bias, to=self.io_dtype
+        )
         down_proj_weight = f"model.layers.{layer_id}.moe.experts.down_proj.weight"
         self.make_initializer(mlp.experts.down_proj, down_proj_weight, to=self.io_dtype)
         down_proj_bias = f"model.layers.{layer_id}.moe.experts.down_proj.bias"
-        self.make_initializer(mlp.experts.down_proj_bias, down_proj_bias, to=self.io_dtype)
+        self.make_initializer(
+            mlp.experts.down_proj_bias, down_proj_bias, to=self.io_dtype
+        )
 
         # Make Gather nodes + Unsqueeze nodes for biases
         mlp1_weight_gather_name = f"{basename}/mlp1/weight/Gather"
@@ -263,16 +307,30 @@ class GPTOSSModel(Model):
             mlp1_bias_gather_name,
             mlp1_bias_gather_inputs,
             dtype=self.io_dtype,
-            shape=["batch_size", "sequence_length", self.moe_attrs["top_k"], 2 * self.intermediate_size],
+            shape=[
+                "batch_size",
+                "sequence_length",
+                self.moe_attrs["top_k"],
+                2 * self.intermediate_size,
+            ],
             axis=0,
         )
         mlp1_bias_unsqueeze_name = f"{basename}/mlp1/bias/Unsqueeze"
-        mlp1_bias_unsqueeze_inputs = [f"{mlp1_bias_gather_name}/output_0", "/model/constants/INT64/[-1]"]
+        mlp1_bias_unsqueeze_inputs = [
+            f"{mlp1_bias_gather_name}/output_0",
+            "/model/constants/INT64/[-1]",
+        ]
         self.make_unsqueeze(
             mlp1_bias_unsqueeze_name,
             mlp1_bias_unsqueeze_inputs,
             dtype=self.io_dtype,
-            shape=["batch_size", "sequence_length", self.moe_attrs["top_k"], 2 * self.intermediate_size, 1],
+            shape=[
+                "batch_size",
+                "sequence_length",
+                self.moe_attrs["top_k"],
+                2 * self.intermediate_size,
+                1,
+            ],
         )
         mlp2_weight_gather_name = f"{basename}/mlp2/weight/Gather"
         mlp2_weight_gather_inputs = [down_proj_weight, f"{topk_name}/output_1"]
@@ -280,7 +338,13 @@ class GPTOSSModel(Model):
             mlp2_weight_gather_name,
             mlp2_weight_gather_inputs,
             dtype=self.io_dtype,
-            shape=["batch_size", "sequence_length", self.moe_attrs["top_k"], self.hidden_size, self.intermediate_size],
+            shape=[
+                "batch_size",
+                "sequence_length",
+                self.moe_attrs["top_k"],
+                self.hidden_size,
+                self.intermediate_size,
+            ],
             axis=0,
         )
         mlp2_bias_gather_name = f"{basename}/mlp2/bias/Gather"
@@ -289,16 +353,30 @@ class GPTOSSModel(Model):
             mlp2_bias_gather_name,
             mlp2_bias_gather_inputs,
             dtype=self.io_dtype,
-            shape=["batch_size", "sequence_length", self.moe_attrs["top_k"], self.hidden_size],
+            shape=[
+                "batch_size",
+                "sequence_length",
+                self.moe_attrs["top_k"],
+                self.hidden_size,
+            ],
             axis=0,
         )
         mlp2_bias_unsqueeze_name = f"{basename}/mlp2/bias/Unsqueeze"
-        mlp2_bias_unsqueeze_inputs = [f"{mlp2_bias_gather_name}/output_0", "/model/constants/INT64/[-1]"]
+        mlp2_bias_unsqueeze_inputs = [
+            f"{mlp2_bias_gather_name}/output_0",
+            "/model/constants/INT64/[-1]",
+        ]
         self.make_unsqueeze(
             mlp2_bias_unsqueeze_name,
             mlp2_bias_unsqueeze_inputs,
             dtype=self.io_dtype,
-            shape=["batch_size", "sequence_length", self.moe_attrs["top_k"], self.hidden_size, 1],
+            shape=[
+                "batch_size",
+                "sequence_length",
+                self.moe_attrs["top_k"],
+                self.hidden_size,
+                1,
+            ],
         )
 
         # Make expert_weights path (Softmax --> Unsqueeze --> Unsqueeze --> Cast)
@@ -310,7 +388,10 @@ class GPTOSSModel(Model):
             ["batch_size", "sequence_length", "num_experts_per_token"],
         )
         expert_weights_unsqueeze_1_name = f"{basename}/expert_weights/Unsqueeze_1"
-        expert_weights_unsqueeze_1_inputs = [f"{softmax_name}/output_0", "/model/constants/INT64/[-1]"]
+        expert_weights_unsqueeze_1_inputs = [
+            f"{softmax_name}/output_0",
+            "/model/constants/INT64/[-1]",
+        ]
         self.make_unsqueeze(
             expert_weights_unsqueeze_1_name,
             expert_weights_unsqueeze_1_inputs,
@@ -342,21 +423,36 @@ class GPTOSSModel(Model):
         gate_up_proj_weight_output = f"{gate_up_proj_weight_name}/output_0"
         self.make_node(
             "MatMul",
-            inputs=[f"{mlp1_weight_gather_name}/output_0", f"{expand_root_input_unsqueeze_2_name}/output_0"],
+            inputs=[
+                f"{mlp1_weight_gather_name}/output_0",
+                f"{expand_root_input_unsqueeze_2_name}/output_0",
+            ],
             outputs=[gate_up_proj_weight_output],
             name=gate_up_proj_weight_name,
         )
         self.make_value(
             gate_up_proj_weight_output,
             self.io_dtype,
-            shape=["batch_size", "sequence_length", self.moe_attrs["top_k"], 2 * self.intermediate_size, 1],
+            shape=[
+                "batch_size",
+                "sequence_length",
+                self.moe_attrs["top_k"],
+                2 * self.intermediate_size,
+                1,
+            ],
         )
         gate_up_proj_bias_name = f"{basename}/gate_up_proj/Add"
         self.make_add(
             gate_up_proj_bias_name,
             [gate_up_proj_weight_output, f"{mlp1_bias_unsqueeze_name}/output_0"],
             dtype=self.io_dtype,
-            shape=["batch_size", "sequence_length", self.moe_attrs["top_k"], 2 * self.intermediate_size, 1],
+            shape=[
+                "batch_size",
+                "sequence_length",
+                self.moe_attrs["top_k"],
+                2 * self.intermediate_size,
+                1,
+            ],
         )
 
         # Make activation nodes
@@ -380,7 +476,13 @@ class GPTOSSModel(Model):
             glu_slice_name,
             glu_slice_inputs,
             dtype=self.io_dtype,
-            shape=["batch_size", "sequence_length", self.moe_attrs["top_k"], self.intermediate_size, 1],
+            shape=[
+                "batch_size",
+                "sequence_length",
+                self.moe_attrs["top_k"],
+                self.intermediate_size,
+                1,
+            ],
         )
         glu_clip_name = f"{basename}/act_fn/Clip_1"
         glu_clip_inputs = [
@@ -392,7 +494,13 @@ class GPTOSSModel(Model):
             glu_clip_name,
             glu_clip_inputs,
             dtype=self.io_dtype,
-            shape=["batch_size", "sequence_length", self.moe_attrs["top_k"], self.intermediate_size, 1],
+            shape=[
+                "batch_size",
+                "sequence_length",
+                self.moe_attrs["top_k"],
+                self.intermediate_size,
+                1,
+            ],
         )
         linear_slice_name = f"{basename}/act_fn/Slice_2"
         linear_slice_inputs = [
@@ -406,7 +514,13 @@ class GPTOSSModel(Model):
             linear_slice_name,
             linear_slice_inputs,
             dtype=self.io_dtype,
-            shape=["batch_size", "sequence_length", self.moe_attrs["top_k"], self.intermediate_size, 1],
+            shape=[
+                "batch_size",
+                "sequence_length",
+                self.moe_attrs["top_k"],
+                self.intermediate_size,
+                1,
+            ],
         )
         linear_clip_name = f"{basename}/act_fn/Clip_2"
         linear_clip_inputs = [
@@ -418,7 +532,13 @@ class GPTOSSModel(Model):
             linear_clip_name,
             linear_clip_inputs,
             dtype=self.io_dtype,
-            shape=["batch_size", "sequence_length", self.moe_attrs["top_k"], self.intermediate_size, 1],
+            shape=[
+                "batch_size",
+                "sequence_length",
+                self.moe_attrs["top_k"],
+                self.intermediate_size,
+                1,
+            ],
         )
 
         # Make Mul node after activation
@@ -431,14 +551,26 @@ class GPTOSSModel(Model):
             act_fn_mul_1_name,
             act_fn_mul_1_inputs,
             dtype=self.io_dtype,
-            shape=["batch_size", "sequence_length", self.moe_attrs["top_k"], self.intermediate_size, 1],
+            shape=[
+                "batch_size",
+                "sequence_length",
+                self.moe_attrs["top_k"],
+                self.intermediate_size,
+                1,
+            ],
         )
         sigmoid_name = f"{basename}/act_fn/Sigmoid"
         self.make_sigmoid(
             sigmoid_name,
             f"{act_fn_mul_1_name}/output_0",
             dtype=self.io_dtype,
-            shape=["batch_size", "sequence_length", self.moe_attrs["top_k"], self.intermediate_size, 1],
+            shape=[
+                "batch_size",
+                "sequence_length",
+                self.moe_attrs["top_k"],
+                self.intermediate_size,
+                1,
+            ],
         )
         act_fn_mul_2_name = f"{basename}/act_fn/Mul_2"
         act_fn_mul_2_inputs = [f"{glu_clip_name}/output_0", f"{sigmoid_name}/output_0"]
@@ -446,22 +578,46 @@ class GPTOSSModel(Model):
             act_fn_mul_2_name,
             act_fn_mul_2_inputs,
             dtype=self.io_dtype,
-            shape=["batch_size", "sequence_length", self.moe_attrs["top_k"], self.intermediate_size, 1],
+            shape=[
+                "batch_size",
+                "sequence_length",
+                self.moe_attrs["top_k"],
+                self.intermediate_size,
+                1,
+            ],
         )
         act_fn_add_name = f"{basename}/act_fn/Add"
         self.make_add(
             act_fn_add_name,
-            [f"{linear_clip_name}/output_0", f"/model/constants/{self.to_str_dtype(self.io_dtype)}/1"],
+            [
+                f"{linear_clip_name}/output_0",
+                f"/model/constants/{self.to_str_dtype(self.io_dtype)}/1",
+            ],
             dtype=self.io_dtype,
-            shape=["batch_size", "sequence_length", self.moe_attrs["top_k"], self.intermediate_size, 1],
+            shape=[
+                "batch_size",
+                "sequence_length",
+                self.moe_attrs["top_k"],
+                self.intermediate_size,
+                1,
+            ],
         )
         act_fn_mul_3_name = f"{basename}/act_fn/Mul_3"
-        act_fn_mul_3_inputs = [f"{act_fn_mul_2_name}/output_0", f"{act_fn_add_name}/output_0"]
+        act_fn_mul_3_inputs = [
+            f"{act_fn_mul_2_name}/output_0",
+            f"{act_fn_add_name}/output_0",
+        ]
         self.make_mul(
             act_fn_mul_3_name,
             act_fn_mul_3_inputs,
             dtype=self.io_dtype,
-            shape=["batch_size", "sequence_length", self.moe_attrs["top_k"], self.intermediate_size, 1],
+            shape=[
+                "batch_size",
+                "sequence_length",
+                self.moe_attrs["top_k"],
+                self.intermediate_size,
+                1,
+            ],
         )
 
         # Make Down proj nodes (MatMul --> Add --> Cast)
@@ -469,21 +625,36 @@ class GPTOSSModel(Model):
         down_proj_weight_output = f"{down_proj_weight_name}/output_0"
         self.make_node(
             "MatMul",
-            inputs=[f"{mlp2_weight_gather_name}/output_0", f"{act_fn_mul_3_name}/output_0"],
+            inputs=[
+                f"{mlp2_weight_gather_name}/output_0",
+                f"{act_fn_mul_3_name}/output_0",
+            ],
             outputs=[down_proj_weight_output],
             name=down_proj_weight_name,
         )
         self.make_value(
             down_proj_weight_output,
             self.io_dtype,
-            shape=["batch_size", "sequence_length", self.moe_attrs["top_k"], self.intermediate_size, 1],
+            shape=[
+                "batch_size",
+                "sequence_length",
+                self.moe_attrs["top_k"],
+                self.intermediate_size,
+                1,
+            ],
         )
         down_proj_bias_name = f"{basename}/down_proj/Add"
         self.make_add(
             down_proj_bias_name,
             [down_proj_weight_output, f"{mlp2_bias_unsqueeze_name}/output_0"],
             dtype=self.io_dtype,
-            shape=["batch_size", "sequence_length", self.moe_attrs["top_k"], self.intermediate_size, 1],
+            shape=[
+                "batch_size",
+                "sequence_length",
+                self.moe_attrs["top_k"],
+                self.intermediate_size,
+                1,
+            ],
         )
         if use_cast:
             down_proj_cast_name = f"{basename}/down_proj/Cast"
@@ -491,7 +662,13 @@ class GPTOSSModel(Model):
                 down_proj_cast_name,
                 f"{down_proj_bias_name}/output_0",
                 ir.DataType.FLOAT,
-                shape=["batch_size", "sequence_length", self.moe_attrs["top_k"], self.intermediate_size, 1],
+                shape=[
+                    "batch_size",
+                    "sequence_length",
+                    self.moe_attrs["top_k"],
+                    self.intermediate_size,
+                    1,
+                ],
             )
 
         # Make weighted sum nodes
@@ -510,10 +687,19 @@ class GPTOSSModel(Model):
             weighted_sum_mul_name,
             weighted_sum_mul_inputs,
             dtype=ir.DataType.FLOAT,
-            shape=["batch_size", "sequence_length", self.moe_attrs["top_k"], self.intermediate_size, 1],
+            shape=[
+                "batch_size",
+                "sequence_length",
+                self.moe_attrs["top_k"],
+                self.intermediate_size,
+                1,
+            ],
         )
         reduce_sum_name = f"{basename}/weighted_sum/ReduceSum"
-        reduce_sum_inputs = [f"{weighted_sum_mul_name}/output_0", "/model/constants/INT64/[2]"]
+        reduce_sum_inputs = [
+            f"{weighted_sum_mul_name}/output_0",
+            "/model/constants/INT64/[2]",
+        ]
         self.make_reduce_sum(
             reduce_sum_name,
             reduce_sum_inputs,
@@ -521,7 +707,10 @@ class GPTOSSModel(Model):
             shape=["batch_size", "sequence_length", self.intermediate_size, 1],
         )
         weighted_sum_squeeze_name = f"{basename}/weighted_sum/Squeeze"
-        weighted_sum_squeeze_inputs = [f"{reduce_sum_name}/output_0", "/model/constants/INT64/[-1]"]
+        weighted_sum_squeeze_inputs = [
+            f"{reduce_sum_name}/output_0",
+            "/model/constants/INT64/[-1]",
+        ]
         self.make_squeeze(
             weighted_sum_squeeze_name,
             weighted_sum_squeeze_inputs,
@@ -558,7 +747,11 @@ class GPTOSSModel(Model):
         router_basename = f"{basename}/router/MatMul"
         router_matmul_name = self.make_matmul(mlp.router, router_basename, root_input)
         router_add_name = f"{basename}/router/Add"
-        self.make_add_bias(mlp.router.bias, router_add_name, root_input=f"{router_matmul_name}/output_0")
+        self.make_add_bias(
+            mlp.router.bias,
+            router_add_name,
+            root_input=f"{router_matmul_name}/output_0",
+        )
         router_reshape_name = f"{basename}/router/Reshape"
         router_reshape_inputs = [
             f"{router_add_name}/output_0",
@@ -571,14 +764,22 @@ class GPTOSSModel(Model):
             shape=["batch_size * sequence_length", self.moe_attrs["num_experts"]],
         )
 
-        gate_up_proj_weight = f"model.layers.{layer_id}.moe.experts.gate_up_proj.{moe_weight_type}"
+        gate_up_proj_weight = (
+            f"model.layers.{layer_id}.moe.experts.gate_up_proj.{moe_weight_type}"
+        )
         gate_up_proj_scales = f"model.layers.{layer_id}.moe.experts.gate_up_proj.scales"
         gate_up_proj_bias = f"model.layers.{layer_id}.moe.experts.gate_up_proj.bias"
-        gate_up_proj_zero_points = f"model.layers.{layer_id}.moe.experts.gate_up_proj.zero_points"
-        down_proj_weight = f"model.layers.{layer_id}.moe.experts.down_proj.{moe_weight_type}"
+        gate_up_proj_zero_points = (
+            f"model.layers.{layer_id}.moe.experts.gate_up_proj.zero_points"
+        )
+        down_proj_weight = (
+            f"model.layers.{layer_id}.moe.experts.down_proj.{moe_weight_type}"
+        )
         down_proj_scales = f"model.layers.{layer_id}.moe.experts.down_proj.scales"
         down_proj_bias = f"model.layers.{layer_id}.moe.experts.down_proj.bias"
-        down_proj_zero_points = f"model.layers.{layer_id}.moe.experts.down_proj.zero_points"
+        down_proj_zero_points = (
+            f"model.layers.{layer_id}.moe.experts.down_proj.zero_points"
+        )
 
         # Apply transpose depending on EP/op requirements and Quark expert presence
         # For quantized QMoE on CUDA, kernels expect scales along the hidden_size axis,
@@ -595,32 +796,50 @@ class GPTOSSModel(Model):
         if op_type == "MoE" and not has_quark_experts:
             # Save non-quantized MoE weights as initializers
             self.make_initializer(
-                gate_up_proj_layout.view(self.moe_attrs["num_experts"], -1, self.hidden_size),
+                gate_up_proj_layout.view(
+                    self.moe_attrs["num_experts"], -1, self.hidden_size
+                ),
                 gate_up_proj_weight,
                 to=self.io_dtype,
             )
             self.make_initializer(
-                down_proj_layout.view(self.moe_attrs["num_experts"], self.hidden_size, self.intermediate_size),
+                down_proj_layout.view(
+                    self.moe_attrs["num_experts"],
+                    self.hidden_size,
+                    self.intermediate_size,
+                ),
                 down_proj_weight,
                 to=self.io_dtype,
             )
         else:
             if has_quark_experts:
                 # Use pre-quantized Quark experts
-                gate_up_proj_qweight_tensor, gate_up_proj_scales_tensor, gate_up_proj_zero_points_tensor = (
+                (
+                    gate_up_proj_qweight_tensor,
+                    gate_up_proj_scales_tensor,
+                    gate_up_proj_zero_points_tensor,
+                ) = (
                     mlp.experts.fc1_weights,
                     mlp.experts.fc1_scales,
                     mlp.experts.fc1_zero_points,
                 )
-                down_proj_qweight_tensor, down_proj_scales_tensor, down_proj_zero_points_tensor = (
+                (
+                    down_proj_qweight_tensor,
+                    down_proj_scales_tensor,
+                    down_proj_zero_points_tensor,
+                ) = (
                     mlp.experts.fc2_weights,
                     mlp.experts.fc2_scales,
                     mlp.experts.fc2_zero_points,
                 )
 
                 # Save zero point as initializers
-                self.make_initializer(gate_up_proj_zero_points_tensor, gate_up_proj_zero_points)
-                self.make_initializer(down_proj_zero_points_tensor, down_proj_zero_points)
+                self.make_initializer(
+                    gate_up_proj_zero_points_tensor, gate_up_proj_zero_points
+                )
+                self.make_initializer(
+                    down_proj_zero_points_tensor, down_proj_zero_points
+                )
             else:
                 # Create and save quantized MoE weights as initializers
                 gate_up_proj_qweight_list, gate_up_proj_scales_list = [], []
@@ -634,9 +853,15 @@ class GPTOSSModel(Model):
                     down_proj_qweight_list.append(qweight2)
                     down_proj_scales_list.append(scales2)
 
-                gate_up_proj_qweight_tensor = torch.stack(gate_up_proj_qweight_list, dim=0).to(torch.uint8)
-                gate_up_proj_scales_tensor = torch.stack(gate_up_proj_scales_list, dim=0)
-                down_proj_qweight_tensor = torch.stack(down_proj_qweight_list, dim=0).to(torch.uint8)
+                gate_up_proj_qweight_tensor = torch.stack(
+                    gate_up_proj_qweight_list, dim=0
+                ).to(torch.uint8)
+                gate_up_proj_scales_tensor = torch.stack(
+                    gate_up_proj_scales_list, dim=0
+                )
+                down_proj_qweight_tensor = torch.stack(
+                    down_proj_qweight_list, dim=0
+                ).to(torch.uint8)
                 down_proj_scales_tensor = torch.stack(down_proj_scales_list, dim=0)
 
             # Determine shape based on Quark vs non-Quark
@@ -646,23 +871,33 @@ class GPTOSSModel(Model):
                 intermediate_size_padded = self.intermediate_size
             else:
                 hidden_size_padded = gate_up_proj_qweight_list[0].shape[-1] * pack_size
-                intermediate_size_padded = down_proj_qweight_list[0].shape[-1] * pack_size
+                intermediate_size_padded = (
+                    down_proj_qweight_list[0].shape[-1] * pack_size
+                )
 
             # Save qweight tensors
             self.make_initializer(
-                gate_up_proj_qweight_tensor.view(self.moe_attrs["num_experts"], -1, hidden_size_padded // pack_size),
+                gate_up_proj_qweight_tensor.view(
+                    self.moe_attrs["num_experts"], -1, hidden_size_padded // pack_size
+                ),
                 gate_up_proj_weight,
             )
             self.make_initializer(
                 down_proj_qweight_tensor.view(
-                    self.moe_attrs["num_experts"], self.hidden_size, intermediate_size_padded // pack_size
+                    self.moe_attrs["num_experts"],
+                    self.hidden_size,
+                    intermediate_size_padded // pack_size,
                 ),
                 down_proj_weight,
             )
 
             # Save scales tensors
-            self.make_initializer(gate_up_proj_scales_tensor, gate_up_proj_scales, to=self.io_dtype)
-            self.make_initializer(down_proj_scales_tensor, down_proj_scales, to=self.io_dtype)
+            self.make_initializer(
+                gate_up_proj_scales_tensor, gate_up_proj_scales, to=self.io_dtype
+            )
+            self.make_initializer(
+                down_proj_scales_tensor, down_proj_scales, to=self.io_dtype
+            )
 
         # Save biases (shared for all paths)
         if has_quark_experts:
@@ -702,7 +937,7 @@ class GPTOSSModel(Model):
 
     def combine_quark_gate_up_biases_from_experts(self, experts):
         """Combine Quark gate_proj and up_proj biases from individual experts"""
-        assert(self.has_quark_experts(experts))
+        assert self.has_quark_experts(experts)
         combined_biases = []
 
         for expert_id in sorted(experts.keys()):
@@ -710,20 +945,37 @@ class GPTOSSModel(Model):
 
             if expert.gate_up_proj.qweight is not None:
                 # Fused gate_up projection
-                gate_up_proj = expert.gate_up_proj.bias if hasattr(expert.gate_up_proj, 'bias') and expert.gate_up_proj.bias is not None else torch.zeros(expert.gate_up_proj.qweight.shape[0])
+                gate_up_proj = (
+                    expert.gate_up_proj.bias
+                    if hasattr(expert.gate_up_proj, "bias")
+                    and expert.gate_up_proj.bias is not None
+                    else torch.zeros(expert.gate_up_proj.qweight.shape[0])
+                )
                 combined_biases.append(gate_up_proj)
             else:
                 # Get biases from individual projections
-                gate_bias = expert.gate_proj.bias if hasattr(expert.gate_proj, 'bias') and expert.gate_proj.bias is not None else torch.zeros(expert.gate_proj.qweight.shape[0])
-                up_bias = expert.up_proj.bias if hasattr(expert.up_proj, 'bias') and expert.up_proj.bias is not None else torch.zeros(expert.up_proj.qweight.shape[0])
+                gate_bias = (
+                    expert.gate_proj.bias
+                    if hasattr(expert.gate_proj, "bias")
+                    and expert.gate_proj.bias is not None
+                    else torch.zeros(expert.gate_proj.qweight.shape[0])
+                )
+                up_bias = (
+                    expert.up_proj.bias
+                    if hasattr(expert.up_proj, "bias")
+                    and expert.up_proj.bias is not None
+                    else torch.zeros(expert.up_proj.qweight.shape[0])
+                )
 
                 # Combine gate and up biases (interleaved pattern: even=gate, odd=up)
                 gate_out_dim = gate_bias.shape[0]
                 up_out_dim = up_bias.shape[0]
 
-                combined_bias = torch.zeros(gate_out_dim + up_out_dim, dtype=gate_bias.dtype, device="cpu")
-                combined_bias[::2] = gate_bias   # Even indices = gate
-                combined_bias[1::2] = up_bias    # Odd indices = up
+                combined_bias = torch.zeros(
+                    gate_out_dim + up_out_dim, dtype=gate_bias.dtype, device="cpu"
+                )
+                combined_bias[::2] = gate_bias  # Even indices = gate
+                combined_bias[1::2] = up_bias  # Odd indices = up
 
                 combined_biases.append(combined_bias)
 
@@ -731,12 +983,17 @@ class GPTOSSModel(Model):
 
     def combine_quark_down_biases_from_experts(self, experts):
         """Combine Quark down_proj biases from individual experts"""
-        assert(self.has_quark_experts(experts))
+        assert self.has_quark_experts(experts)
         combined_biases = []
 
         for expert_id in sorted(experts.keys()):
             expert = experts[expert_id]
-            down_bias = expert.down_proj.bias if hasattr(expert.down_proj, 'bias') and expert.down_proj.bias is not None else torch.zeros(expert.down_proj.qweight.shape[0])
+            down_bias = (
+                expert.down_proj.bias
+                if hasattr(expert.down_proj, "bias")
+                and expert.down_proj.bias is not None
+                else torch.zeros(expert.down_proj.qweight.shape[0])
+            )
             combined_biases.append(down_bias)
 
         return torch.stack(combined_biases, dim=0)
