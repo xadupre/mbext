@@ -16,7 +16,7 @@ from .internlm import InternLM2Model
 from .llama import LlamaModel
 from .mistral import MistralModel
 from .nemotron import NemotronModel
-from .olmo import OLMo2Model, OLMoModel
+from .olmo import OLMo2Model, OLMo3Model, OLMoModel
 from .phi import (
     Phi3MiniLongRoPEModel,
     Phi3MiniModel,
@@ -51,6 +51,7 @@ __all__ = [
     "Model",
     "NemotronModel",
     "OLMo2Model",
+    "OLMo3Model",
     "OLMoModel",
     "Phi3MiniLongRoPEModel",
     "Phi3MiniModel",

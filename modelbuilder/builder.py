@@ -30,6 +30,7 @@ from .builders import (
     Model,
     NemotronModel,
     OLMo2Model,
+    OLMo3Model,
     OLMoModel,
     Phi3MiniLongRoPEModel,
     Phi3MiniModel,
@@ -305,6 +306,10 @@ def create_model(
         )
     elif config.architectures[0] == "Olmo2ForCausalLM":
         onnx_model = OLMo2Model(
+            config, io_dtype, onnx_dtype, execution_provider, cache_dir, extra_options
+        )
+    elif config.architectures[0] == "Olmo3ForCausalLM":
+        onnx_model = OLMo3Model(
             config, io_dtype, onnx_dtype, execution_provider, cache_dir, extra_options
         )
     elif config.architectures[0] == "PhiForCausalLM":

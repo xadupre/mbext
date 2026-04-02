@@ -4,7 +4,8 @@
 # license information.
 # --------------------------------------------------------------------------
 """
-Unit test checking that the model builder works with an OLMo2-style model.
+Unit test checking that the model builder works with an OLMo3-style model
+(allenai/Olmo-3-7B-Instruct).
 The test uses randomly initialised weights to avoid downloading the pretrained
 weights from Hugging Face, making it completely offline and suitable for CI
 environments without internet access.
@@ -15,12 +16,12 @@ import tempfile
 import unittest
 
 
-class TestOLMo2(unittest.TestCase):
+class TestOLMo3(unittest.TestCase):
 
-    def test_olmo2_fp32_cpu_random_weights(self):
+    def test_olmo3_fp32_cpu_random_weights(self):
         """
-        Convert a model with the same architecture as allenai/OLMo-2-7B but
-        with randomly initialised weights to an fp32 ONNX model targeting the
+        Convert a model with the same architecture as allenai/Olmo-3-7B-Instruct
+        but with randomly initialised weights to an fp32 ONNX model targeting the
         CPU execution provider.
 
         The test verifies that:
@@ -31,26 +32,27 @@ class TestOLMo2(unittest.TestCase):
         from tokenizers import Tokenizer
         from tokenizers.models import WordLevel
         from transformers import AutoModelForCausalLM, PreTrainedTokenizerFast
-        from transformers.models.olmo2 import Olmo2Config
+        from transformers.models.olmo3 import Olmo3Config
 
         from modelbuilder.builder import create_model
 
-        config = Olmo2Config(
-            architectures=["Olmo2ForCausalLM"],
+        config = Olmo3Config(
+            architectures=["Olmo3ForCausalLM"],
             hidden_act="silu",
             hidden_size=512,
             intermediate_size=1376,
             max_position_embeddings=2048,
-            model_type="olmo2",
+            model_type="olmo3",
             num_attention_heads=8,
-            num_hidden_layers=2,
+            num_hidden_layers=4,
             num_key_value_heads=4,
             rms_norm_eps=1e-5,
             rope_theta=10000.0,
+            sliding_window=256,
             vocab_size=50304,
         )
 
-        MODEL_NAME = "allenai/Olmo-3-7B-Instruct"
+        model_name = "allenai/Olmo-3-7B-Instruct"
 
         with tempfile.TemporaryDirectory() as model_dir:
             model = AutoModelForCausalLM.from_config(config)
@@ -71,7 +73,7 @@ class TestOLMo2(unittest.TestCase):
             os.makedirs(cache_dir, exist_ok=True)
 
             create_model(
-                model_name=MODEL_NAME,
+                model_name=model_name,
                 input_path=model_dir,
                 output_dir=output_dir,
                 precision="fp32",
