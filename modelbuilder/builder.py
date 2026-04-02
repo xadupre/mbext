@@ -16,6 +16,10 @@ from typing import Any
 
 import onnx_ir as ir
 import torch
+from transformers import (
+    AutoConfig,
+)
+
 from .builders import (
     ChatGLMModel,
     ErnieModel,
@@ -27,6 +31,7 @@ from .builders import (
     InternLM2Model,
     LlamaModel,
     MistralModel,
+    MistralNeMoModel,
     Model,
     NemotronModel,
     OLMoModel,
@@ -45,9 +50,6 @@ from .builders import (
     QwenModel,
     SmolLM3Model,
     WhisperModel,
-)
-from transformers import (
-    AutoConfig,
 )
 
 
@@ -292,6 +294,10 @@ def create_model(
         )
     elif config.architectures[0] == "MistralForCausalLM":
         onnx_model = MistralModel(
+            config, io_dtype, onnx_dtype, execution_provider, cache_dir, extra_options
+        )
+    elif config.architectures[0] == "MistralNeMoForCausalLM":
+        onnx_model = MistralNeMoModel(
             config, io_dtype, onnx_dtype, execution_provider, cache_dir, extra_options
         )
     elif config.architectures[0] == "NemotronForCausalLM":
