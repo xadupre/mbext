@@ -6,6 +6,7 @@
 # Copyright (C) [2026] Advanced Micro Devices, Inc. All rights reserved.
 # Portions of this file consist of AI generated content.
 # -------------------------------------------------------------------------
+from ..genai_config_utils import fix_genai_config
 from .base import Model
 from .chatglm import ChatGLMModel
 from .ernie import ErnieModel
@@ -66,4 +67,5 @@ __all__ = [
     "QwenModel",
     "SmolLM3Model",
     "WhisperModel",
+    "fix_genai_config",
 ]

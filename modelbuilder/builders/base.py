@@ -32,6 +32,8 @@ from transformers import (
     GenerationConfig,
 )
 
+from ..genai_config_utils import fix_genai_config  # noqa: F401
+
 
 def parse_hf_token(hf_token):
     """
@@ -922,6 +924,7 @@ class Model:
                 "provider_options"
             ].append(ep_options)
 
+        fix_genai_config(genai_config)
         print(f"Saving GenAI config in {out_dir}")
         with open(os.path.join(out_dir, "genai_config.json"), "w") as f:
             json.dump(genai_config, f, indent=4)
