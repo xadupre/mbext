@@ -147,6 +147,7 @@ class TestTrainedMistralNeMo(ExtTestCase):
         # transformers greedy generation (reference)
         # ------------------------------------------------------------------
         inputs = tokenizer(prompt, return_tensors="pt")
+        start_sequence = inputs["input_ids"].shape[1]
         inputs = inputs.to("cuda")
         prompt_len = inputs["input_ids"].shape[1]
         with torch.no_grad():
@@ -190,10 +191,14 @@ class TestTrainedMistralNeMo(ExtTestCase):
                 experiment="generate",
                 provider="cuda",
                 test="test_trained_mistral_nemo_genai_generate_cuda",
+                expected_text=tokenizer.decode(
+                    pt_tokens[start_sequence:], skip_special_tokens=False
+                ),
+                genai_text=tokenizer.decode(og_tokens, skip_special_tokens=False),
             )
         )
         self.log_results(disc)
-        self.assertEqual(pt_tokens, og_tokens)
+        self.assertEqual(pt_tokens[:start_sequence], og_tokens)
 
     @long_test()
     def test_trained_mistral_nemo_genai_generate_cpu(self):
@@ -233,6 +238,7 @@ class TestTrainedMistralNeMo(ExtTestCase):
         # transformers greedy generation (reference)
         # ------------------------------------------------------------------
         inputs = tokenizer(prompt, return_tensors="pt")
+        start_sequence = inputs["input_ids"].shape[1]
         inputs = inputs.to("cpu")
         prompt_len = inputs["input_ids"].shape[1]
         with torch.no_grad():
@@ -276,10 +282,14 @@ class TestTrainedMistralNeMo(ExtTestCase):
                 experiment="generate",
                 provider="cpu",
                 test="test_trained_mistral_nemo_genai_generate_cpu",
+                expected_text=tokenizer.decode(
+                    pt_tokens[start_sequence:], skip_special_tokens=False
+                ),
+                genai_text=tokenizer.decode(og_tokens, skip_special_tokens=False),
             )
         )
         self.log_results(disc)
-        self.assertEqual(pt_tokens, og_tokens)
+        self.assertEqual(pt_tokens[:start_sequence], og_tokens)
 
 
 if __name__ == "__main__":
