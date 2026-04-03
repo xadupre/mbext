@@ -99,23 +99,13 @@ class ExtTestCase(unittest.TestCase):
         if os.path.exists(path):
             shutil.rmtree(path)
 
-    def get_hf_cache_dir(self) -> str:
-        """
-        Returns a shared, persistent HuggingFace model cache directory.
-
-        Unlike the per-test directories returned by :meth:`get_dirs`, this
-        directory is **not** scheduled for cleanup after each test so that
-        model files downloaded from the Hub are reused across test runs.
-        """
-        cache_dir = os.path.join("dump_models", "hf_cache")
-        os.makedirs(cache_dir, exist_ok=True)
-        return cache_dir
-
     def get_dirs(self, prefix: str) -> Tuple[str]:
         output_dir = f"dump_models/{prefix}/output"
+        cache_dir = f"dump_models/{prefix}/cache"
         os.makedirs(output_dir, exist_ok=True)
+        os.makedirs(cache_dir, exist_ok=True)
         self.addCleanup(self.clean_dir, f"dump_models/{prefix}")
-        return output_dir, self.get_hf_cache_dir()
+        return output_dir, cache_dir
 
     def get_model_dir(self, prefix: str) -> Tuple[str]:
         model_dir = f"dump_models/{prefix}/checkpoint"

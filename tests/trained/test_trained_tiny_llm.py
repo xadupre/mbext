@@ -10,6 +10,10 @@ import numpy as np
 
 from modelbuilder.ext_test_case import ExtTestCase
 
+# Persistent HF model cache shared across test runs – not cleaned up per test.
+_HF_CACHE_DIR = os.path.join("dump_models", "hf_cache")
+os.makedirs(_HF_CACHE_DIR, exist_ok=True)
+
 
 class TestTrainedTinyLLM(ExtTestCase):
     def test_trained_tiny_llm_fp32_cpu(self):
@@ -28,25 +32,25 @@ class TestTrainedTinyLLM(ExtTestCase):
 
         MODEL_NAME = "arnir0/Tiny-LLM"
 
-        output_dir, cache_dir = self.get_dirs("test_tiny_llm_fp32_cpu")
+        output_dir, _ = self.get_dirs("test_tiny_llm_fp32_cpu")
         create_model(
             model_name=MODEL_NAME,
             input_path="",
             precision="fp32",
             execution_provider="cpu",
             output_dir=output_dir,
-            cache_dir=cache_dir,
+            cache_dir=_HF_CACHE_DIR,
         )
 
         onnx_path = os.path.join(output_dir, "model.onnx")
         self.assertExists(onnx_path)
         sess = self._check_with_ort(onnx_path, cpu=True)
 
-        config = AutoConfig.from_pretrained(MODEL_NAME, cache_dir=cache_dir)
+        config = AutoConfig.from_pretrained(MODEL_NAME, cache_dir=_HF_CACHE_DIR)
         model = AutoModelForCausalLM.from_pretrained(
             MODEL_NAME,
             config=config,
-            cache_dir=cache_dir,
+            cache_dir=_HF_CACHE_DIR,
             ignore_mismatched_sizes=True,
         )
 
@@ -114,14 +118,14 @@ class TestTrainedTinyLLM(ExtTestCase):
 
         MODEL_NAME = "arnir0/Tiny-LLM"
 
-        output_dir, cache_dir = self.get_dirs("test_trained_tiny_llm_genai_generate")
+        output_dir, _ = self.get_dirs("test_trained_tiny_llm_genai_generate")
         create_model(
             model_name=MODEL_NAME,
             input_path="",
             precision="fp32",
             execution_provider="cpu",
             output_dir=output_dir,
-            cache_dir=cache_dir,
+            cache_dir=_HF_CACHE_DIR,
         )
 
         onnx_path = os.path.join(output_dir, "model.onnx")
@@ -129,15 +133,15 @@ class TestTrainedTinyLLM(ExtTestCase):
         genai_config_path = os.path.join(output_dir, "genai_config.json")
         self.assertExists(genai_config_path)
 
-        config = AutoConfig.from_pretrained(MODEL_NAME, cache_dir=cache_dir)
+        config = AutoConfig.from_pretrained(MODEL_NAME, cache_dir=_HF_CACHE_DIR)
         model = AutoModelForCausalLM.from_pretrained(
             MODEL_NAME,
             config=config,
-            cache_dir=cache_dir,
+            cache_dir=_HF_CACHE_DIR,
             ignore_mismatched_sizes=True,
         )
         model.eval()
-        tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME, cache_dir=cache_dir)
+        tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME, cache_dir=_HF_CACHE_DIR)
 
         prompt = "Once upon a time"
         max_new_tokens = 20

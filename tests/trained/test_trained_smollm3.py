@@ -12,6 +12,10 @@ from modelbuilder.ext_test_case import ExtTestCase, long_test
 
 SMOLLM3_MODEL_NAME = "HuggingFaceTB/SmolLM3-3B"
 
+# Persistent HF model cache shared across test runs – not cleaned up per test.
+_HF_CACHE_DIR = os.path.join("dump_models", "hf_cache")
+os.makedirs(_HF_CACHE_DIR, exist_ok=True)
+
 
 class TestTrainedSmolLM3(ExtTestCase):
     @long_test()
@@ -37,14 +41,14 @@ class TestTrainedSmolLM3(ExtTestCase):
         # code paths are exercised with the default no_rope_layer_interval=4.
         num_hidden_layers = 4
 
-        output_dir, cache_dir = self.get_dirs("test_smollm3_fp32_cpu")
+        output_dir, _ = self.get_dirs("test_smollm3_fp32_cpu")
         create_model(
             model_name=SMOLLM3_MODEL_NAME,
             input_path="",
             precision="fp32",
             execution_provider="cpu",
             output_dir=output_dir,
-            cache_dir=cache_dir,
+            cache_dir=_HF_CACHE_DIR,
             num_hidden_layers=num_hidden_layers,
         )
 
@@ -52,11 +56,11 @@ class TestTrainedSmolLM3(ExtTestCase):
         self.assertExists(onnx_path)
         sess = self._check_with_ort(onnx_path, cpu=True)
 
-        config = AutoConfig.from_pretrained(SMOLLM3_MODEL_NAME, cache_dir=cache_dir)
+        config = AutoConfig.from_pretrained(SMOLLM3_MODEL_NAME, cache_dir=_HF_CACHE_DIR)
         model = AutoModelForCausalLM.from_pretrained(
             SMOLLM3_MODEL_NAME,
             config=config,
-            cache_dir=cache_dir,
+            cache_dir=_HF_CACHE_DIR,
             ignore_mismatched_sizes=True,
         )
         model.eval()
