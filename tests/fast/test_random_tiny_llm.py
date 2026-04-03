@@ -66,6 +66,7 @@ class TestRandomTinyLLM(ExtTestCase):
 
         model_dir = self.get_model_dir("test_tiny_llm_fp32_cpu_random_weights")
         output_dir, cache_dir = self.get_dirs("test_tiny_llm_fp32_cpu_random_weights")
+        num_hidden_layers = 1
 
         model = AutoModelForCausalLM.from_config(config)
         model.eval()
@@ -87,7 +88,7 @@ class TestRandomTinyLLM(ExtTestCase):
             precision="fp32",
             execution_provider="cpu",
             cache_dir=cache_dir,
-            num_hidden_layers=1,
+            num_hidden_layers=num_hidden_layers,
         )
 
         onnx_path = os.path.join(output_dir, "model.onnx")
@@ -97,7 +98,6 @@ class TestRandomTinyLLM(ExtTestCase):
         # --- PyTorch inference ---
         # Load a 1-layer PyTorch model from the same checkpoint so its
         # architecture matches the 1-layer ONNX model produced by create_model.
-        num_hidden_layers = 1
         config_1layer = LlamaConfig(**config.to_dict())
         config_1layer.num_hidden_layers = num_hidden_layers
         pt_model = AutoModelForCausalLM.from_pretrained(model_dir, config=config_1layer)

@@ -28,19 +28,19 @@ class TestTrainedTinyLLM(ExtTestCase):
 
         MODEL_NAME = "arnir0/Tiny-LLM"
 
-        dirs = self.get_dirs("test_tiny_llm_fp32_cpu")
+        output_dir, cache_dir = self.get_dirs("test_tiny_llm_fp32_cpu")
         create_model(
             model_name=MODEL_NAME,
             input_path="",
             precision="fp32",
             execution_provider="cpu",
-            num_hidden_layers=1,
-            **dirs,
+            output_dir=output_dir,
+            cache_dir=cache_dir,
         )
 
-        onnx_path = os.path.join(dirs["output_dir"], "model.onnx")
+        onnx_path = os.path.join(output_dir, "model.onnx")
         self.assertExists(onnx_path)
-        sess = self.check_ort(onnx_path, cpu=True)
+        sess = self._check_with_ort(onnx_path, cpu=True)
 
         config = AutoConfig.from_pretrained(MODEL_NAME)
         model = AutoModelForCausalLM.from_pretrained(
