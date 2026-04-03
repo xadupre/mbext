@@ -197,3 +197,4 @@ cython_debug/
 .pypirc
 
 dump_models
+stats

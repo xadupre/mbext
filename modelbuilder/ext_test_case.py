@@ -1,12 +1,111 @@
 import contextlib
 import io
 import os
+import re
 import shutil
 import unittest
 import warnings
-from typing import Any, Callable, List, Optional, Tuple, Union
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 import numpy as np
+
+
+class PvVersion:
+    """Simple version of packaging.version.Version."""
+
+    def to_int(self, i: str) -> int:
+        if i[0] == "0" and len(i) != 1:
+            raise ValueError(f"{self!r} is not a valid version")
+        return int(i)
+
+    def __init__(self, version: str):
+        self.version = version
+        self.t_version = tuple(
+            self.to_int(i)
+            for i in re.split(r"[.+]", version)
+            if not i.startswith(("dev", "rc", "post", "cpu", "cu"))
+        )
+
+    def __repr__(self) -> str:
+        "usual"
+        return f"Version({self.version!r})"
+
+    def __eq__(self, other) -> bool:
+        """=="""
+        return self.version == other.version
+
+    def __ge__(self, other) -> bool:
+        """Lesser than."""
+        assert isinstance(other, PvVersion), f"Unexpected type {type(other)}"
+        return self.t_version >= other.t_version
+
+    def __gt__(self, other) -> bool:
+        """Lesser than."""
+        assert isinstance(other, PvVersion), f"Unexpected type {type(other)}"
+        return self.t_version > other.t_version
+
+    def __le__(self, other) -> bool:
+        """Lesser than."""
+        assert isinstance(other, PvVersion), f"Unexpected type {type(other)}"
+        return self.t_version <= other.t_version
+
+    def __lt__(self, other) -> bool:
+        """Lesser than."""
+        assert isinstance(other, PvVersion), f"Unexpected type {type(other)}"
+        return self.t_version < other.t_version
+
+
+def has_cuda() -> bool:
+    """Returns ``torch.cuda.device_count() > 0``."""
+    if not has_torch():
+        return False
+    import torch
+
+    return torch.cuda.device_count() > 0
+
+
+def has_torch(version: str = "") -> bool:
+    "Returns True if torch transformers is available and recent enough."
+    try:
+        import torch
+    except (ImportError, AttributeError):
+        return False
+    if not hasattr(torch, "__version__") or os.environ.get("NOTORCH", "0") == "1":
+        return False
+    if not version:
+        return True
+    return PvVersion(torch.__version__) >= PvVersion(version)
+
+
+def requires_cuda(version: str = "", msg: str = "", memory: int = 0):
+    """
+    Skips a test if cuda is not available.
+
+    :param version: minimum version
+    :param msg: to overwrite the message
+    :param memory: minimum number of Gb to run the test
+    """
+    if not has_torch():
+        return unittest.skip(msg or "cuda not installed")
+
+    import torch
+
+    if torch.cuda.device_count() == 0:
+        msg = msg or "only runs on CUDA but torch does not have it"
+        return unittest.skip(msg or "cuda not installed")
+
+    if version:
+        if PvVersion(torch.version.cuda) < PvVersion(version):
+            msg = msg or f"CUDA older than {version}"
+        return unittest.skip(msg or f"cuda not recent enough {torch.version.cuda} < {version}")
+
+    if memory:
+        m = torch.cuda.get_device_properties(0).total_memory / 2**30
+        if m < memory:
+            msg = msg or f"available memory is not enough {m} < {memory} (Gb)"
+            return unittest.skip(msg)
+
+    return lambda x: x
 
 
 def ignore_warnings(warns: List[Warning]) -> Callable:
@@ -102,18 +201,18 @@ class ExtTestCase(unittest.TestCase):
 
     def get_dirs(self, prefix: str, clean: bool = True) -> Tuple[str]:
         output_dir = f"dump_models/{prefix}/output"
-        cache_dir = f"dump_models/{prefix}/cache"
+        cache_dir = os.path.expanduser(f"~/.cache/modelbuilder/{prefix}")
         os.makedirs(output_dir, exist_ok=True)
         os.makedirs(cache_dir, exist_ok=True)
         if clean or self._do_clean:
-            self.addCleanup(self.clean_dir, f"dump_models/{prefix}")
+            self.addCleanup(self.clean_dir, f"dump_models/{prefix}/output_dir")
         return output_dir, cache_dir
 
     def get_model_dir(self, prefix: str, clean: bool = False) -> Tuple[str]:
         model_dir = f"dump_models/{prefix}/checkpoint"
         os.makedirs(model_dir, exist_ok=True)
         if clean or self._do_clean:
-            self.addCleanup(self.clean_dir, f"dump_models/{prefix}")
+            self.addCleanup(self.clean_dir, f"dump_models/{prefix}/checkpoint")
         return model_dir
 
     def assertExists(self, name):
@@ -192,3 +291,110 @@ class ExtTestCase(unittest.TestCase):
             proto.SerializeToString() if hasattr(proto, "SerializeToString") else proto,
             providers=providers,
         )
+
+    def get_numpy_discrepancy(self, tensor_a, tensor_b):
+        return get_numpy_discrepancy(tensor_a, tensor_b)
+
+    def get_pytorch_discrepancy(self, tensor_a, tensor_b):
+        return get_pytorch_discrepancy(tensor_a, tensor_b)
+
+    def first_token_diff(self, expected, values):
+        return first_token_diff(expected, values)
+
+    def log_results(self, data: Dict[str, Any]):
+        stat_folder = "stats"
+        os.makedirs(stat_folder, exist_ok=True)
+        with open(os.path.join(stat_folder, "end2end_results.json"), "a") as f:
+            f.write(str(data) + "\n")
+
+
+def first_token_diff(expected: List[int], values: List[int]) -> Dict[str, Any]:
+    delta_length = len(values) - len(expected)
+    first_diff = None
+    total_diff = 0
+    for i, (a, b) in enumerate(zip(expected, values)):
+        if a != b:
+            if first_diff is None:
+                first_diff = i
+            total_diff += 1
+    return dict(
+        first_diff=first_diff,
+        delta_length=delta_length,
+        expected_length=len(expected),
+        total_diff=total_diff,
+    )
+
+
+def get_numpy_discrepancy(array_a, array_b):
+    """
+    Computes discrepancy metrics between two NumPy arrays.
+    """
+    # 1. Ensure inputs are numpy arrays and same shape
+    a = np.asanyarray(array_a)
+    b = np.asanyarray(array_b)
+
+    if a.shape != b.shape:
+        raise ValueError(f"Shape mismatch: {a.shape} vs {b.shape}")
+
+    # 2. Calculate Absolute Difference |a - b|
+    diff = np.abs(a - b)
+
+    # 3. Maximum Discrepancy (Max Error)
+    max_disc = np.max(diff)
+
+    # 4. Count Mismatches above thresholds
+    # We use np.sum on a boolean mask
+    mismatches_01 = np.sum(diff > 0.1)
+    mismatches_001 = np.sum(diff > 0.01)
+
+    # 5. Average Absolute Discrepancy (Mean Absolute Error)
+    avg_disc = np.mean(diff)
+
+    n = np.prod(a.shape)
+    return {
+        "max_abs_err": float(max_disc),
+        "%_gt_0.1": mismatches_01 / n,
+        "%_gt_0.01": mismatches_001 / n,
+        "avg_abs_discrepancy": float(avg_disc),
+        "shape": tuple(int(i) for i in a.shape),
+        "dtype": a.dtype,
+    }
+
+
+def get_pytorch_discrepancy(tensor_a, tensor_b):
+    """
+    Computes discrepancy metrics between two PyTorch tensors.
+    """
+    # 1. Ensure tensors are on the same device and detached from any graph
+    # We move to CPU for the final scalar extraction (.item())
+    import torch
+
+    a = tensor_a.detach()
+    b = tensor_b.to(a.device).detach()
+
+    if a.shape != b.shape:
+        raise ValueError(f"Shape mismatch: {a.shape} vs {b.shape}")
+
+    # 2. Absolute Difference |a - b|
+    diff = torch.abs(a - b)
+
+    # 3. Maximum Discrepancy
+    max_disc = torch.max(diff).item()
+
+    # 4. Mismatches (Count elements above thresholds)
+    # Using .sum() on a boolean mask
+    mismatches_01 = torch.sum(diff > 0.1).item()
+    mismatches_001 = torch.sum(diff > 0.01).item()
+
+    # 5. Average Absolute Discrepancy (Mean Absolute Error)
+    avg_disc = torch.mean(diff).item()
+
+    n = torch.prod(a.shape)
+    return {
+        "max_abs_err": float(max_disc),
+        "%_gt_0.1": mismatches_01 / n,
+        "%_gt_0.01": mismatches_001 / n,
+        "avg_abs_discrepancy": float(avg_disc),
+        "shape": tuple(int(i) for i in a.shape),
+        "dtype": a.dtype,
+    }
