@@ -100,6 +100,7 @@ class ExtTestCase(unittest.TestCase):
             shutil.rmtree(path)
 
     def get_dirs(self, prefix: str) -> Tuple[str]:
+        cache_dir = f"dump_models/{prefix}/cache"
         output_dir = f"dump_models/{prefix}/output"
         cache_dir = f"dump_models/{prefix}/cache"
         os.makedirs(output_dir, exist_ok=True)
