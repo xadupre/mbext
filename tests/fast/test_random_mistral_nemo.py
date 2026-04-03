@@ -4,10 +4,13 @@
 # license information.
 # --------------------------------------------------------------------------
 import os
+import tempfile
 import unittest
 
 import numpy as np
+from safetensors.numpy import save_file
 
+from modelbuilder.builders.mistral import MistralNeMoModel
 from modelbuilder.ext_test_case import ExtTestCase, hide_stdout
 
 MISTRAL_NEMO_MODEL_NAME = "mistralai/Mistral-Nemo-Instruct-2407"
@@ -147,13 +150,6 @@ class TestMistralNeMo(ExtTestCase):
         would previously fall back to the division and produce the wrong ONNX
         input shapes.
         """
-        import tempfile
-
-        import numpy as np
-        from safetensors.numpy import save_file
-
-        from modelbuilder.builders.mistral import MistralNeMoModel
-
         # ---------------------------------------------------------------------------
         # Build a minimal on-disk representation that mimics the Mistral-NeMo layout:
         #   hidden_size=320, num_attention_heads=2, num_kv_heads=1, head_dim=128
@@ -190,13 +186,6 @@ class TestMistralNeMo(ExtTestCase):
         ``_fix_head_size_from_weights`` must be a no-op when the stored
         head_size already matches the weight dimensions.
         """
-        import tempfile
-
-        import numpy as np
-        from safetensors.numpy import save_file
-
-        from modelbuilder.builders.mistral import MistralNeMoModel
-
         model_dir = tempfile.mkdtemp()
         # k_proj shape [128, 320] → head_dim = 128
         tensors = {
