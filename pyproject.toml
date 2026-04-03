@@ -1,3 +1,34 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "modelbuilder"
+version = "0.1.0"
+description = "Writes LLM in ONNX format."
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.10"
+dependencies = [
+    "ml_dtypes",
+    "numpy>=2.1",
+    "onnx>=1.14",
+    "onnxscript",
+    "scipy",
+]
+
+[project.optional-dependencies]
+dev = [
+    "black",
+    "onnxruntime>=1.24",
+    "pytest>=7",
+    "py-cpuinfo",
+    "pytest-coverage",
+    "pytest-subtests",
+    "ruff",
+    "transformers",
+]
+
 [tool.black]
 line-length = 88
 target-version = ["py38", "py39", "py310", "py311", "py312"]
@@ -7,4 +38,4 @@ line-length = 88
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I"]
-ignore = ["E501"]
+ignore = ["E501", "I001"]
