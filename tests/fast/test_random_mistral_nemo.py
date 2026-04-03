@@ -11,7 +11,11 @@ import unittest
 
 import numpy as np
 
-from modelbuilder.builders.mistral import MistralNeMoModel, _fix_config_head_dim
+from modelbuilder.builders.mistral import (
+    MistralNeMoModel,
+    _fix_config_head_dim,
+    _read_head_dim_from_safetensors,
+)
 from modelbuilder.ext_test_case import ExtTestCase, hide_stdout
 
 MISTRAL_NEMO_MODEL_NAME = "mistralai/Mistral-Nemo-Instruct-2407"
@@ -243,27 +247,24 @@ class TestMistralNeMo(ExtTestCase):
         self.assertEqual(stub.head_size, 160)
         self.assertEqual(stub.input_shapes["past_key_values.key"][3], 160)
 
-        # Run only the pre-loading part of make_model.
-        try:
-            stub._preloaded_weights = stub.load_weights(None)
-            for module in stub._preloaded_weights.modules():
-                k_proj = getattr(module, "k_proj", None)
-                if k_proj is None:
-                    continue
-                weight = getattr(k_proj, "weight", None)
-                if weight is None:
-                    continue
-                actual_head_size = weight.shape[0] // stub.num_kv_heads
-                if actual_head_size != stub.head_size:
-                    stub.head_size = actual_head_size
-                    for key in ("past_key_values.key", "past_key_values.value"):
-                        stub.input_shapes[key][3] = actual_head_size
-                    for key in ("present.key", "present.value"):
-                        stub.output_shapes[key][3] = actual_head_size
-                break
-        except Exception:  # noqa: BLE001
-            if hasattr(stub, "_preloaded_weights"):
-                del stub._preloaded_weights
+        # Run only the pre-loading part of make_model (no try/except — errors
+        # propagate as they should).
+        stub._preloaded_weights = stub.load_weights(None)
+        for module in stub._preloaded_weights.modules():
+            k_proj = getattr(module, "k_proj", None)
+            if k_proj is None:
+                continue
+            weight = getattr(k_proj, "weight", None)
+            if weight is None:
+                continue
+            actual_head_size = weight.shape[0] // stub.num_kv_heads
+            if actual_head_size != stub.head_size:
+                stub.head_size = actual_head_size
+                for key in ("past_key_values.key", "past_key_values.value"):
+                    stub.input_shapes[key][3] = actual_head_size
+                for key in ("present.key", "present.value"):
+                    stub.output_shapes[key][3] = actual_head_size
+            break
 
         # head_size and KV-cache shapes must now reflect the actual weight dimensions.
         self.assertEqual(stub.head_size, 128)
@@ -301,7 +302,7 @@ class TestMistralNeMo(ExtTestCase):
             sf_path = os.path.join(model_dir, "model.safetensors")
             _write_fake_safetensors(sf_path, (1024, 5120))
 
-            _fix_config_head_dim(config, cache_dir=None)
+            _fix_config_head_dim(config)
 
         self.assertEqual(config.head_dim, 128)
 
@@ -326,14 +327,15 @@ class TestMistralNeMo(ExtTestCase):
             sf_path = os.path.join(model_dir, "model.safetensors")
             _write_fake_safetensors(sf_path, (256, 512))
 
-            _fix_config_head_dim(config, cache_dir=None)
+            _fix_config_head_dim(config)
 
         self.assertEqual(config.head_dim, 64)
 
-    def test_fix_config_head_dim_no_crash_without_safetensors(self):
+    def test_fix_config_head_dim_returns_none_without_safetensors(self):
         """
-        Verify that ``_fix_config_head_dim`` silently does nothing when no
-        safetensors file is present (best-effort, no exception).
+        Verify that ``_read_head_dim_from_safetensors`` returns ``None`` and
+        ``_fix_config_head_dim`` leaves ``config.head_dim`` unchanged when no
+        safetensors file is present in the model directory.
         """
 
         class _MockConfig:
@@ -346,7 +348,9 @@ class TestMistralNeMo(ExtTestCase):
         config = _MockConfig()
         with tempfile.TemporaryDirectory() as empty_dir:
             config._name_or_path = empty_dir
-            _fix_config_head_dim(config, cache_dir=None)  # must not raise
+            result = _read_head_dim_from_safetensors(empty_dir, 8)
+            self.assertIsNone(result)
+            _fix_config_head_dim(config)
 
         self.assertEqual(config.head_dim, 160)  # unchanged
 
@@ -384,7 +388,7 @@ class TestMistralNeMo(ExtTestCase):
             with open(index_json_path, "w") as f:
                 json.dump(index, f)
 
-            _fix_config_head_dim(config, cache_dir=None)
+            _fix_config_head_dim(config)
 
         self.assertEqual(config.head_dim, 128)
 
