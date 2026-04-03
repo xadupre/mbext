@@ -30,7 +30,7 @@ class TestTrainedSmolLM3(ExtTestCase):
         * The ONNX logits closely match those of the original PyTorch model.
         """
         import torch
-        from transformers import AutoConfig, AutoModelForCausalLM
+        from transformers import AutoModelForCausalLM
         from modelbuilder.builder import create_model
 
         # Use 4 layers so that both rope (layers 0-2) and no-rope (layer 3)
@@ -52,14 +52,11 @@ class TestTrainedSmolLM3(ExtTestCase):
         self.assertExists(onnx_path)
         sess = self._check_with_ort(onnx_path, cpu=True)
 
-        config = AutoConfig.from_pretrained(SMOLLM3_MODEL_NAME, cache_dir=cache_dir)
         model = AutoModelForCausalLM.from_pretrained(
-            SMOLLM3_MODEL_NAME,
-            config=config,
-            cache_dir=cache_dir,
-            ignore_mismatched_sizes=True,
+            SMOLLM3_MODEL_NAME, ignore_mismatched_sizes=True
         )
         model.eval()
+        config = model.config
 
         batch_size = 1
         seq_len = 5

@@ -23,7 +23,7 @@ class TestTrainedTinyLLM(ExtTestCase):
         * The produced ONNX file passes ``onnx.checker.check_model``.
         """
         import torch
-        from transformers import AutoConfig, AutoModelForCausalLM
+        from transformers import AutoModelForCausalLM
         from modelbuilder.builder import create_model
 
         MODEL_NAME = "arnir0/Tiny-LLM"
@@ -42,13 +42,10 @@ class TestTrainedTinyLLM(ExtTestCase):
         self.assertExists(onnx_path)
         sess = self._check_with_ort(onnx_path, cpu=True)
 
-        config = AutoConfig.from_pretrained(MODEL_NAME, cache_dir=cache_dir)
         model = AutoModelForCausalLM.from_pretrained(
-            MODEL_NAME,
-            config=config,
-            cache_dir=cache_dir,
-            ignore_mismatched_sizes=True,
+            MODEL_NAME, ignore_mismatched_sizes=True
         )
+        config = model.config
 
         batch_size = 1
         seq_len = 5
@@ -109,7 +106,7 @@ class TestTrainedTinyLLM(ExtTestCase):
             )
 
         import torch
-        from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
+        from transformers import AutoModelForCausalLM, AutoTokenizer
         from modelbuilder.builder import create_model
 
         MODEL_NAME = "arnir0/Tiny-LLM"
@@ -129,12 +126,8 @@ class TestTrainedTinyLLM(ExtTestCase):
         genai_config_path = os.path.join(output_dir, "genai_config.json")
         self.assertExists(genai_config_path)
 
-        config = AutoConfig.from_pretrained(MODEL_NAME, cache_dir=cache_dir)
         model = AutoModelForCausalLM.from_pretrained(
-            MODEL_NAME,
-            config=config,
-            cache_dir=cache_dir,
-            ignore_mismatched_sizes=True,
+            MODEL_NAME, ignore_mismatched_sizes=True
         )
         model.eval()
         tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME, cache_dir=cache_dir)
