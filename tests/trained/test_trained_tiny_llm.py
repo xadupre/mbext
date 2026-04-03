@@ -10,13 +10,41 @@ import numpy as np
 
 from modelbuilder.ext_test_case import ExtTestCase
 
-# Persistent HF model cache shared across test runs – not cleaned up per test.
-_HF_CACHE_DIR = os.path.join("dump_models", "hf_cache")
-os.makedirs(_HF_CACHE_DIR, exist_ok=True)
+MODEL_NAME = "arnir0/Tiny-LLM"
 
 
 class TestTrainedTinyLLM(ExtTestCase):
-    def test_trained_tiny_llm_fp32_cpu(self):
+    def _common_part(self, precision, dtype):
+        from transformers import AutoModelForCausalLM
+        from modelbuilder.builder import create_model
+
+        # Use 4 layers so that both rope (layers 0-2) and no-rope (layer 3)
+        # code paths are exercised with the default no_rope_layer_interval=4.
+        output_dir, cache_dir = self.get_dirs(
+            f"test_trained_tiny_llm_{precision}_cpu", clean=False
+        )
+        onnx_path = os.path.join(output_dir, "model.onnx")
+        if not os.path.exists(onnx_path):
+            # Let's avoid doing it a second time.
+            create_model(
+                model_name=MODEL_NAME,
+                input_path="",
+                precision=precision,
+                execution_provider="cpu",
+                output_dir=output_dir,
+                cache_dir=cache_dir,
+            )
+
+        onnx_path = os.path.join(output_dir, "model.onnx")
+        self.assertExists(onnx_path)
+
+        model = AutoModelForCausalLM.from_pretrained(
+            MODEL_NAME, ignore_mismatched_sizes=True, dtype=dtype
+        )
+        model.eval()
+        return onnx_path, model
+
+    def test_trained_tiny_llm_fp32_discrepancies_cpu(self):
         """
         Convert arnir0/Tiny-LLM to an fp32 ONNX model targeting the CPU execution
         provider.  Only one hidden layer is materialised (via the
@@ -27,26 +55,11 @@ class TestTrainedTinyLLM(ExtTestCase):
         * The produced ONNX file passes ``onnx.checker.check_model``.
         """
         import torch
-        from transformers import AutoModelForCausalLM
-        from modelbuilder.builder import create_model
 
-        MODEL_NAME = "arnir0/Tiny-LLM"
+        precision, dtype, np_dtype = "fp16", torch.float16, np.float16
 
-        output_dir, _ = self.get_dirs("test_tiny_llm_fp32_cpu")
-        create_model(
-            model_name=MODEL_NAME,
-            input_path="",
-            precision="fp32",
-            execution_provider="cpu",
-            output_dir=output_dir,
-            cache_dir=_HF_CACHE_DIR,
-        )
-
-        onnx_path = os.path.join(output_dir, "model.onnx")
-        self.assertExists(onnx_path)
+        onnx_path, model = self._common_part(precision, dtype)
         sess = self._check_with_ort(onnx_path, cpu=True)
-
-        model = AutoModelForCausalLM.from_pretrained(MODEL_NAME, ignore_mismatched_sizes=True)
         config = model.config
 
         batch_size = 1
@@ -67,11 +80,11 @@ class TestTrainedTinyLLM(ExtTestCase):
         for i in range(config.num_hidden_layers):
             onnx_feed[f"past_key_values.{i}.key"] = np.zeros(
                 (batch_size, config.num_key_value_heads, 0, head_size),
-                dtype=np.float32,
+                dtype=np_dtype,
             )
             onnx_feed[f"past_key_values.{i}.value"] = np.zeros(
                 (batch_size, config.num_key_value_heads, 0, head_size),
-                dtype=np.float32,
+                dtype=np_dtype,
             )
         # Keep only what the session expects.
         onnx_feed = {k: v for k, v in onnx_feed.items() if k in onnx_input_names}
@@ -79,9 +92,20 @@ class TestTrainedTinyLLM(ExtTestCase):
         onnx_outputs = sess.run(None, onnx_feed)
         onnx_logits = onnx_outputs[0]
 
-        np.testing.assert_allclose(pt_logits, onnx_logits, atol=1e-3, rtol=1e-3)
+        disc = self.get_numpy_discrepancy(pt_logits, onnx_logits)
+        disc.update(
+            dict(
+                precision=precision,
+                model_id=MODEL_NAME,
+                experiment="forward",
+                provider="cpu",
+                test="test_trained_tiny_llm_fp32_discrepancies_cpu",
+            )
+        )
+        self.log_results(disc)
+        self.assertLess(disc["max_abs_err"], 0.05)
 
-    def test_trained_tiny_llm_genai_generate(self):
+    def test_trained_tiny_llm_genai_generate_cpu(self):
         """
         Compare ``transformers.generate`` with ``onnxruntime-genai`` generate
         on the ``arnir0/Tiny-LLM`` trained model.
@@ -106,30 +130,16 @@ class TestTrainedTinyLLM(ExtTestCase):
             )
 
         import torch
-        from transformers import AutoModelForCausalLM, AutoTokenizer
-        from modelbuilder.builder import create_model
+        from transformers import AutoTokenizer
 
-        MODEL_NAME = "arnir0/Tiny-LLM"
+        precision, dtype = "fp16", torch.float16
 
-        output_dir, _ = self.get_dirs("test_trained_tiny_llm_genai_generate")
-        create_model(
-            model_name=MODEL_NAME,
-            input_path="",
-            precision="fp32",
-            execution_provider="cpu",
-            output_dir=output_dir,
-            cache_dir=_HF_CACHE_DIR,
-        )
+        onnx_path, model = self._common_part(precision, dtype)
 
-        onnx_path = os.path.join(output_dir, "model.onnx")
-        self.assertExists(onnx_path)
-        genai_config_path = os.path.join(output_dir, "genai_config.json")
+        genai_config_path = os.path.join(os.path.dirname(onnx_path), "genai_config.json")
         self.assertExists(genai_config_path)
 
-        model = AutoModelForCausalLM.from_pretrained(MODEL_NAME, ignore_mismatched_sizes=True)
-        model.eval()
-        tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME, cache_dir=_HF_CACHE_DIR)
-
+        tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
         prompt = "Once upon a time"
         max_new_tokens = 20
 
@@ -137,6 +147,8 @@ class TestTrainedTinyLLM(ExtTestCase):
         # transformers greedy generation (reference)
         # ------------------------------------------------------------------
         inputs = tokenizer(prompt, return_tensors="pt")
+        start_sequence = inputs["input_ids"].shape[1]
+        inputs = inputs.to("cpu")
         with torch.no_grad():
             pt_output = model.generate(
                 **inputs,
@@ -149,7 +161,7 @@ class TestTrainedTinyLLM(ExtTestCase):
         # ------------------------------------------------------------------
         # onnxruntime-genai greedy generation
         # ------------------------------------------------------------------
-        og_model = og.Model(output_dir)
+        og_model = og.Model(os.path.dirname(onnx_path))
 
         params = og.GeneratorParams(og_model)
         params.set_search_options(
@@ -159,18 +171,29 @@ class TestTrainedTinyLLM(ExtTestCase):
             top_k=1,
         )
 
-        generator = og.Generator(model, params)
+        generator = og.Generator(og_model, params)
         generator.append_tokens(inputs["input_ids"])
 
         og_tokens = []
         while not generator.is_done():
             generator.generate_next_token()
-            og_tokens = generator.get_next_tokens()[0]
-            og_tokens.append(int(og_tokens))
+            og_token = generator.get_next_tokens()[0]
+            og_tokens.append(int(og_token))
 
         # Greedy decoding is deterministic: both backends must produce the
         # exact same token sequence (prompt + all generated tokens).
-        self.assertEqual(pt_tokens, og_tokens)
+        disc = self.first_token_diff(pt_tokens[start_sequence:], og_tokens)
+        disc.update(
+            dict(
+                precision=precision,
+                model_id=MODEL_NAME,
+                experiment="generate",
+                provider="cpu",
+                test="test_trained_tiny_llm_genai_generate_cpu",
+            )
+        )
+        self.log_results(disc)
+        self.assertEqual(pt_tokens[start_sequence:], og_tokens)
 
 
 if __name__ == "__main__":
