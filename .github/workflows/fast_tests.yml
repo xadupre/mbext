@@ -42,4 +42,4 @@ jobs:
         run: pip install -e ".[dev]" torch transformers tokenizers
 
       - name: Run fast tests
-        run: pytest tests/fast -v
+        run: DOCLEAN=1&&pytest tests/fast -v
