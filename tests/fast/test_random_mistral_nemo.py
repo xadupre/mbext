@@ -3,15 +3,39 @@
 # Licensed under the MIT License.  See License.txt in the project root for
 # license information.
 # --------------------------------------------------------------------------
+import json
 import os
+import struct
+import tempfile
 import unittest
 
 import numpy as np
 
-from modelbuilder.builders.mistral import MistralNeMoModel
+from modelbuilder.builders.mistral import MistralNeMoModel, _fix_config_head_dim
 from modelbuilder.ext_test_case import ExtTestCase, hide_stdout
 
 MISTRAL_NEMO_MODEL_NAME = "mistralai/Mistral-Nemo-Instruct-2407"
+
+
+def _write_fake_safetensors(path, k_proj_shape):
+    """Write a minimal safetensors file whose header contains k_proj.weight."""
+    tensor_name = "model.layers.0.self_attn.k_proj.weight"
+    n_elements = k_proj_shape[0] * k_proj_shape[1]
+    byte_size = n_elements * 4  # float32
+    header_obj = {
+        "__metadata__": {},
+        tensor_name: {
+            "dtype": "F32",
+            "shape": list(k_proj_shape),
+            "data_offsets": [0, byte_size],
+        },
+    }
+    header_bytes = json.dumps(header_obj).encode()
+    with open(path, "wb") as f:
+        f.write(struct.pack("<Q", len(header_bytes)))
+        f.write(header_bytes)
+        # Write placeholder zeros for the tensor data.
+        f.write(b"\x00" * byte_size)
 
 
 class TestMistralNeMo(ExtTestCase):
@@ -242,6 +266,121 @@ class TestMistralNeMo(ExtTestCase):
         self.assertEqual(stub.input_shapes["past_key_values.value"][3], 128)
         self.assertEqual(stub.output_shapes["present.key"][3], 128)
         self.assertEqual(stub.output_shapes["present.value"][3], 128)
+
+    def test_fix_config_head_dim_patches_wrong_head_dim(self):
+        """
+        Verify that ``_fix_config_head_dim`` reads k_proj shape from the
+        safetensors header and patches ``config.head_dim`` when the default
+        (hidden_size // num_attention_heads) is wrong.
+
+        The real Mistral-NeMo has num_kv_heads=8 and head_dim=128 but
+        hidden_size/num_attention_heads=160.  This test simulates that
+        situation using a hand-crafted safetensors header file so that
+        no model download is required.
+        """
+
+        class _MockConfig:
+            num_attention_heads = 32
+            num_key_value_heads = 8
+            hidden_size = 5120
+            head_dim = 160  # wrong default: 5120 // 32
+            _name_or_path = ""  # overridden below
+
+        config = _MockConfig()
+
+        with tempfile.TemporaryDirectory() as model_dir:
+            config._name_or_path = model_dir
+
+            # k_proj.weight shape: [num_kv_heads * head_dim, hidden_size]
+            #                    = [8 * 128, 5120] = [1024, 5120]
+            sf_path = os.path.join(model_dir, "model.safetensors")
+            _write_fake_safetensors(sf_path, (1024, 5120))
+
+            _fix_config_head_dim(config, cache_dir=None)
+
+        self.assertEqual(config.head_dim, 128)
+
+    def test_fix_config_head_dim_no_op_when_correct(self):
+        """
+        Verify that ``_fix_config_head_dim`` does not modify ``config.head_dim``
+        when it already matches the safetensors k_proj weight shape.
+        """
+
+        class _MockConfig:
+            num_attention_heads = 8
+            num_key_value_heads = 4
+            hidden_size = 512
+            head_dim = 64  # correct: 512 // 8
+            _name_or_path = ""
+
+        config = _MockConfig()
+
+        with tempfile.TemporaryDirectory() as model_dir:
+            config._name_or_path = model_dir
+            # k_proj.weight shape: [4 * 64, 512] = [256, 512]
+            sf_path = os.path.join(model_dir, "model.safetensors")
+            _write_fake_safetensors(sf_path, (256, 512))
+
+            _fix_config_head_dim(config, cache_dir=None)
+
+        self.assertEqual(config.head_dim, 64)
+
+    def test_fix_config_head_dim_no_crash_without_safetensors(self):
+        """
+        Verify that ``_fix_config_head_dim`` silently does nothing when no
+        safetensors file is present (best-effort, no exception).
+        """
+
+        class _MockConfig:
+            num_attention_heads = 32
+            num_key_value_heads = 8
+            hidden_size = 5120
+            head_dim = 160
+            _name_or_path = ""
+
+        config = _MockConfig()
+        with tempfile.TemporaryDirectory() as empty_dir:
+            config._name_or_path = empty_dir
+            _fix_config_head_dim(config, cache_dir=None)  # must not raise
+
+        self.assertEqual(config.head_dim, 160)  # unchanged
+
+    def test_fix_config_head_dim_sharded_model(self):
+        """
+        Verify that ``_fix_config_head_dim`` correctly reads the right shard
+        when the model is stored as multiple safetensors files described by a
+        ``model.safetensors.index.json``.
+        """
+
+        class _MockConfig:
+            num_attention_heads = 32
+            num_key_value_heads = 8
+            hidden_size = 5120
+            head_dim = 160
+            _name_or_path = ""
+
+        config = _MockConfig()
+
+        with tempfile.TemporaryDirectory() as model_dir:
+            config._name_or_path = model_dir
+
+            shard_name = "model-00001-of-00005.safetensors"
+            sf_path = os.path.join(model_dir, shard_name)
+            _write_fake_safetensors(sf_path, (1024, 5120))
+
+            # Write index file that maps k_proj to the shard.
+            index = {
+                "metadata": {"total_size": 1},
+                "weight_map": {
+                    "model.layers.0.self_attn.k_proj.weight": shard_name,
+                },
+            }
+            with open(os.path.join(model_dir, "model.safetensors.index.json"), "w") as f:
+                json.dump(index, f)
+
+            _fix_config_head_dim(config, cache_dir=None)
+
+        self.assertEqual(config.head_dim, 128)
 
 
 if __name__ == "__main__":

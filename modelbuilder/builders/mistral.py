@@ -3,6 +3,10 @@
 # Licensed under the MIT License.  See License.txt in the project root for
 # license information.
 # --------------------------------------------------------------------------
+import json
+import os
+import struct
+
 from .base import Model
 
 
@@ -13,28 +17,26 @@ class MistralModel(Model):
 
 class MistralNeMoModel(MistralModel):
     def __init__(self, config, io_dtype, onnx_dtype, ep, cache_dir, extra_options):
+        # Mistral-NeMo uses head_dim=128 even though
+        # hidden_size / num_attention_heads = 160.  When the model's config.json
+        # omits ``head_dim``, transformers defaults it to 160 (wrong).
+        #
+        # Fix config.head_dim BEFORE calling super().__init__() so that
+        # self.head_size, self.input_shapes, and self.output_shapes are all
+        # derived from the correct value from the very start.  This covers
+        # every code path — including ``config_only=True`` — where
+        # make_model() is never called.
+        _fix_config_head_dim(config, cache_dir)
         super().__init__(config, io_dtype, onnx_dtype, ep, cache_dir, extra_options)
 
     def make_model(self, input_path):
-        # Mistral-Nemo-Instruct uses head_dim=128 even though
-        # hidden_size / num_attention_heads = 160.  When the model config.json
-        # does not carry an explicit ``head_dim`` field the base class falls
-        # back to the division and produces the wrong value (160).
-        #
-        # CRITICAL: self.input_shapes and self.output_shapes are built inside
-        # Model.__init__ with the INTEGER value of self.head_size baked into
-        # the KV-cache shape lists at construction time.  make_inputs_and_outputs()
-        # reads those pre-built lists, so updating self.head_size alone after
-        # __init__ is NOT enough — the cached shape lists must also be patched.
-        #
-        # Strategy: pre-load the weights here (which handles all cases –
-        # local directories, HuggingFace downloads via model_name_or_path,
-        # etc.), inspect the K-projection weight to get the real head_dim,
-        # fix self.head_size if needed, also patch self.input_shapes and
-        # self.output_shapes, then store the loaded model in
-        # ``_preloaded_weights``.  The ``load_weights`` override below
-        # returns the cached model on the next call so the weights are only
-        # loaded once.
+        # Fallback for models not yet downloaded locally: self.head_size may
+        # still be wrong (160) if _fix_config_head_dim() could not find a
+        # local safetensors file.  Pre-load the weights here to get the real
+        # head_dim from the k_proj weight, then patch self.head_size and the
+        # KV-cache shape lists before super().make_model() calls
+        # make_inputs_and_outputs().  The load_weights() override below
+        # returns the cached model so the weights are loaded only once.
         try:
             self._preloaded_weights = self.load_weights(input_path)
             for module in self._preloaded_weights.modules():
@@ -48,21 +50,13 @@ class MistralNeMoModel(MistralModel):
                 actual_head_size = weight.shape[0] // self.num_kv_heads
                 if actual_head_size != self.head_size:
                     self.head_size = actual_head_size
-                    # Patch the KV-cache shape lists that were baked into
-                    # self.input_shapes / self.output_shapes at __init__ time.
-                    # Each shape list is [batch, num_kv_heads, seq, head_size]
-                    # so head_size is always the last element (index 3).
+                    # Patch the KV-cache shape lists baked in by __init__.
+                    # Each list is [batch, num_kv_heads, seq, head_size].
                     for key in ("past_key_values.key", "past_key_values.value"):
                         self.input_shapes[key][3] = actual_head_size
                     for key in ("present.key", "present.value"):
                         self.output_shapes[key][3] = actual_head_size
                 break
-        # The pre-load is best-effort: if it fails for any reason (missing
-        # files, unsupported model format, network error, attribute not found,
-        # etc.) we clean up and let the base make_model proceed.  The base
-        # make_model will re-attempt the load and may raise its own error with
-        # a clearer message.  Note that Exception does not catch
-        # KeyboardInterrupt or SystemExit.
         except Exception:  # noqa: BLE001
             if hasattr(self, "_preloaded_weights"):
                 del self._preloaded_weights
@@ -70,11 +64,84 @@ class MistralNeMoModel(MistralModel):
         super().make_model(input_path)
 
     def load_weights(self, input_path):
-        # Return the pre-loaded model when available so that the full model
-        # is loaded only once (the pre-load in make_model plus this call from
-        # base.make_model would otherwise load it twice).
+        # Return the pre-loaded model cached by make_model() so the full
+        # model is loaded only once.
         if hasattr(self, "_preloaded_weights"):
             weights = self._preloaded_weights
             del self._preloaded_weights
             return weights
         return super().load_weights(input_path)
+
+
+def _fix_config_head_dim(config, cache_dir):
+    """
+    Read the k_proj weight shape from the safetensors header (a few KB,
+    no tensor data) and patch ``config.head_dim`` to the actual value.
+
+    This is a best-effort operation: any failure is silently ignored and
+    the caller proceeds with the config-derived head_dim.
+    """
+    try:
+        num_kv_heads = (
+            config.num_key_value_heads
+            if hasattr(config, "num_key_value_heads")
+            else config.num_attention_heads
+        )
+        current_head_dim = (
+            config.head_dim
+            if hasattr(config, "head_dim") and config.head_dim is not None
+            else config.hidden_size // config.num_attention_heads
+        )
+
+        # Locate the model directory.
+        model_path = config._name_or_path
+        if not os.path.isdir(model_path):
+            # Not a local directory — try the HuggingFace Hub cache.
+            try:
+                from huggingface_hub import snapshot_download
+
+                model_path = snapshot_download(
+                    model_path,
+                    cache_dir=cache_dir,
+                    local_files_only=True,
+                )
+            except Exception:  # noqa: BLE001
+                return
+
+        # Find the shard that contains the k_proj weight.
+        index_file = os.path.join(model_path, "model.safetensors.index.json")
+        if os.path.exists(index_file):
+            with open(index_file) as f:
+                index = json.load(f)
+            weight_map = index.get("weight_map", {})
+            sf_basename = next(
+                (weight_map[k] for k in weight_map if "k_proj.weight" in k),
+                None,
+            )
+            if sf_basename is None:
+                return
+            sf_path = os.path.join(model_path, sf_basename)
+        else:
+            sf_path = os.path.join(model_path, "model.safetensors")
+
+        if not os.path.exists(sf_path):
+            return
+
+        # Read only the JSON header of the safetensors file (shape metadata).
+        # Format: 8-byte LE uint64 giving the header length, then JSON bytes.
+        with open(sf_path, "rb") as f:
+            header_size = struct.unpack("<Q", f.read(8))[0]
+            header = json.loads(f.read(header_size))
+
+        k_proj_key = next((k for k in header if "k_proj.weight" in k), None)
+        if k_proj_key is None:
+            return
+
+        shape = header[k_proj_key]["shape"]
+        actual_head_dim = shape[0] // num_kv_heads
+
+        if actual_head_dim != current_head_dim:
+            config.head_dim = actual_head_dim
+
+    except Exception:  # noqa: BLE001
+        pass
