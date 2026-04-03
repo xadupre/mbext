@@ -8,7 +8,6 @@ import unittest
 
 import numpy as np
 
-from modelbuilder.builder import create_model
 from modelbuilder.ext_test_case import ExtTestCase
 
 
@@ -24,6 +23,7 @@ class TestTrainedTinyLLM(ExtTestCase):
         * The produced ONNX file passes ``onnx.checker.check_model``.
         """
         import torch
+        from modelbuilder.builder import create_model
         from transformers import AutoConfig, AutoModelForCausalLM
 
         MODEL_NAME = "arnir0/Tiny-LLM"

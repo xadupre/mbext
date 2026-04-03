@@ -8,7 +8,6 @@ import unittest
 
 import numpy as np
 
-from modelbuilder.builder import create_model
 from modelbuilder.ext_test_case import ExtTestCase, long_test
 
 SMOLLM3_MODEL_NAME = "HuggingFaceTB/SmolLM3-3B"
@@ -32,6 +31,7 @@ class TestTrainedSmolLM3(ExtTestCase):
         """
         import torch
         from transformers import AutoConfig, AutoModelForCausalLM
+        from modelbuilder.builder import create_model
 
         # Use 4 layers so that both rope (layers 0-2) and no-rope (layer 3)
         # code paths are exercised with the default no_rope_layer_interval=4.
