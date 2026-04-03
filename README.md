@@ -25,5 +25,5 @@ python tests/trained/test_trained_tiny_llm.py
 With a better machine:
 
 ```bash
-pytest tests/trained
+LONGTEST=1 pytest tests/trained
 ```
