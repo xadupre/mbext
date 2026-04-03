@@ -149,27 +149,18 @@ class TestMistralNeMo(ExtTestCase):
             def __init__(self):  # noqa: D107
                 self.num_kv_heads = 1
                 self.head_size = 128
-                self._parent_called = False
-
-            def load_weights(self, input_path):  # noqa: D102
-                # Delegate to MistralNeMoModel.load_weights (not the stub).
-                return MistralNeMoModel.load_weights(self, input_path)
-
-            def _base_load_weights(self, input_path):
-                self._parent_called = True
-                return None
 
         stub = _Stub()
         stub._preloaded_weights = sentinel
 
-        result = stub.load_weights(None)
+        # Call the MistralNeMoModel.load_weights implementation directly
+        # via super() to test the caching logic in isolation.
+        result = MistralNeMoModel.load_weights(stub, None)
 
         # The cached object must be returned.
         self.assertIs(result, sentinel)
         # _preloaded_weights must be cleared after the first call.
         self.assertFalse(hasattr(stub, "_preloaded_weights"))
-        # The parent loader must NOT have been called.
-        self.assertFalse(stub._parent_called)
 
     def test_mistral_nemo_head_size_inferred_from_loaded_model(self):
         """
@@ -185,7 +176,7 @@ class TestMistralNeMo(ExtTestCase):
         import torch
 
         class _Stub(MistralNeMoModel):
-            """Minimal stub: overrides make_model to expose only the fix logic."""
+            """Minimal stub: overrides load_weights to return a fake model."""
 
             def __init__(self):  # noqa: D107
                 self.num_kv_heads = 1
@@ -193,9 +184,10 @@ class TestMistralNeMo(ExtTestCase):
 
             def load_weights(self, input_path):  # noqa: D102
                 if hasattr(self, "_preloaded_weights"):
-                    return MistralNeMoModel.load_weights(self, input_path)
-                # Simulate a model with k_proj.weight shape [128, 320]
-                # (head_dim=128, hidden_size=320).
+                    # Second call (from base make_model): return cache.
+                    return super().load_weights(input_path)
+                # First call (pre-load): return a fake model with the correct
+                # k_proj weight shape for head_dim=128.
 
                 class _KProj:
                     weight = torch.zeros(128, 320)
@@ -208,11 +200,6 @@ class TestMistralNeMo(ExtTestCase):
                         yield _Attn()
 
                 return _FakeModel()
-
-            # Override super().make_model to be a no-op so we only exercise
-            # the head_size-fixing pre-load step.
-            def _super_make_model(self, input_path):
-                pass
 
         stub = _Stub()
         self.assertEqual(stub.head_size, 160)
@@ -231,7 +218,7 @@ class TestMistralNeMo(ExtTestCase):
                 if actual_head_size != stub.head_size:
                     stub.head_size = actual_head_size
                 break
-        except Exception:
+        except Exception:  # noqa: BLE001
             if hasattr(stub, "_preloaded_weights"):
                 del stub._preloaded_weights
 

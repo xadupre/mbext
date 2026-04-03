@@ -47,7 +47,13 @@ class MistralNeMoModel(MistralModel):
                 if actual_head_size != self.head_size:
                     self.head_size = actual_head_size
                 break
-        except Exception:
+        # The pre-load is best-effort: if it fails for any reason (missing
+        # files, unsupported model format, network error, attribute not found,
+        # etc.) we clean up and let the base make_model proceed.  The base
+        # make_model will re-attempt the load and may raise its own error with
+        # a clearer message.  Note that Exception does not catch
+        # KeyboardInterrupt or SystemExit.
+        except Exception:  # noqa: BLE001
             if hasattr(self, "_preloaded_weights"):
                 del self._preloaded_weights
 
