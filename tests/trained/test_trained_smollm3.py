@@ -204,6 +204,10 @@ class TestTrainedSmolLM3(ExtTestCase):
                 experiment="generate",
                 provider="cpu",
                 test="test_trained_smollm3_genai_generate_cuda",
+                expected_text=tokenizer.decode(
+                    pt_tokens[start_sequence:], skip_special_tokens=False
+                ),
+                genai_text=tokenizer.decode(og_tokens, skip_special_tokens=False),
             )
         )
         self.log_results(disc)
@@ -282,10 +286,14 @@ class TestTrainedSmolLM3(ExtTestCase):
                 experiment="generate",
                 provider="cpu",
                 test="test_trained_smollm3_genai_generate_cpu",
+                expected_text=tokenizer.decode(
+                    pt_tokens[start_sequence:], skip_special_tokens=False
+                ),
+                genai_text=tokenizer.decode(og_tokens, skip_special_tokens=False),
             )
         )
         self.log_results(disc)
-        self.assertEqual(pt_tokens, og_tokens)
+        self.assertEqual(pt_tokens[start_sequence:], og_tokens)
 
 
 if __name__ == "__main__":
