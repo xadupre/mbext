@@ -190,6 +190,10 @@ class TestTrainedTinyLLM(ExtTestCase):
                 experiment="generate",
                 provider="cpu",
                 test="test_trained_tiny_llm_genai_generate_cpu",
+                expected_text=tokenizer.decode(
+                    pt_tokens[start_sequence:], skip_special_tokens=False
+                ),
+                genai_text=tokenizer.decode(og_tokens, skip_special_tokens=False),
             )
         )
         self.log_results(disc)

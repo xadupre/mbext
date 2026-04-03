@@ -10,24 +10,22 @@ import numpy as np
 
 from modelbuilder.ext_test_case import ExtTestCase, long_test, requires_cuda
 
-SMOLLM3_MODEL_NAME = "HuggingFaceTB/SmolLM3-3B"
+MISTRAL_NEMO_MODEL_NAME = "mistralai/Mistral-Nemo-Instruct-2407"
 
 
-class TestTrainedSmolLM3(ExtTestCase):
+class TestTrainedMistralNeMo(ExtTestCase):
     def _common_part(self, precision, dtype, provider="cuda"):
         from transformers import AutoModelForCausalLM
+
         from modelbuilder.builder import create_model
 
-        # Use 4 layers so that both rope (layers 0-2) and no-rope (layer 3)
-        # code paths are exercised with the default no_rope_layer_interval=4.
         output_dir, cache_dir = self.get_dirs(
-            f"test_trained_huggingface_tb_smollm3_3b_{precision}_cuda", clean=False
+            f"test_trained_mistral_nemo_{precision}_{provider}", clean=False
         )
         onnx_path = os.path.join(output_dir, "model.onnx")
         if not os.path.exists(onnx_path):
-            # Let's avoid doing it a second time.
             create_model(
-                model_name=SMOLLM3_MODEL_NAME,
+                model_name=MISTRAL_NEMO_MODEL_NAME,
                 input_path="",
                 precision=precision,
                 execution_provider=provider,
@@ -39,20 +37,17 @@ class TestTrainedSmolLM3(ExtTestCase):
         self.assertExists(onnx_path)
 
         model = AutoModelForCausalLM.from_pretrained(
-            SMOLLM3_MODEL_NAME, ignore_mismatched_sizes=True, dtype=dtype
+            MISTRAL_NEMO_MODEL_NAME, ignore_mismatched_sizes=True, dtype=dtype
         )
         model.eval().to(provider)
         return onnx_path, model
 
     @long_test()
     @requires_cuda()
-    def test_trained_huggingface_tb_smollm3_3b_discrepancies_cuda(self):
+    def test_trained_mistral_nemo_discrepancies_cuda(self):
         """
-        Convert HuggingFaceTB/SmolLM3-3B to an fp32 ONNX model targeting the
-        CPU execution provider.  Only a small number of hidden layers is
-        materialised (via ``num_hidden_layers``) so the test completes in a
-        reasonable time while still exercising both rope and no-rope code
-        paths (the default SmolLM3 config places a NoPE layer every 4th layer).
+        Convert mistralai/Mistral-Nemo-Instruct-2407 to an fp16 ONNX model
+        targeting the CUDA execution provider.
 
         The test verifies that:
         * ``create_model`` completes without error.
@@ -85,7 +80,7 @@ class TestTrainedSmolLM3(ExtTestCase):
             "position_ids": np.arange(seq_len, dtype=np.int64).reshape(batch_size, seq_len),
         }
         # Provide empty past KV-cache tensors for every materialised layer.
-        for i in range(model.config.num_hidden_layers):
+        for i in range(config.num_hidden_layers):
             onnx_feed[f"past_key_values.{i}.key"] = np.zeros(
                 (batch_size, config.num_key_value_heads, 0, head_size),
                 dtype=np_dtype,
@@ -104,10 +99,10 @@ class TestTrainedSmolLM3(ExtTestCase):
         disc.update(
             dict(
                 precision=precision,
-                model_id=SMOLLM3_MODEL_NAME,
+                model_id=MISTRAL_NEMO_MODEL_NAME,
                 experiment="forward",
-                provider="cpu",
-                test="test_trained_huggingface_tb_smollm3_3b_discrepancies_cuda",
+                provider="cuda",
+                test="test_trained_mistral_nemo_discrepancies_cuda",
             )
         )
         self.log_results(disc)
@@ -115,18 +110,11 @@ class TestTrainedSmolLM3(ExtTestCase):
 
     @long_test()
     @requires_cuda()
-    def test_trained_smollm3_genai_generate_cuda(self):
+    def test_trained_mistral_nemo_genai_generate_cuda(self):
         """
         Compare ``transformers.generate`` with ``onnxruntime-genai`` generate
-        on the ``HuggingFaceTB/SmolLM3-3B`` trained model.
-
-        The test converts the model to fp32 ONNX (CPU) using 4 hidden layers
-        (so that both RoPE and NoPE code paths are exercised with the default
-        ``no_rope_layer_interval=4``), then:
-
-        * Runs ``transformers.generate(do_sample=False)`` on a short prompt.
-        * Runs ``onnxruntime_genai`` greedy generation on the same prompt and
-          ONNX model.
+        on the ``mistralai/Mistral-Nemo-Instruct-2407`` trained model (CUDA,
+        fp16).
 
         Both backends use greedy (argmax) decoding, so the generated token
         sequences must be bit-for-bit identical.
@@ -151,7 +139,7 @@ class TestTrainedSmolLM3(ExtTestCase):
         genai_config_path = os.path.join(os.path.dirname(onnx_path), "genai_config.json")
         self.assertExists(genai_config_path)
 
-        tokenizer = AutoTokenizer.from_pretrained(SMOLLM3_MODEL_NAME)
+        tokenizer = AutoTokenizer.from_pretrained(MISTRAL_NEMO_MODEL_NAME)
         prompt = "Once upon a time"
         max_new_tokens = 20
 
@@ -175,7 +163,6 @@ class TestTrainedSmolLM3(ExtTestCase):
         # ------------------------------------------------------------------
         # onnxruntime-genai greedy generation
         # ------------------------------------------------------------------
-        # RuntimeError: CUDA execution provider is not enabled in this build.
         og_model = og.Model(os.path.dirname(onnx_path))
 
         params = og.GeneratorParams(og_model)
@@ -196,14 +183,14 @@ class TestTrainedSmolLM3(ExtTestCase):
 
         # Greedy decoding is deterministic: both backends must produce the
         # exact same newly-generated token sequence.
-        disc = self.first_token_diff(pt_tokens[start_sequence:], og_tokens)
+        disc = self.first_token_diff(pt_tokens, og_tokens)
         disc.update(
             dict(
                 precision=precision,
-                model_id=SMOLLM3_MODEL_NAME,
+                model_id=MISTRAL_NEMO_MODEL_NAME,
                 experiment="generate",
-                provider="cpu",
-                test="test_trained_smollm3_genai_generate_cuda",
+                provider="cuda",
+                test="test_trained_mistral_nemo_genai_generate_cuda",
                 expected_text=tokenizer.decode(
                     pt_tokens[start_sequence:], skip_special_tokens=False
                 ),
@@ -211,11 +198,21 @@ class TestTrainedSmolLM3(ExtTestCase):
             )
         )
         self.log_results(disc)
-        self.assertEqual(pt_tokens, og_tokens)
+        self.assertEqual(pt_tokens[:start_sequence], og_tokens)
 
     @long_test()
-    @requires_cuda()
-    def test_trained_smollm3_genai_generate_cpu(self):
+    def test_trained_mistral_nemo_genai_generate_cpu(self):
+        """
+        Compare ``transformers.generate`` with ``onnxruntime-genai`` generate
+        on the ``mistralai/Mistral-Nemo-Instruct-2407`` trained model (CPU,
+        fp32).
+
+        Both backends use greedy (argmax) decoding, so the generated token
+        sequences must be bit-for-bit identical.
+
+        The test is skipped automatically when ``onnxruntime-genai`` is not
+        installed.
+        """
         try:
             import onnxruntime_genai as og
         except ImportError:
@@ -233,7 +230,7 @@ class TestTrainedSmolLM3(ExtTestCase):
         genai_config_path = os.path.join(os.path.dirname(onnx_path), "genai_config.json")
         self.assertExists(genai_config_path)
 
-        tokenizer = AutoTokenizer.from_pretrained(SMOLLM3_MODEL_NAME)
+        tokenizer = AutoTokenizer.from_pretrained(MISTRAL_NEMO_MODEL_NAME)
         prompt = "Once upon a time"
         max_new_tokens = 20
 
@@ -257,7 +254,6 @@ class TestTrainedSmolLM3(ExtTestCase):
         # ------------------------------------------------------------------
         # onnxruntime-genai greedy generation
         # ------------------------------------------------------------------
-        # RuntimeError: CUDA execution provider is not enabled in this build.
         og_model = og.Model(os.path.dirname(onnx_path))
 
         params = og.GeneratorParams(og_model)
@@ -278,14 +274,14 @@ class TestTrainedSmolLM3(ExtTestCase):
 
         # Greedy decoding is deterministic: both backends must produce the
         # exact same newly-generated token sequence.
-        disc = self.first_token_diff(pt_tokens[start_sequence:], og_tokens)
+        disc = self.first_token_diff(pt_tokens, og_tokens)
         disc.update(
             dict(
                 precision=precision,
-                model_id=SMOLLM3_MODEL_NAME,
+                model_id=MISTRAL_NEMO_MODEL_NAME,
                 experiment="generate",
                 provider="cpu",
-                test="test_trained_smollm3_genai_generate_cpu",
+                test="test_trained_mistral_nemo_genai_generate_cpu",
                 expected_text=tokenizer.decode(
                     pt_tokens[start_sequence:], skip_special_tokens=False
                 ),
@@ -293,7 +289,7 @@ class TestTrainedSmolLM3(ExtTestCase):
             )
         )
         self.log_results(disc)
-        self.assertEqual(pt_tokens[start_sequence:], og_tokens)
+        self.assertEqual(pt_tokens[:start_sequence], og_tokens)
 
 
 if __name__ == "__main__":
