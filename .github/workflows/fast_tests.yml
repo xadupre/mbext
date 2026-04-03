@@ -1,0 +1,45 @@
+name: Fast Tests
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    name: ci (${{ matrix.os }}, py${{ matrix.python-version }}, torch-${{ matrix.torch-version || 'stable' }}, transformers-${{ matrix.transformers-version || 'latest' }})
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        os: ["ubuntu-latest"]
+        python-version: ["3.13"]
+        transformers-version: ["4.57", "5.5"]
+        torch-version: ["2.10"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      # we install torch first to avoid downloading any CUDA dependency
+
+      - name: Install nightly pytorch
+        if: matrix.torch-version == 'nightly'
+        run: pip install --pre --upgrade torch torchvision torchaudio --index-url https://download.pytorch.org/whl/nightly/cpu
+
+      - name: Install pytorch 2.10 (Linux/Windows)
+        if: matrix.torch-version == '2.10' && matrix.os != 'macos-latest'
+        run: pip install torch==2.10.0+cpu torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
+
+      - name: Install dependencies
+        run: pip install -e ".[dev]" torch transformers tokenizers
+
+      - name: Run fast tests
+        run: pytest tests/fast -v
