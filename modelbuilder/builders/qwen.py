@@ -239,9 +239,7 @@ class Qwen25VLTextModel(Model):
         # MatMul: [3, B, H/2, 1] @ [3, B, 1, S] -> [3, B, H/2, S]
         matmul_name = f"{basename}/freqs/MatMul"
         matmul_output = f"{matmul_name}/output_0"
-        self.make_node(
-            "MatMul", [expand_output, cast_output], [matmul_output], name=matmul_name
-        )
+        self.make_node("MatMul", [expand_output, cast_output], [matmul_output], name=matmul_name)
         self.make_value(
             matmul_output,
             ir.DataType.FLOAT,
@@ -448,9 +446,7 @@ class Qwen25VLTextModel(Model):
 
         # 1. Prepare flattened MRoPE caches [B*S, H/2]
         #    This slices, splits, and re-assembles the 3D dynamic caches into the correct per-token layout.
-        flat_cos, flat_sin = self.make_mrope_flattened_caches(
-            layer_id, dyn_cos, dyn_sin
-        )
+        flat_cos, flat_sin = self.make_mrope_flattened_caches(layer_id, dyn_cos, dyn_sin)
 
         # 2. Prepare position_ids [B, S] (values 0 to B*S - 1)
         #    RotaryEmbedding will use these indices to access the flattened cache.
@@ -482,9 +478,7 @@ class Qwen25VLTextModel(Model):
         # Calculate Total Tokens = B * S
         mul_len_node = f"{basename}/TotalLen/Mul"
         mul_len_out = f"{mul_len_node}/output_0"
-        self.make_mul(
-            mul_len_node, [batch_size_out, seq_len_out], ir.DataType.INT64, []
-        )
+        self.make_mul(mul_len_node, [batch_size_out, seq_len_out], ir.DataType.INT64, [])
         mul_len_out = f"{mul_len_node}/output_0"
 
         # Range(0, TotalTokens)
@@ -558,9 +552,7 @@ class Qwen25VLTextModel(Model):
         if force_fp32 and self.io_dtype != ir.DataType.FLOAT:
             cast_in_node = f"{basename}/Input/Cast"
             rope_input = f"{cast_in_node}/output_0"
-            self.make_cast(
-                cast_in_node, transpose_in_out, compute_dtype, target_shape_bnsh
-            )
+            self.make_cast(cast_in_node, transpose_in_out, compute_dtype, target_shape_bnsh)
 
         rope_cos = flat_cos
         rope_sin = flat_sin
@@ -833,9 +825,7 @@ class Qwen3VLTextModel(Qwen25VLTextModel):
                     [],
                     [pout],
                     name=pname,
-                    value=ir.tensor(
-                        torch.tensor(positions, dtype=torch.int64), name=pout
-                    ),
+                    value=ir.tensor(torch.tensor(positions, dtype=torch.int64), name=pout),
                 )
                 self.make_value(pout, ir.DataType.INT64, [len(positions)])
                 positions_outputs[dim_idx] = pout
@@ -848,9 +838,7 @@ class Qwen3VLTextModel(Qwen25VLTextModel):
                 [],
                 [rout],
                 name=rname,
-                value=ir.tensor(
-                    torch.tensor(reorder_indices, dtype=torch.int64), name=rout
-                ),
+                value=ir.tensor(torch.tensor(reorder_indices, dtype=torch.int64), name=rout),
             )
             self.make_value(rout, ir.DataType.INT64, [half_head])
 
@@ -908,9 +896,7 @@ class Qwen3VLTextModel(Qwen25VLTextModel):
                 )
 
                 # Gather specific positions (reuse shared constant node)
-                gather_pos_name = (
-                    f"{basename}/{name_suffix}/dim{dim_idx}/Positions/Gather"
-                )
+                gather_pos_name = f"{basename}/{name_suffix}/dim{dim_idx}/Positions/Gather"
                 self.make_gather(
                     gather_pos_name,
                     [squeeze_dim_output, positions_outputs[dim_idx]],
@@ -1011,9 +997,7 @@ class Qwen35TextModel(Model):
             if "rope_theta" in config.rope_scaling:
                 config.rope_theta = config.rope_scaling["rope_theta"]
             if "partial_rotary_factor" in config.rope_scaling:
-                config.partial_rotary_factor = config.rope_scaling[
-                    "partial_rotary_factor"
-                ]
+                config.partial_rotary_factor = config.rope_scaling["partial_rotary_factor"]
 
         super().__init__(config, io_dtype, onnx_dtype, ep, cache_dir, extra_options)
 
@@ -1046,9 +1030,7 @@ class Qwen35TextModel(Model):
             raise ValueError(
                 f"Expected 3 MRoPE sections [T, H, W], got {len(self.mrope_sections)}: {self.mrope_sections}"
             )
-        self.mrope_rotary_dim = int(
-            self.rope_attrs["partial_rotary_factor"] * self.head_size
-        )
+        self.mrope_rotary_dim = int(self.rope_attrs["partial_rotary_factor"] * self.head_size)
 
         # Force RoPE computation in float32 for numerical stability
         self.rope_attrs["cast_to_fp32"] = True
@@ -1106,23 +1088,17 @@ class Qwen35TextModel(Model):
                     "in_proj_z",
                     "out_proj",
                 ):
-                    int8_nodes[f"/model/layers.{i}/linear_attn/{proj}/MatMul"] = {
-                        "bits": 8
-                    }
+                    int8_nodes[f"/model/layers.{i}/linear_attn/{proj}/MatMul"] = {"bits": 8}
                 # MLP projections in linear attention layers: INT8
                 for proj in ("gate_proj", "up_proj", "down_proj"):
                     int8_nodes[f"/model/layers.{i}/mlp/{proj}/MatMul"] = {"bits": 8}
 
         if int8_nodes:
             algo_config = self.quant_attrs["int4"].get("algo_config")
-            if algo_config is not None and hasattr(
-                algo_config, "customized_weight_config"
-            ):
+            if algo_config is not None and hasattr(algo_config, "customized_weight_config"):
                 algo_config.customized_weight_config.update(int8_nodes)
             else:
-                algo_config = RTNWeightOnlyQuantConfig(
-                    customized_weight_config=int8_nodes
-                )
+                algo_config = RTNWeightOnlyQuantConfig(customized_weight_config=int8_nodes)
                 self.quant_attrs["int4"]["algo_config"] = algo_config
 
         # Replace standard KV cache I/O with hybrid cache I/O
@@ -1156,9 +1132,7 @@ class Qwen35TextModel(Model):
                 state_dtype = self.io_dtype
 
                 # linear_attention: add conv_state + recurrent_state
-                self.input_names[f"past_state.{i}.conv"] = (
-                    f"past_key_values.{i}.conv_state"
-                )
+                self.input_names[f"past_state.{i}.conv"] = f"past_key_values.{i}.conv_state"
                 self.input_types[f"past_state.{i}.conv"] = state_dtype
                 self.input_shapes[f"past_state.{i}.conv"] = [
                     "batch_size",
@@ -1185,9 +1159,7 @@ class Qwen35TextModel(Model):
                     self.linear_conv_kernel_dim - 1,
                 ]
 
-                self.output_names[f"present_state.{i}.recurrent"] = (
-                    f"present.{i}.recurrent_state"
-                )
+                self.output_names[f"present_state.{i}.recurrent"] = f"present.{i}.recurrent_state"
                 self.output_types[f"present_state.{i}.recurrent"] = state_dtype
                 self.output_shapes[f"present_state.{i}.recurrent"] = [
                     "batch_size",
@@ -1223,9 +1195,7 @@ class Qwen35TextModel(Model):
             simple=self.layernorm_attrs["simple"],
             location="input",
         )
-        self.make_attention(
-            layer_id, attn_module, root_input=self.layernorm_attrs["output_0"]
-        )
+        self.make_attention(layer_id, attn_module, root_input=self.layernorm_attrs["output_0"])
         self.make_layernorm(
             layer_id,
             layer.post_attention_layernorm,
@@ -1437,12 +1407,8 @@ class Qwen35TextModel(Model):
         cos_cache = torch.cos(freqs)
         sin_cache = torch.sin(freqs)
 
-        self.make_initializer(
-            cos_cache, "model.rotary_emb.cos_cache", to=ir.DataType.FLOAT
-        )
-        self.make_initializer(
-            sin_cache, "model.rotary_emb.sin_cache", to=ir.DataType.FLOAT
-        )
+        self.make_initializer(cos_cache, "model.rotary_emb.cos_cache", to=ir.DataType.FLOAT)
+        self.make_initializer(sin_cache, "model.rotary_emb.sin_cache", to=ir.DataType.FLOAT)
 
         # Build interleaving masks
         dim_assignments = [0] * rdim_half
@@ -1457,9 +1423,7 @@ class Qwen35TextModel(Model):
 
         self.make_initializer(h_mask, "model.rotary_emb.h_mask", to=ir.DataType.BOOL)
         self.make_initializer(w_mask, "model.rotary_emb.w_mask", to=ir.DataType.BOOL)
-        print(
-            f"Created rotary caches [{max_len}, {rdim_half}] + h/w masks [{rdim_half}]."
-        )
+        print(f"Created rotary caches [{max_len}, {rdim_half}] + h/w masks [{rdim_half}].")
 
     def _get_shared_q_scale(self, head_dim):
         """Return the name of a shared 1/sqrt(head_dim) constant (created once)."""
@@ -1586,15 +1550,11 @@ class Qwen35TextModel(Model):
         rope_sin = flat_sin
         if compute_dtype != ir.DataType.FLOAT:
             cos_cast_name = f"{basename}/cos/Cast"
-            self.make_cast(
-                cos_cast_name, flat_cos, compute_dtype, ["batch_seq", rdim_half]
-            )
+            self.make_cast(cos_cast_name, flat_cos, compute_dtype, ["batch_seq", rdim_half])
             rope_cos = f"{cos_cast_name}/output_0"
 
             sin_cast_name = f"{basename}/sin/Cast"
-            self.make_cast(
-                sin_cast_name, flat_sin, compute_dtype, ["batch_seq", rdim_half]
-            )
+            self.make_cast(sin_cast_name, flat_sin, compute_dtype, ["batch_seq", rdim_half])
             rope_sin = f"{sin_cast_name}/output_0"
 
         # --- Build synthetic position_ids [B, S] = Range(0, B*S).reshape(B, S) ---
@@ -1660,11 +1620,7 @@ class Qwen35TextModel(Model):
         pos_ids = f"{pos_ids_name}/output_0"
 
         # --- Reshape Q/K to [B, N, S, H] for com.microsoft.RotaryEmbedding ---
-        head_size = (
-            qk_shape[-1] // num_heads
-            if isinstance(qk_shape[-1], int)
-            else self.head_size
-        )
+        head_size = qk_shape[-1] // num_heads if isinstance(qk_shape[-1], int) else self.head_size
         bnsh_shape = ["batch_size", num_heads, "sequence_length", head_size]
 
         reshape_in_name = f"{basename}/reshape_in/Reshape"
@@ -1862,9 +1818,7 @@ class Qwen35TextModel(Model):
         )
 
         conv_weight_name = f"model.layers.{layer_id}.linear_attn.conv1d.weight"
-        self.make_initializer(
-            linear_attn.conv1d.weight, conv_weight_name, to=self.io_dtype
-        )
+        self.make_initializer(linear_attn.conv1d.weight, conv_weight_name, to=self.io_dtype)
 
         return z_name, b_name, a_name, qkv_t_output, conv_weight_name
 
@@ -1910,12 +1864,8 @@ class Qwen35TextModel(Model):
         self.make_value(v_out, self.io_dtype, ["batch_size", "sequence_length", v_dim])
 
         # Per-head L2 normalize Q and K
-        q_norm_out = self._make_per_head_l2_normalize(
-            f"{basename}/q_l2norm", q_out, n_k, hk
-        )
-        k_norm_out = self._make_per_head_l2_normalize(
-            f"{basename}/k_l2norm", k_out, n_k, hk
-        )
+        q_norm_out = self._make_per_head_l2_normalize(f"{basename}/q_l2norm", q_out, n_k, hk)
+        k_norm_out = self._make_per_head_l2_normalize(f"{basename}/k_l2norm", k_out, n_k, hk)
 
         # Scale Q by 1/sqrt(head_k_dim)
         scale_name = self._get_shared_q_scale(hk)
@@ -2100,9 +2050,7 @@ class Qwen35TextModel(Model):
 
         # x * rsqrt(sum(x^2) + eps)
         rsqrt_name = f"{basename}/Rsqrt"
-        self.make_rsqrt(
-            rsqrt_name, [f"{add_eps_name}/output_0"], self.io_dtype, reduced_shape
-        )
+        self.make_rsqrt(rsqrt_name, [f"{add_eps_name}/output_0"], self.io_dtype, reduced_shape)
 
         norm_name = f"{basename}/Normalize/Mul"
         self.make_mul(
@@ -2111,9 +2059,7 @@ class Qwen35TextModel(Model):
 
         return f"{norm_name}/output_0"
 
-    def _make_gated_rms_norm(
-        self, basename, input_name, gate_name, norm_module, layer_id
-    ):
+    def _make_gated_rms_norm(self, basename, input_name, gate_name, norm_module, layer_id):
         """Gated RMSNorm: RMSNorm(x) * SiLU(z).
 
         The norm weight is per-head (shape [head_v_dim]).
@@ -2151,9 +2097,7 @@ class Qwen35TextModel(Model):
             axis=-1,
             stash_type=1,
         )
-        self.make_value(
-            norm_output, self.io_dtype, ["batch_size", "sequence_length", nv, hv]
-        )
+        self.make_value(norm_output, self.io_dtype, ["batch_size", "sequence_length", nv, hv])
 
         # Reshape back to [B, S, v_dim]
         unflat_name = f"{basename}/norm_unflat/Reshape"

@@ -65,9 +65,7 @@ class TestMistralNeMo(ExtTestCase):
         )
 
         model_dir = self.get_model_dir("test_mistral_nemo_fp32_cpu_random_weights")
-        output_dir, cache_dir = self.get_dirs(
-            "test_mistral_nemo_fp32_cpu_random_weights"
-        )
+        output_dir, cache_dir = self.get_dirs("test_mistral_nemo_fp32_cpu_random_weights")
 
         model = AutoModelForCausalLM.from_config(config)
         model.eval()
@@ -109,9 +107,7 @@ class TestMistralNeMo(ExtTestCase):
         onnx_feed = {
             "input_ids": input_ids.numpy().astype(np.int64),
             "attention_mask": np.ones((batch_size, seq_len), dtype=np.int64),
-            "position_ids": np.arange(seq_len, dtype=np.int64).reshape(
-                batch_size, seq_len
-            ),
+            "position_ids": np.arange(seq_len, dtype=np.int64).reshape(batch_size, seq_len),
         }
         # Provide empty past KV-cache tensors for every materialised layer.
         for i in range(num_hidden_layers):

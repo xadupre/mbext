@@ -142,9 +142,7 @@ def parse_hf_token(hf_token):
 
 def set_io_dtype(precision, execution_provider, extra_options) -> ir.DataType:
     int4_cpu = precision == "int4" and execution_provider == "cpu"
-    fp32_webgpu = execution_provider == "webgpu" and extra_options.get(
-        "use_webgpu_fp32", False
-    )
+    fp32_webgpu = execution_provider == "webgpu" and extra_options.get("use_webgpu_fp32", False)
     bf16_cuda = (
         precision == "int4"
         and execution_provider in {"cuda", "trt-rtx"}

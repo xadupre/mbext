@@ -52,9 +52,7 @@ class TestOLMo3(ExtTestCase):
             vocab_size=50304,
         )
 
-        model_dir = self.get_model_dir(
-            "test_olmo3_fp32_cpu_random_weights", clean=False
-        )
+        model_dir = self.get_model_dir("test_olmo3_fp32_cpu_random_weights", clean=False)
         model = AutoModelForCausalLM.from_config(config)
         model.save_pretrained(model_dir)
 
@@ -67,9 +65,7 @@ class TestOLMo3(ExtTestCase):
         )
         tokenizer.save_pretrained(model_dir)
 
-        output_dir, cache_dir = self.get_dirs(
-            "test_olmo3_fp32_cpu_random_weights", clean=False
-        )
+        output_dir, cache_dir = self.get_dirs("test_olmo3_fp32_cpu_random_weights", clean=False)
 
         create_model(
             model_name=MODEL_NAME,
@@ -97,9 +93,7 @@ class TestOLMo3(ExtTestCase):
         onnx_feed = {
             "input_ids": input_ids.numpy().astype(np.int64),
             "attention_mask": np.ones((batch_size, seq_len), dtype=np.int64),
-            "position_ids": np.arange(seq_len, dtype=np.int64).reshape(
-                batch_size, seq_len
-            ),
+            "position_ids": np.arange(seq_len, dtype=np.int64).reshape(batch_size, seq_len),
         }
         # Provide empty past KV-cache tensors for every materialised layer.
         for i in range(num_hidden_layers):

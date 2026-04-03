@@ -58,12 +58,8 @@ class WhisperEncoder(Model):
         # Set output dicts
         self.output_names = {
             "hidden_states": "hidden_states",
-            "present_key_cross": [
-                f"present_key_cross_{i}" for i in range(self.num_layers)
-            ],
-            "present_value_cross": [
-                f"present_value_cross_{i}" for i in range(self.num_layers)
-            ],
+            "present_key_cross": [f"present_key_cross_{i}" for i in range(self.num_layers)],
+            "present_value_cross": [f"present_value_cross_{i}" for i in range(self.num_layers)],
         }
         self.output_types = {
             "hidden_states": self.io_dtype,
@@ -239,9 +235,7 @@ class WhisperEncoder(Model):
             for proj_type in ["k_proj", "v_proj"]:
                 basename = f"/model/layers.{i}/attn/cross/{proj_type}"
                 matmul_name = f"{basename}/MatMul"
-                proj = getattr(
-                    self.weights.model.decoder.layers[i].encoder_attn, proj_type
-                )
+                proj = getattr(self.weights.model.decoder.layers[i].encoder_attn, proj_type)
                 self.make_matmul(
                     proj,
                     matmul_name,
@@ -275,9 +269,7 @@ class WhisperEncoder(Model):
                 )
 
                 transpose_name = f"{basename}/Transpose"
-                output_name = (
-                    f"present_{'key' if proj_type == 'k_proj' else 'value'}_cross_{i}"
-                )
+                output_name = f"present_{'key' if proj_type == 'k_proj' else 'value'}_cross_{i}"
                 self.make_node(
                     "Transpose",
                     inputs=[f"{reshape_name}/output_0"],
@@ -342,9 +334,7 @@ class WhisperDecoder(Model):
             "past_key_self": [f"past_key_self_{i}" for i in range(self.num_layers)],
             "past_value_self": [f"past_value_self_{i}" for i in range(self.num_layers)],
             "past_key_cross": [f"past_key_cross_{i}" for i in range(self.num_layers)],
-            "past_value_cross": [
-                f"past_value_cross_{i}" for i in range(self.num_layers)
-            ],
+            "past_value_cross": [f"past_value_cross_{i}" for i in range(self.num_layers)],
         }
         self.input_types = {
             "input_ids": ir.DataType.INT32,
@@ -385,12 +375,8 @@ class WhisperDecoder(Model):
         self.output_names = {
             "hidden_states": "hidden_states",
             "logits": "logits",
-            "present_key_self": [
-                f"present_key_self_{i}" for i in range(self.num_layers)
-            ],
-            "present_value_self": [
-                f"present_value_self_{i}" for i in range(self.num_layers)
-            ],
+            "present_key_self": [f"present_key_self_{i}" for i in range(self.num_layers)],
+            "present_value_self": [f"present_value_self_{i}" for i in range(self.num_layers)],
         }
         self.output_types = {
             "hidden_states": self.io_dtype,
@@ -620,9 +606,7 @@ class WhisperDecoder(Model):
         #                  O_Add
         #
         q_matmul_basename = f"/model/layers.{layer_id}/cross_attn/q_proj/MatMul"
-        q_matmul_name = self.make_matmul(
-            attention.q_proj, q_matmul_basename, root_input
-        )
+        q_matmul_name = self.make_matmul(attention.q_proj, q_matmul_basename, root_input)
         self.attention_attrs["q_path"] = f"{q_matmul_name}/output_0"
 
         q_add_name = f"/model/layers.{layer_id}/cross_attn/q_proj/Add"
@@ -635,9 +619,7 @@ class WhisperDecoder(Model):
         self.attention_attrs["v_path"] = self.input_names["past_value_cross"][layer_id]
 
         # Make attention node (e.g. MultiHeadAttention, GroupQueryAttention, etc.)
-        attn_name = (
-            f"/model/layers.{layer_id}/cross_attn/{self.attention_attrs['op_type']}"
-        )
+        attn_name = f"/model/layers.{layer_id}/cross_attn/{self.attention_attrs['op_type']}"
         attn_output = f"{attn_name}/output_0"
         self.make_attention_op(
             attn_name,
@@ -654,9 +636,7 @@ class WhisperDecoder(Model):
 
         # Make output projection
         o_matmul_basename = f"/model/layers.{layer_id}/cross_attn/o_proj/MatMul"
-        o_matmul_name = self.make_matmul(
-            attention.out_proj, o_matmul_basename, attn_output
-        )
+        o_matmul_name = self.make_matmul(attention.out_proj, o_matmul_basename, attn_output)
 
         # Make Add node
         o_add_name = f"/model/layers.{layer_id}/cross_attn/o_proj/Add"

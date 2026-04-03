@@ -106,9 +106,7 @@ class TestRandomTinyLLM(ExtTestCase):
         onnx_feed = {
             "input_ids": input_ids.numpy().astype(np.int64),
             "attention_mask": np.ones((batch_size, seq_len), dtype=np.int64),
-            "position_ids": np.arange(seq_len, dtype=np.int64).reshape(
-                batch_size, seq_len
-            ),
+            "position_ids": np.arange(seq_len, dtype=np.int64).reshape(batch_size, seq_len),
         }
         # Provide empty past KV-cache tensors for every materialised layer.
         for i in range(num_hidden_layers):
@@ -225,9 +223,7 @@ class TestRandomTinyLLM(ExtTestCase):
         prefill_feed = {
             "input_ids": input_ids.numpy().astype(np.int64),
             "attention_mask": np.ones((batch_size, seq_len), dtype=np.int64),
-            "position_ids": np.arange(seq_len, dtype=np.int64).reshape(
-                batch_size, seq_len
-            ),
+            "position_ids": np.arange(seq_len, dtype=np.int64).reshape(batch_size, seq_len),
         }
         for i in range(num_hidden_layers):
             prefill_feed[f"past_key_values.{i}.key"] = np.zeros(
@@ -258,12 +254,8 @@ class TestRandomTinyLLM(ExtTestCase):
             "position_ids": np.array([[seq_len]], dtype=np.int64),
         }
         for i in range(num_hidden_layers):
-            decode_feed[f"past_key_values.{i}.key"] = prefill_results[
-                f"present.{i}.key"
-            ]
-            decode_feed[f"past_key_values.{i}.value"] = prefill_results[
-                f"present.{i}.value"
-            ]
+            decode_feed[f"past_key_values.{i}.key"] = prefill_results[f"present.{i}.key"]
+            decode_feed[f"past_key_values.{i}.value"] = prefill_results[f"present.{i}.value"]
         decode_feed = {k: v for k, v in decode_feed.items() if k in onnx_input_names}
 
         decode_outputs = sess.run(None, decode_feed)
@@ -280,9 +272,7 @@ class TestRandomTinyLLM(ExtTestCase):
             pt_decode = model(next_token_tensor, past_key_values=pt_past_kv)
             pt_decode_logits = pt_decode.logits.numpy()
 
-        np.testing.assert_allclose(
-            pt_decode_logits, onnx_decode_logits, atol=1e-3, rtol=1e-3
-        )
+        np.testing.assert_allclose(pt_decode_logits, onnx_decode_logits, atol=1e-3, rtol=1e-3)
 
     @hide_stdout()
     def test_tiny_llm_fp32_cpu_greedy_generation(self):
@@ -330,9 +320,7 @@ class TestRandomTinyLLM(ExtTestCase):
         )
 
         model_dir = self.get_model_dir("test_tiny_llm_fp32_cpu_greedy_generation")
-        output_dir, cache_dir = self.get_dirs(
-            "test_tiny_llm_fp32_cpu_greedy_generation"
-        )
+        output_dir, cache_dir = self.get_dirs("test_tiny_llm_fp32_cpu_greedy_generation")
 
         torch.manual_seed(42)
         model = AutoModelForCausalLM.from_config(config)
@@ -410,18 +398,14 @@ class TestRandomTinyLLM(ExtTestCase):
 
             feed = {
                 "input_ids": current_ids,
-                "attention_mask": np.ones(
-                    (batch_size, past_len + cur_len), dtype=np.int64
+                "attention_mask": np.ones((batch_size, past_len + cur_len), dtype=np.int64),
+                "position_ids": np.arange(past_len, past_len + cur_len, dtype=np.int64).reshape(
+                    batch_size, cur_len
                 ),
-                "position_ids": np.arange(
-                    past_len, past_len + cur_len, dtype=np.int64
-                ).reshape(batch_size, cur_len),
             }
             for i in range(num_hidden_layers):
                 feed[f"past_key_values.{i}.key"] = past_kv[f"past_key_values.{i}.key"]
-                feed[f"past_key_values.{i}.value"] = past_kv[
-                    f"past_key_values.{i}.value"
-                ]
+                feed[f"past_key_values.{i}.value"] = past_kv[f"past_key_values.{i}.value"]
             # Drop any inputs the model does not declare.
             feed = {k: v for k, v in feed.items() if k in input_names}
 
