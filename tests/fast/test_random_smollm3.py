@@ -24,7 +24,7 @@ class TestSmolLM3(ExtTestCase):
         from modelbuilder.builder import create_model
         import torch
 
-        num_hidden_layers = 2
+        num_hidden_layers = 4
 
         # Minimal SmolLM3 config with 4 layers so that both rope and no-rope
         # layers are exercised (no_rope_layers=[1,1,1,0] by default).
@@ -36,7 +36,6 @@ class TestSmolLM3(ExtTestCase):
             num_attention_heads=4,
             num_key_value_heads=2,
             max_position_embeddings=128,
-            rope_theta=10000.0,
             rms_norm_eps=1e-6,
             vocab_size=128256,
             pad_token_id=None,

@@ -550,6 +550,12 @@ class Model:
             del self.output_names["logits"]
 
     def make_rope_init(self, config):
+        # Some models (e.g. SmolLM3) store rope_theta inside rope_scaling
+        # instead of as a top-level config attribute. Override the default theta
+        # if rope_scaling provides one.
+        if "rope_theta" in config.rope_scaling:
+            self.rope_attrs["theta"] = config.rope_scaling["rope_theta"]
+
         if "short_factor" in config.rope_scaling:
             # For models with multiple rotary embedding caches (e.g. Phi-3 mini 128K)
             self.rope_attrs["mscale_policy"] = config.rope_scaling["type"]
@@ -625,12 +631,6 @@ class Model:
             self.rope_attrs["mrope"] = {
                 "sections": config.rope_scaling["mrope_section"],  # Sections for MRoPE
             }
-
-            # Some models (e.g. Qwen3-VL) store rope_theta inside rope_scaling
-            # instead of as a top-level config attribute. Override the default theta
-            # if rope_scaling provides one.
-            if "rope_theta" in config.rope_scaling:
-                self.rope_attrs["theta"] = config.rope_scaling["rope_theta"]
 
     def is_gqa_supported(self) -> bool:
         valid_gqa_configurations = {
