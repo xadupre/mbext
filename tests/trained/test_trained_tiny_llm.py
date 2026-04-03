@@ -13,7 +13,7 @@ from modelbuilder.ext_test_case import ExtTestCase
 
 
 class TestTrainedTinyLLM(ExtTestCase):
-    def test_trined_tiny_llm_fp32_cpu(self):
+    def test_trained_tiny_llm_fp32_cpu(self):
         """
         Convert arnir0/Tiny-LLM to an fp32 ONNX model targeting the CPU execution
         provider.  Only one hidden layer is materialised (via the
@@ -154,7 +154,6 @@ class TestTrainedTinyLLM(ExtTestCase):
         og_model = og.Model(output_dir)
 
         params = og.GeneratorParams(og_model)
-        params.input_ids = inputs["input_ids"].numpy().astype(np.int32)
         params.set_search_options(
             do_sample=False,
             max_length=inputs["input_ids"].shape[1] + max_new_tokens,
@@ -162,8 +161,14 @@ class TestTrainedTinyLLM(ExtTestCase):
             top_k=1,
         )
 
-        og_output = og_model.generate(params)
-        og_tokens = og_output[0].tolist()
+        generator = og.Generator(model, params)
+        generator.append_tokens(inputs["input_ids"])
+
+        og_tokens = []
+        while not generator.is_done():
+            generator.generate_next_token()
+            og_tokens = generator.get_next_tokens()[0]
+            og_tokens.append(int(og_tokens))
 
         # Greedy decoding is deterministic: both backends must produce the
         # exact same token sequence (prompt + all generated tokens).
