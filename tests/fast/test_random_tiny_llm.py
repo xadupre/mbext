@@ -21,18 +21,14 @@ class TestRandomTinyLLM(ExtTestCase):
 
         Using random weights avoids downloading the pretrained weights from
         Hugging Face, making this test completely offline and suitable for CI
-        environments without internet access.  The full 8-layer config is saved
-        locally, but only one hidden layer is materialised during conversion
-        (via the ``num_hidden_layers`` extra option passed to ``create_model``)
+        environments without internet access.  A single hidden layer is used
         to keep the test fast.
 
         The test verifies that:
         * ``create_model`` completes without error when given a local model directory.
         * The expected ``model.onnx`` file is written to the output directory.
         * The produced ONNX file can be loaded by ``onnxruntime``.
-        * The ONNX logits closely match those of a 1-layer PyTorch model loaded
-          from the same checkpoint (same ``num_hidden_layers`` as was passed to
-          ``create_model``).
+        * The ONNX logits closely match those of the original PyTorch model.
         """
         import torch
         from tokenizers import Tokenizer
@@ -44,9 +40,11 @@ class TestRandomTinyLLM(ExtTestCase):
         )
         from modelbuilder.builder import create_model
 
-        # Config matching the arnir0/Tiny-LLM architecture (LlamaForCausalLM,
-        # ~10M parameters). These values are hardcoded so the test runs
-        # completely offline without downloading any files from Hugging Face.
+        # Config matching the arnir0/Tiny-LLM architecture (LlamaForCausalLM)
+        # but with a single hidden layer to keep the test fast.  These values
+        # are hardcoded so the test runs completely offline without downloading
+        # any files from Hugging Face.
+        num_hidden_layers = 1
         config = LlamaConfig(
             architectures=["LlamaForCausalLM"],
             bos_token_id=1,
@@ -57,7 +55,7 @@ class TestRandomTinyLLM(ExtTestCase):
             max_position_embeddings=2048,
             model_type="llama",
             num_attention_heads=8,
-            num_hidden_layers=8,
+            num_hidden_layers=num_hidden_layers,
             num_key_value_heads=4,
             rms_norm_eps=1e-05,
             rope_theta=10000.0,
@@ -95,19 +93,11 @@ class TestRandomTinyLLM(ExtTestCase):
         sess = self.check_ort(onnx_path)
 
         # --- PyTorch inference ---
-        # Load a 1-layer PyTorch model from the same checkpoint so its
-        # architecture matches the 1-layer ONNX model produced by create_model.
-        num_hidden_layers = 1
-        config_1layer = LlamaConfig(**config.to_dict())
-        config_1layer.num_hidden_layers = num_hidden_layers
-        pt_model = AutoModelForCausalLM.from_pretrained(model_dir, config=config_1layer)
-        pt_model.eval()
-
         batch_size = 1
         seq_len = 5
         input_ids = torch.randint(0, config.vocab_size, (batch_size, seq_len))
         with torch.no_grad():
-            pt_logits = pt_model(input_ids).logits.numpy()
+            pt_logits = model(input_ids).logits.numpy()
 
         onnx_input_names = {inp.name for inp in sess.get_inputs()}
 
