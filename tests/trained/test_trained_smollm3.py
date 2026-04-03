@@ -95,6 +95,112 @@ class TestTrainedSmolLM3(ExtTestCase):
 
         np.testing.assert_allclose(pt_logits, onnx_logits, atol=1e-3, rtol=1e-3)
 
+    @long_test()
+    def test_trained_smollm3_genai_generate(self):
+        """
+        Compare ``transformers.generate`` with ``onnxruntime-genai`` generate
+        on the ``HuggingFaceTB/SmolLM3-3B`` trained model.
+
+        The test converts the model to fp32 ONNX (CPU) using 4 hidden layers
+        (so that both RoPE and NoPE code paths are exercised with the default
+        ``no_rope_layer_interval=4``), then:
+
+        * Runs ``transformers.generate(do_sample=False)`` on a short prompt.
+        * Runs ``onnxruntime_genai`` greedy generation on the same prompt and
+          ONNX model.
+
+        Both backends use greedy (argmax) decoding, so the generated token
+        sequences must be bit-for-bit identical.
+
+        The test is skipped automatically when ``onnxruntime-genai`` is not
+        installed.
+        """
+        try:
+            import onnxruntime_genai as og
+        except ImportError:
+            raise unittest.SkipTest(
+                "onnxruntime-genai is not installed; skipping genai comparison test."
+            )
+
+        import torch
+        from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
+
+        from modelbuilder.builder import create_model
+
+        num_hidden_layers = 4
+
+        output_dir, _ = self.get_dirs("test_smollm3_genai_generate")
+        create_model(
+            model_name=SMOLLM3_MODEL_NAME,
+            input_path="",
+            precision="fp32",
+            execution_provider="cpu",
+            output_dir=output_dir,
+            cache_dir=_HF_CACHE_DIR,
+            num_hidden_layers=num_hidden_layers,
+        )
+
+        onnx_path = os.path.join(output_dir, "model.onnx")
+        self.assertExists(onnx_path)
+        genai_config_path = os.path.join(output_dir, "genai_config.json")
+        self.assertExists(genai_config_path)
+
+        # Load the PyTorch model with the same reduced layer count so that its
+        # outputs match those of the truncated ONNX model exactly.
+        config = AutoConfig.from_pretrained(SMOLLM3_MODEL_NAME, cache_dir=_HF_CACHE_DIR)
+        config.num_hidden_layers = num_hidden_layers
+        model = AutoModelForCausalLM.from_pretrained(
+            SMOLLM3_MODEL_NAME,
+            config=config,
+            ignore_mismatched_sizes=True,
+            cache_dir=_HF_CACHE_DIR,
+        )
+        model.eval()
+        tokenizer = AutoTokenizer.from_pretrained(SMOLLM3_MODEL_NAME, cache_dir=_HF_CACHE_DIR)
+
+        prompt = "Once upon a time"
+        max_new_tokens = 20
+
+        # ------------------------------------------------------------------
+        # transformers greedy generation (reference)
+        # ------------------------------------------------------------------
+        inputs = tokenizer(prompt, return_tensors="pt")
+        prompt_len = inputs["input_ids"].shape[1]
+        with torch.no_grad():
+            pt_output = model.generate(
+                **inputs,
+                max_new_tokens=max_new_tokens,
+                do_sample=False,
+                pad_token_id=tokenizer.eos_token_id,
+            )
+        # Keep only the newly generated tokens (exclude the prompt).
+        pt_tokens = pt_output[0][prompt_len:].tolist()
+
+        # ------------------------------------------------------------------
+        # onnxruntime-genai greedy generation
+        # ------------------------------------------------------------------
+        og_model = og.Model(output_dir)
+
+        params = og.GeneratorParams(og_model)
+        params.set_search_options(
+            do_sample=False,
+            max_length=prompt_len + max_new_tokens,
+            temperature=1.0,
+            top_k=1,
+        )
+
+        generator = og.Generator(og_model, params)
+        generator.append_tokens(inputs["input_ids"])
+
+        og_tokens = []
+        while not generator.is_done():
+            generator.generate_next_token()
+            og_tokens.append(int(generator.get_next_tokens()[0]))
+
+        # Greedy decoding is deterministic: both backends must produce the
+        # exact same newly-generated token sequence.
+        self.assertEqual(pt_tokens, og_tokens)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
