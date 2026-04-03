@@ -42,9 +42,12 @@ class TestTrainedTinyLLM(ExtTestCase):
         self.assertExists(onnx_path)
         sess = self._check_with_ort(onnx_path, cpu=True)
 
-        config = AutoConfig.from_pretrained(MODEL_NAME)
+        config = AutoConfig.from_pretrained(MODEL_NAME, cache_dir=cache_dir)
         model = AutoModelForCausalLM.from_pretrained(
-            MODEL_NAME, config=config, ignore_mismatched_sizes=True
+            MODEL_NAME,
+            config=config,
+            cache_dir=cache_dir,
+            ignore_mismatched_sizes=True,
         )
 
         batch_size = 1
