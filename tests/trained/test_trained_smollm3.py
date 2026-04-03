@@ -8,47 +8,62 @@ import unittest
 
 import numpy as np
 
-from modelbuilder.ext_test_case import ExtTestCase
+from modelbuilder.ext_test_case import ExtTestCase, long_test
+
+SMOLLM3_MODEL_NAME = "HuggingFaceTB/SmolLM3-3B"
 
 
-class TestTrainedTinyLLM(ExtTestCase):
-    def test_trined_tiny_llm_fp32_cpu(self):
+class TestTrainedSmolLM3(ExtTestCase):
+    @long_test()
+    def test_trained_smollm3_fp32_cpu(self):
         """
-        Convert arnir0/Tiny-LLM to an fp32 ONNX model targeting the CPU execution
-        provider.  Only one hidden layer is materialised (via the
-        ``num_hidden_layers`` extra option) to keep the test fast.
+        Convert HuggingFaceTB/SmolLM3-3B to an fp32 ONNX model targeting the
+        CPU execution provider.  Only a small number of hidden layers is
+        materialised (via ``num_hidden_layers``) so the test completes in a
+        reasonable time while still exercising both rope and no-rope code
+        paths (the default SmolLM3 config places a NoPE layer every 4th layer).
+
         The test verifies that:
         * ``create_model`` completes without error.
         * The expected ``model.onnx`` file is written to the output directory.
-        * The produced ONNX file passes ``onnx.checker.check_model``.
+        * The produced ONNX file can be loaded by ``onnxruntime``.
+        * The ONNX logits closely match those of the original PyTorch model.
         """
         import torch
-        from modelbuilder.builder import create_model
         from transformers import AutoConfig, AutoModelForCausalLM
+        from modelbuilder.builder import create_model
 
-        MODEL_NAME = "arnir0/Tiny-LLM"
+        # Use 4 layers so that both rope (layers 0-2) and no-rope (layer 3)
+        # code paths are exercised with the default no_rope_layer_interval=4.
+        num_hidden_layers = 4
 
-        output_dir, cache_dir = self.get_dirs("test_tiny_llm_fp32_cpu")
+        output_dir, cache_dir = self.get_dirs("test_smollm3_fp32_cpu")
         create_model(
-            model_name=MODEL_NAME,
+            model_name=SMOLLM3_MODEL_NAME,
             input_path="",
             precision="fp32",
             execution_provider="cpu",
             output_dir=output_dir,
             cache_dir=cache_dir,
+            num_hidden_layers=num_hidden_layers,
         )
 
         onnx_path = os.path.join(output_dir, "model.onnx")
         self.assertExists(onnx_path)
         sess = self._check_with_ort(onnx_path, cpu=True)
 
-        config = AutoConfig.from_pretrained(MODEL_NAME)
+        config = AutoConfig.from_pretrained(SMOLLM3_MODEL_NAME, cache_dir=cache_dir)
         model = AutoModelForCausalLM.from_pretrained(
-            MODEL_NAME, config=config, ignore_mismatched_sizes=True
+            SMOLLM3_MODEL_NAME,
+            config=config,
+            cache_dir=cache_dir,
+            ignore_mismatched_sizes=True,
         )
+        model.eval()
 
         batch_size = 1
         seq_len = 5
+        torch.manual_seed(0)
         input_ids = torch.randint(0, config.vocab_size, (batch_size, seq_len))
         with torch.no_grad():
             pt_logits = model(input_ids).logits.numpy()
@@ -64,7 +79,7 @@ class TestTrainedTinyLLM(ExtTestCase):
             ),
         }
         # Provide empty past KV-cache tensors for every materialised layer.
-        for i in range(config.num_hidden_layers):
+        for i in range(num_hidden_layers):
             onnx_feed[f"past_key_values.{i}.key"] = np.zeros(
                 (batch_size, config.num_key_value_heads, 0, head_size),
                 dtype=np.float32,
