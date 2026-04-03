@@ -78,6 +78,12 @@ def _fix_config_head_dim(config, cache_dir):
     Read the k_proj weight shape from the safetensors header (a few KB,
     no tensor data) and patch ``config.head_dim`` to the actual value.
 
+    Args:
+        config: A HuggingFace ``PretrainedConfig`` whose ``_name_or_path``
+            points to the local model directory or a HuggingFace Hub repo ID.
+        cache_dir: Directory used as the HuggingFace Hub cache.  May be
+            ``None`` to use the default cache location.
+
     This is a best-effort operation: any failure is silently ignored and
     the caller proceeds with the config-derived head_dim.
     """

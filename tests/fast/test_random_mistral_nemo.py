@@ -18,7 +18,12 @@ MISTRAL_NEMO_MODEL_NAME = "mistralai/Mistral-Nemo-Instruct-2407"
 
 
 def _write_fake_safetensors(path, k_proj_shape):
-    """Write a minimal safetensors file whose header contains k_proj.weight."""
+    """Write a minimal safetensors file whose header contains k_proj.weight.
+
+    Args:
+        path: Destination file path.
+        k_proj_shape: Two-element tuple ``(rows, cols)`` for k_proj.weight.
+    """
     tensor_name = "model.layers.0.self_attn.k_proj.weight"
     n_elements = k_proj_shape[0] * k_proj_shape[1]
     byte_size = n_elements * 4  # float32
@@ -375,7 +380,8 @@ class TestMistralNeMo(ExtTestCase):
                     "model.layers.0.self_attn.k_proj.weight": shard_name,
                 },
             }
-            with open(os.path.join(model_dir, "model.safetensors.index.json"), "w") as f:
+            index_json_path = os.path.join(model_dir, "model.safetensors.index.json")
+            with open(index_json_path, "w") as f:
                 json.dump(index, f)
 
             _fix_config_head_dim(config, cache_dir=None)
