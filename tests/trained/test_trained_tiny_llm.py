@@ -94,7 +94,13 @@ class TestTrainedTinyLLM(ExtTestCase):
 
         disc = self.get_numpy_discrepancy(pt_logits, onnx_logits)
         disc.update(
-            dict(precision=precision, model_id=MODEL_NAME, experiment="forward", provider="cpu")
+            dict(
+                precision=precision,
+                model_id=MODEL_NAME,
+                experiment="forward",
+                provider="cpu",
+                test="test_trained_tiny_llm_fp32_discrepancies_cpu",
+            )
         )
         self.log_results(disc)
         self.assertLess(disc["max_abs_err"], 0.05)
@@ -178,7 +184,13 @@ class TestTrainedTinyLLM(ExtTestCase):
         # exact same token sequence (prompt + all generated tokens).
         disc = self.first_token_diff(pt_tokens[start_sequence:], og_tokens)
         disc.update(
-            dict(precision=precision, model_id=MODEL_NAME, experiment="generate", provider="cpu")
+            dict(
+                precision=precision,
+                model_id=MODEL_NAME,
+                experiment="generate",
+                provider="cpu",
+                test="test_trained_tiny_llm_genai_generate_cpu",
+            )
         )
         self.log_results(disc)
         self.assertEqual(pt_tokens[start_sequence:], og_tokens)

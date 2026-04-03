@@ -14,7 +14,7 @@ SMOLLM3_MODEL_NAME = "HuggingFaceTB/SmolLM3-3B"
 
 
 class TestTrainedSmolLM3(ExtTestCase):
-    def _common_part(self, precision, dtype):
+    def _common_part(self, precision, dtype, provider="cuda"):
         from transformers import AutoModelForCausalLM
         from modelbuilder.builder import create_model
 
@@ -30,7 +30,7 @@ class TestTrainedSmolLM3(ExtTestCase):
                 model_name=SMOLLM3_MODEL_NAME,
                 input_path="",
                 precision=precision,
-                execution_provider="cuda",
+                execution_provider=provider,
                 output_dir=output_dir,
                 cache_dir=cache_dir,
             )
@@ -41,7 +41,7 @@ class TestTrainedSmolLM3(ExtTestCase):
         model = AutoModelForCausalLM.from_pretrained(
             SMOLLM3_MODEL_NAME, ignore_mismatched_sizes=True, dtype=dtype
         )
-        model.eval().to("cuda")
+        model.eval().to(provider)
         return onnx_path, model
 
     @long_test()
@@ -107,6 +107,7 @@ class TestTrainedSmolLM3(ExtTestCase):
                 model_id=SMOLLM3_MODEL_NAME,
                 experiment="forward",
                 provider="cpu",
+                test="test_trained_huggingface_tb_smollm3_3b_discrepancies_cuda",
             )
         )
         self.log_results(disc)
@@ -202,6 +203,85 @@ class TestTrainedSmolLM3(ExtTestCase):
                 model_id=SMOLLM3_MODEL_NAME,
                 experiment="generate",
                 provider="cpu",
+                test="test_trained_smollm3_genai_generate_cuda",
+            )
+        )
+        self.log_results(disc)
+        self.assertEqual(pt_tokens, og_tokens)
+
+    @long_test()
+    @requires_cuda()
+    def test_trained_smollm3_genai_generate_cpu(self):
+        try:
+            import onnxruntime_genai as og
+        except ImportError:
+            raise unittest.SkipTest(
+                "onnxruntime-genai is not installed; skipping genai comparison test."
+            )
+
+        import torch
+        from transformers import AutoTokenizer
+
+        precision, dtype = "fp32", torch.float32
+
+        onnx_path, model = self._common_part(precision, dtype, provider="cpu")
+
+        genai_config_path = os.path.join(os.path.dirname(onnx_path), "genai_config.json")
+        self.assertExists(genai_config_path)
+
+        tokenizer = AutoTokenizer.from_pretrained(SMOLLM3_MODEL_NAME)
+        prompt = "Once upon a time"
+        max_new_tokens = 20
+
+        # ------------------------------------------------------------------
+        # transformers greedy generation (reference)
+        # ------------------------------------------------------------------
+        inputs = tokenizer(prompt, return_tensors="pt")
+        start_sequence = inputs["input_ids"].shape[1]
+        inputs = inputs.to("cpu")
+        prompt_len = inputs["input_ids"].shape[1]
+        with torch.no_grad():
+            pt_output = model.generate(
+                **inputs,
+                max_new_tokens=max_new_tokens,
+                do_sample=False,
+                pad_token_id=tokenizer.eos_token_id,
+            )
+        # Keep only the newly generated tokens (exclude the prompt).
+        pt_tokens = pt_output[0][prompt_len:].tolist()
+
+        # ------------------------------------------------------------------
+        # onnxruntime-genai greedy generation
+        # ------------------------------------------------------------------
+        # RuntimeError: CUDA execution provider is not enabled in this build.
+        og_model = og.Model(os.path.dirname(onnx_path))
+
+        params = og.GeneratorParams(og_model)
+        params.set_search_options(
+            do_sample=False,
+            max_length=prompt_len + max_new_tokens,
+            temperature=1.0,
+            top_k=1,
+        )
+
+        generator = og.Generator(og_model, params)
+        generator.append_tokens(inputs["input_ids"])
+
+        og_tokens = []
+        while not generator.is_done():
+            generator.generate_next_token()
+            og_tokens.append(int(generator.get_next_tokens()[0]))
+
+        # Greedy decoding is deterministic: both backends must produce the
+        # exact same newly-generated token sequence.
+        disc = self.first_token_diff(pt_tokens[start_sequence:], og_tokens)
+        disc.update(
+            dict(
+                precision=precision,
+                model_id=SMOLLM3_MODEL_NAME,
+                experiment="generate",
+                provider="cpu",
+                test="test_trained_smollm3_genai_generate_cpu",
             )
         )
         self.log_results(disc)
