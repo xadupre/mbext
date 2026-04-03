@@ -122,17 +122,13 @@ class Phi3MiniLongRoPEModel(Phi3MiniModel):
 
         reduce_max_name = f"{basename}/ReduceMax"
         reduce_max_inputs = [input_tensor]
-        self.make_reduce_max(
-            reduce_max_name, reduce_max_inputs, dtype=compute_dtype, shape=[1]
-        )
+        self.make_reduce_max(reduce_max_name, reduce_max_inputs, dtype=compute_dtype, shape=[1])
         greater_or_equal_name = f"{basename}/GreaterOrEqual"
         greater_or_equal_inputs = [
             f"{reduce_max_name}/output_0",
             f"/model/constants/{compute_str_dtype}/{self.original_context_length}",
         ]
-        self.make_greater_or_equal(
-            greater_or_equal_name, greater_or_equal_inputs, shape=[]
-        )
+        self.make_greater_or_equal(greater_or_equal_name, greater_or_equal_inputs, shape=[])
         cast_name = f"{basename}/Cast"
         self.make_cast(
             cast_name,
@@ -249,16 +245,11 @@ class Phi3SmallModel(Model):
             assert dim in (2, 3)
             if dim == 2:
                 block_mask_dense_output = block_mask_dense_output[None]
-            block_mask_dense_output = [
-                xi.to_sparse_csr() for xi in block_mask_dense_output
-            ]
+            block_mask_dense_output = [xi.to_sparse_csr() for xi in block_mask_dense_output]
             crows = torch.vstack([xi.crow_indices() for xi in block_mask_dense_output])
             cols = [xi.col_indices() for xi in block_mask_dense_output]
             max_cols = max(len(xi) for xi in cols)
-            cols = [
-                torch.cat([xi, pad + xi.new_zeros(max_cols - xi.shape[0])])
-                for xi in cols
-            ]
+            cols = [torch.cat([xi, pad + xi.new_zeros(max_cols - xi.shape[0])]) for xi in cols]
             cols = torch.vstack(cols)
             if dim == 2:
                 crows = crows[0]
@@ -425,9 +416,7 @@ class Phi3SmallModel(Model):
             shape=["batch_size", "sequence_length", self.intermediate_size],
         )
         # Make activation
-        act_fn_name = self.make_activation(
-            layer_id, root_input=f"{where_1_name}/output_0"
-        )
+        act_fn_name = self.make_activation(layer_id, root_input=f"{where_1_name}/output_0")
 
         # Right path
         slice_2_name = f"/model/layers.{layer_id}/mlp/linear/Slice"
@@ -507,9 +496,7 @@ class Phi3SmallModel(Model):
         down_matmul_name = f"/model/layers.{layer_id}/mlp/down_proj/MatMul"
         self.make_matmul(mlp.down_proj, down_matmul_name, f"{mul_name}/output_0")
         down_add_name = f"/model/layers.{layer_id}/mlp/down_proj/Add"
-        self.make_add_bias(
-            mlp.down_proj.bias, down_add_name, f"{down_matmul_name}/output_0"
-        )
+        self.make_add_bias(mlp.down_proj.bias, down_add_name, f"{down_matmul_name}/output_0")
 
         # Assign output 0 of previous MatMul as skip input to next SkipLayerNorm
         self.layernorm_attrs["skip_input"] = f"{down_add_name}/output_0"
@@ -529,9 +516,7 @@ class Phi3VModel(Phi3MiniLongRoPEModel):
 class Phi3MoELongRoPEModel(MistralModel):
     def __init__(self, config, io_dtype, onnx_dtype, ep, cache_dir, extra_options):
         super().__init__(config, io_dtype, onnx_dtype, ep, cache_dir, extra_options)
-        assert (
-            io_dtype == ir.DataType.FLOAT16
-        ), "This model only supports float16 io type."
+        assert io_dtype == ir.DataType.FLOAT16, "This model only supports float16 io type."
         self.layernorm_attrs["simple"] = False
         self.moe_attrs["use_sparse_mixer"] = True
         self.make_rotary_embedding_multi_cache()
@@ -577,20 +562,14 @@ class Phi4MMModel(Phi3VModel):
     def make_layer(self, layer_id, layer):
         layer.self_attn.qkv_proj.lora_A.default = layer.self_attn.qkv_proj.lora_A.vision
         layer.self_attn.qkv_proj.lora_B.default = layer.self_attn.qkv_proj.lora_B.vision
-        layer.self_attn.qkv_proj.scaling["default"] = layer.self_attn.qkv_proj.scaling[
-            "vision"
-        ]
+        layer.self_attn.qkv_proj.scaling["default"] = layer.self_attn.qkv_proj.scaling["vision"]
         layer.self_attn.o_proj.lora_A.default = layer.self_attn.o_proj.lora_A.vision
         layer.self_attn.o_proj.lora_B.default = layer.self_attn.o_proj.lora_B.vision
-        layer.self_attn.o_proj.scaling["default"] = layer.self_attn.o_proj.scaling[
-            "vision"
-        ]
+        layer.self_attn.o_proj.scaling["default"] = layer.self_attn.o_proj.scaling["vision"]
 
         layer.mlp.gate_up_proj.lora_A.default = layer.mlp.gate_up_proj.lora_A.vision
         layer.mlp.gate_up_proj.lora_B.default = layer.mlp.gate_up_proj.lora_B.vision
-        layer.mlp.gate_up_proj.scaling["default"] = layer.mlp.gate_up_proj.scaling[
-            "vision"
-        ]
+        layer.mlp.gate_up_proj.scaling["default"] = layer.mlp.gate_up_proj.scaling["vision"]
         layer.mlp.down_proj.lora_A.default = layer.mlp.down_proj.lora_A.vision
         layer.mlp.down_proj.lora_B.default = layer.mlp.down_proj.lora_B.vision
         layer.mlp.down_proj.scaling["default"] = layer.mlp.down_proj.scaling["vision"]

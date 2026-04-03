@@ -144,9 +144,7 @@ class ExtTestCase(unittest.TestCase):
             value = np.array(value).astype(expected.dtype)
         self.assertEqualArray(expected, value, atol=atol, rtol=rtol)
 
-    def assertRaise(
-        self, fct: Callable, exc_type: Exception, msg: Optional[str] = None
-    ):
+    def assertRaise(self, fct: Callable, exc_type: Exception, msg: Optional[str] = None):
         try:
             fct()
         except exc_type as e:

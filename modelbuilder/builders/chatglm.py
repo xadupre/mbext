@@ -25,12 +25,8 @@ class ChatGLMModel(Model):
         super().make_mlp(layer_id, mlp, root_input)
 
     def make_layer(self, layer_id, layer):
-        layer.self_attn = (
-            layer.self_attn if hasattr(layer, "self_attn") else layer.self_attention
-        )
+        layer.self_attn = layer.self_attn if hasattr(layer, "self_attn") else layer.self_attention
         super().make_layer(layer_id, layer)
 
     def is_layer(self, module):
-        return module.__class__.__name__.endswith("GLMBlock") or super().is_layer(
-            module
-        )
+        return module.__class__.__name__.endswith("GLMBlock") or super().is_layer(module)

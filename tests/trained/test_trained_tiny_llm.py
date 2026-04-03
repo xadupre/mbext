@@ -46,9 +46,7 @@ class TestTrainedTinyLLM(ExtTestCase):
         self.assertExists(onnx_path)
         sess = self._check_with_ort(onnx_path, cpu=True)
 
-        model = AutoModelForCausalLM.from_pretrained(
-            MODEL_NAME, ignore_mismatched_sizes=True
-        )
+        model = AutoModelForCausalLM.from_pretrained(MODEL_NAME, ignore_mismatched_sizes=True)
         config = model.config
 
         batch_size = 1
@@ -63,9 +61,7 @@ class TestTrainedTinyLLM(ExtTestCase):
         onnx_feed = {
             "input_ids": input_ids.numpy().astype(np.int64),
             "attention_mask": np.ones((batch_size, seq_len), dtype=np.int64),
-            "position_ids": np.arange(seq_len, dtype=np.int64).reshape(
-                batch_size, seq_len
-            ),
+            "position_ids": np.arange(seq_len, dtype=np.int64).reshape(batch_size, seq_len),
         }
         # Provide empty past KV-cache tensors for every materialised layer.
         for i in range(config.num_hidden_layers):
@@ -130,9 +126,7 @@ class TestTrainedTinyLLM(ExtTestCase):
         genai_config_path = os.path.join(output_dir, "genai_config.json")
         self.assertExists(genai_config_path)
 
-        model = AutoModelForCausalLM.from_pretrained(
-            MODEL_NAME, ignore_mismatched_sizes=True
-        )
+        model = AutoModelForCausalLM.from_pretrained(MODEL_NAME, ignore_mismatched_sizes=True)
         model.eval()
         tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME, cache_dir=_HF_CACHE_DIR)
 

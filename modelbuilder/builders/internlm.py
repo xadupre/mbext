@@ -34,15 +34,11 @@ class InternLM2Model(Model):
         # Adapt each decoder layer to match the expected attribute names
         for layer in model.model.layers:
             # Map attention_norm to input_layernorm
-            if hasattr(layer, "attention_norm") and not hasattr(
-                layer, "input_layernorm"
-            ):
+            if hasattr(layer, "attention_norm") and not hasattr(layer, "input_layernorm"):
                 layer.input_layernorm = layer.attention_norm
 
             # Map ffn_norm to post_attention_layernorm
-            if hasattr(layer, "ffn_norm") and not hasattr(
-                layer, "post_attention_layernorm"
-            ):
+            if hasattr(layer, "ffn_norm") and not hasattr(layer, "post_attention_layernorm"):
                 layer.post_attention_layernorm = layer.ffn_norm
 
             # Map feed_forward to mlp
@@ -78,9 +74,7 @@ class InternLM2Model(Model):
                 # Calculate dimensions
                 num_q_heads = config.num_attention_heads
                 num_kv_heads = config.num_key_value_heads
-                num_kv_groups = (
-                    num_q_heads // num_kv_heads
-                )  # How many Q heads per KV head
+                num_kv_groups = num_q_heads // num_kv_heads  # How many Q heads per KV head
                 head_dim = config.hidden_size // num_q_heads
 
                 q_size = num_q_heads * head_dim
@@ -104,25 +98,15 @@ class InternLM2Model(Model):
                 q_weight = q_weight.reshape(q_size, config.hidden_size)
 
                 # K heads: second to last entry in each group
-                k_weight = wqkv_grouped[:, -2, :, :].reshape(
-                    kv_size, config.hidden_size
-                )
+                k_weight = wqkv_grouped[:, -2, :, :].reshape(kv_size, config.hidden_size)
 
                 # V heads: last entry in each group
-                v_weight = wqkv_grouped[:, -1, :, :].reshape(
-                    kv_size, config.hidden_size
-                )
+                v_weight = wqkv_grouped[:, -1, :, :].reshape(kv_size, config.hidden_size)
 
                 # Create separate projection layers
-                attn.q_proj = torch.nn.Linear(
-                    config.hidden_size, q_size, bias=config.bias
-                )
-                attn.k_proj = torch.nn.Linear(
-                    config.hidden_size, kv_size, bias=config.bias
-                )
-                attn.v_proj = torch.nn.Linear(
-                    config.hidden_size, kv_size, bias=config.bias
-                )
+                attn.q_proj = torch.nn.Linear(config.hidden_size, q_size, bias=config.bias)
+                attn.k_proj = torch.nn.Linear(config.hidden_size, kv_size, bias=config.bias)
+                attn.v_proj = torch.nn.Linear(config.hidden_size, kv_size, bias=config.bias)
 
                 # Copy weights (ensure proper copy and contiguous memory)
                 attn.q_proj.weight.data.copy_(q_weight.contiguous())

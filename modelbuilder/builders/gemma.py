@@ -41,9 +41,7 @@ class Gemma2Model(GemmaModel):
         # Adjust LayerNorm attributes because of extra LayerNorms inserted
         # 1. Only cast root_input if the first layer of LayerNorms are being created
         original_cast_root_input = self.layernorm_attrs["cast"]["root_input"]
-        self.layernorm_attrs["cast"]["root_input"] = self.layernorm_attrs[
-            "first_layernorm"
-        ]
+        self.layernorm_attrs["cast"]["root_input"] = self.layernorm_attrs["first_layernorm"]
         self.make_layernorm(
             layer_id,
             layer.input_layernorm,
@@ -79,9 +77,7 @@ class Gemma2Model(GemmaModel):
         # Adjust LayerNorm attributes because of extra LayerNorms inserted
         # 1. Only cast root_input if the first layer of LayerNorms are being created
         original_cast_root_input = self.layernorm_attrs["cast"]["root_input"]
-        self.layernorm_attrs["cast"]["root_input"] = self.layernorm_attrs[
-            "first_layernorm"
-        ]
+        self.layernorm_attrs["cast"]["root_input"] = self.layernorm_attrs["first_layernorm"]
         self.make_layernorm(
             layer_id,
             layer.pre_feedforward_layernorm,
@@ -167,19 +163,11 @@ class Gemma3Model(Gemma2Model):
     def make_rotary_embedding_caches(self, **kwargs):
         cos_cache_name = kwargs.get(
             "cos_cache_name",
-            (
-                self.cos_cache_global_name
-                if self.window_size == -1
-                else self.cos_cache_local_name
-            ),
+            (self.cos_cache_global_name if self.window_size == -1 else self.cos_cache_local_name),
         )
         sin_cache_name = kwargs.get(
             "sin_cache_name",
-            (
-                self.sin_cache_global_name
-                if self.window_size == -1
-                else self.sin_cache_local_name
-            ),
+            (self.sin_cache_global_name if self.window_size == -1 else self.sin_cache_local_name),
         )
         return super().make_rotary_embedding_caches(
             cos_cache_name=cos_cache_name, sin_cache_name=sin_cache_name

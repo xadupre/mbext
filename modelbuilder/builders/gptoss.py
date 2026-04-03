@@ -271,19 +271,13 @@ class GPTOSSModel(Model):
 
         # Save initializers to use with Gather nodes
         gate_up_proj_weight = f"model.layers.{layer_id}.moe.experts.gate_up_proj.weight"
-        self.make_initializer(
-            mlp.experts.gate_up_proj, gate_up_proj_weight, to=self.io_dtype
-        )
+        self.make_initializer(mlp.experts.gate_up_proj, gate_up_proj_weight, to=self.io_dtype)
         gate_up_proj_bias = f"model.layers.{layer_id}.moe.experts.gate_up_proj.bias"
-        self.make_initializer(
-            mlp.experts.gate_up_proj_bias, gate_up_proj_bias, to=self.io_dtype
-        )
+        self.make_initializer(mlp.experts.gate_up_proj_bias, gate_up_proj_bias, to=self.io_dtype)
         down_proj_weight = f"model.layers.{layer_id}.moe.experts.down_proj.weight"
         self.make_initializer(mlp.experts.down_proj, down_proj_weight, to=self.io_dtype)
         down_proj_bias = f"model.layers.{layer_id}.moe.experts.down_proj.bias"
-        self.make_initializer(
-            mlp.experts.down_proj_bias, down_proj_bias, to=self.io_dtype
-        )
+        self.make_initializer(mlp.experts.down_proj_bias, down_proj_bias, to=self.io_dtype)
 
         # Make Gather nodes + Unsqueeze nodes for biases
         mlp1_weight_gather_name = f"{basename}/mlp1/weight/Gather"
@@ -769,17 +763,11 @@ class GPTOSSModel(Model):
         )
         gate_up_proj_scales = f"model.layers.{layer_id}.moe.experts.gate_up_proj.scales"
         gate_up_proj_bias = f"model.layers.{layer_id}.moe.experts.gate_up_proj.bias"
-        gate_up_proj_zero_points = (
-            f"model.layers.{layer_id}.moe.experts.gate_up_proj.zero_points"
-        )
-        down_proj_weight = (
-            f"model.layers.{layer_id}.moe.experts.down_proj.{moe_weight_type}"
-        )
+        gate_up_proj_zero_points = f"model.layers.{layer_id}.moe.experts.gate_up_proj.zero_points"
+        down_proj_weight = f"model.layers.{layer_id}.moe.experts.down_proj.{moe_weight_type}"
         down_proj_scales = f"model.layers.{layer_id}.moe.experts.down_proj.scales"
         down_proj_bias = f"model.layers.{layer_id}.moe.experts.down_proj.bias"
-        down_proj_zero_points = (
-            f"model.layers.{layer_id}.moe.experts.down_proj.zero_points"
-        )
+        down_proj_zero_points = f"model.layers.{layer_id}.moe.experts.down_proj.zero_points"
 
         # Apply transpose depending on EP/op requirements and Quark expert presence
         # For quantized QMoE on CUDA, kernels expect scales along the hidden_size axis,
@@ -796,9 +784,7 @@ class GPTOSSModel(Model):
         if op_type == "MoE" and not has_quark_experts:
             # Save non-quantized MoE weights as initializers
             self.make_initializer(
-                gate_up_proj_layout.view(
-                    self.moe_attrs["num_experts"], -1, self.hidden_size
-                ),
+                gate_up_proj_layout.view(self.moe_attrs["num_experts"], -1, self.hidden_size),
                 gate_up_proj_weight,
                 to=self.io_dtype,
             )
@@ -834,12 +820,8 @@ class GPTOSSModel(Model):
                 )
 
                 # Save zero point as initializers
-                self.make_initializer(
-                    gate_up_proj_zero_points_tensor, gate_up_proj_zero_points
-                )
-                self.make_initializer(
-                    down_proj_zero_points_tensor, down_proj_zero_points
-                )
+                self.make_initializer(gate_up_proj_zero_points_tensor, gate_up_proj_zero_points)
+                self.make_initializer(down_proj_zero_points_tensor, down_proj_zero_points)
             else:
                 # Create and save quantized MoE weights as initializers
                 gate_up_proj_qweight_list, gate_up_proj_scales_list = [], []
@@ -853,15 +835,13 @@ class GPTOSSModel(Model):
                     down_proj_qweight_list.append(qweight2)
                     down_proj_scales_list.append(scales2)
 
-                gate_up_proj_qweight_tensor = torch.stack(
-                    gate_up_proj_qweight_list, dim=0
-                ).to(torch.uint8)
-                gate_up_proj_scales_tensor = torch.stack(
-                    gate_up_proj_scales_list, dim=0
+                gate_up_proj_qweight_tensor = torch.stack(gate_up_proj_qweight_list, dim=0).to(
+                    torch.uint8
                 )
-                down_proj_qweight_tensor = torch.stack(
-                    down_proj_qweight_list, dim=0
-                ).to(torch.uint8)
+                gate_up_proj_scales_tensor = torch.stack(gate_up_proj_scales_list, dim=0)
+                down_proj_qweight_tensor = torch.stack(down_proj_qweight_list, dim=0).to(
+                    torch.uint8
+                )
                 down_proj_scales_tensor = torch.stack(down_proj_scales_list, dim=0)
 
             # Determine shape based on Quark vs non-Quark
@@ -871,9 +851,7 @@ class GPTOSSModel(Model):
                 intermediate_size_padded = self.intermediate_size
             else:
                 hidden_size_padded = gate_up_proj_qweight_list[0].shape[-1] * pack_size
-                intermediate_size_padded = (
-                    down_proj_qweight_list[0].shape[-1] * pack_size
-                )
+                intermediate_size_padded = down_proj_qweight_list[0].shape[-1] * pack_size
 
             # Save qweight tensors
             self.make_initializer(
@@ -895,9 +873,7 @@ class GPTOSSModel(Model):
             self.make_initializer(
                 gate_up_proj_scales_tensor, gate_up_proj_scales, to=self.io_dtype
             )
-            self.make_initializer(
-                down_proj_scales_tensor, down_proj_scales, to=self.io_dtype
-            )
+            self.make_initializer(down_proj_scales_tensor, down_proj_scales, to=self.io_dtype)
 
         # Save biases (shared for all paths)
         if has_quark_experts:
@@ -956,14 +932,12 @@ class GPTOSSModel(Model):
                 # Get biases from individual projections
                 gate_bias = (
                     expert.gate_proj.bias
-                    if hasattr(expert.gate_proj, "bias")
-                    and expert.gate_proj.bias is not None
+                    if hasattr(expert.gate_proj, "bias") and expert.gate_proj.bias is not None
                     else torch.zeros(expert.gate_proj.qweight.shape[0])
                 )
                 up_bias = (
                     expert.up_proj.bias
-                    if hasattr(expert.up_proj, "bias")
-                    and expert.up_proj.bias is not None
+                    if hasattr(expert.up_proj, "bias") and expert.up_proj.bias is not None
                     else torch.zeros(expert.up_proj.qweight.shape[0])
                 )
 
@@ -990,8 +964,7 @@ class GPTOSSModel(Model):
             expert = experts[expert_id]
             down_bias = (
                 expert.down_proj.bias
-                if hasattr(expert.down_proj, "bias")
-                and expert.down_proj.bias is not None
+                if hasattr(expert.down_proj, "bias") and expert.down_proj.bias is not None
                 else torch.zeros(expert.down_proj.qweight.shape[0])
             )
             combined_biases.append(down_bias)
