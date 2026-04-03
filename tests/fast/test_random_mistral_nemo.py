@@ -181,6 +181,15 @@ class TestMistralNeMo(ExtTestCase):
             def __init__(self):  # noqa: D107
                 self.num_kv_heads = 1
                 self.head_size = 160  # wrong: simulates config fallback
+                # Simulate the shape lists baked in by Model.__init__
+                self.input_shapes = {
+                    "past_key_values.key": ["batch_size", 1, "past_sequence_length", 160],
+                    "past_key_values.value": ["batch_size", 1, "past_sequence_length", 160],
+                }
+                self.output_shapes = {
+                    "present.key": ["batch_size", 1, "total_sequence_length", 160],
+                    "present.value": ["batch_size", 1, "total_sequence_length", 160],
+                }
 
             def load_weights(self, input_path):  # noqa: D102
                 if hasattr(self, "_preloaded_weights"):
@@ -203,6 +212,7 @@ class TestMistralNeMo(ExtTestCase):
 
         stub = _Stub()
         self.assertEqual(stub.head_size, 160)
+        self.assertEqual(stub.input_shapes["past_key_values.key"][3], 160)
 
         # Run only the pre-loading part of make_model.
         try:
@@ -217,13 +227,21 @@ class TestMistralNeMo(ExtTestCase):
                 actual_head_size = weight.shape[0] // stub.num_kv_heads
                 if actual_head_size != stub.head_size:
                     stub.head_size = actual_head_size
+                    for key in ("past_key_values.key", "past_key_values.value"):
+                        stub.input_shapes[key][3] = actual_head_size
+                    for key in ("present.key", "present.value"):
+                        stub.output_shapes[key][3] = actual_head_size
                 break
         except Exception:  # noqa: BLE001
             if hasattr(stub, "_preloaded_weights"):
                 del stub._preloaded_weights
 
-        # head_size must now reflect the actual weight dimensions.
+        # head_size and KV-cache shapes must now reflect the actual weight dimensions.
         self.assertEqual(stub.head_size, 128)
+        self.assertEqual(stub.input_shapes["past_key_values.key"][3], 128)
+        self.assertEqual(stub.input_shapes["past_key_values.value"][3], 128)
+        self.assertEqual(stub.output_shapes["present.key"][3], 128)
+        self.assertEqual(stub.output_shapes["present.value"][3], 128)
 
 
 if __name__ == "__main__":

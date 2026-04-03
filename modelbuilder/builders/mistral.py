@@ -21,15 +21,17 @@ class MistralNeMoModel(MistralModel):
         # does not carry an explicit ``head_dim`` field the base class falls
         # back to the division and produces the wrong value (160).
         #
-        # The base make_model calls make_inputs_and_outputs() BEFORE
-        # load_weights(), so we must determine the correct head_size from the
-        # actual model weights BEFORE make_inputs_and_outputs() encodes the
-        # wrong shape into the ONNX graph.
+        # CRITICAL: self.input_shapes and self.output_shapes are built inside
+        # Model.__init__ with the INTEGER value of self.head_size baked into
+        # the KV-cache shape lists at construction time.  make_inputs_and_outputs()
+        # reads those pre-built lists, so updating self.head_size alone after
+        # __init__ is NOT enough — the cached shape lists must also be patched.
         #
         # Strategy: pre-load the weights here (which handles all cases –
         # local directories, HuggingFace downloads via model_name_or_path,
         # etc.), inspect the K-projection weight to get the real head_dim,
-        # fix self.head_size if needed, then store the loaded model in
+        # fix self.head_size if needed, also patch self.input_shapes and
+        # self.output_shapes, then store the loaded model in
         # ``_preloaded_weights``.  The ``load_weights`` override below
         # returns the cached model on the next call so the weights are only
         # loaded once.
@@ -46,6 +48,14 @@ class MistralNeMoModel(MistralModel):
                 actual_head_size = weight.shape[0] // self.num_kv_heads
                 if actual_head_size != self.head_size:
                     self.head_size = actual_head_size
+                    # Patch the KV-cache shape lists that were baked into
+                    # self.input_shapes / self.output_shapes at __init__ time.
+                    # Each shape list is [batch, num_kv_heads, seq, head_size]
+                    # so head_size is always the last element (index 3).
+                    for key in ("past_key_values.key", "past_key_values.value"):
+                        self.input_shapes[key][3] = actual_head_size
+                    for key in ("present.key", "present.value"):
+                        self.output_shapes[key][3] = actual_head_size
                 break
         # The pre-load is best-effort: if it fails for any reason (missing
         # files, unsupported model format, network error, attribute not found,
