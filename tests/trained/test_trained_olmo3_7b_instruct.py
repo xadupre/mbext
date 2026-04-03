@@ -38,7 +38,7 @@ class TestTrainedOLMo3Instruct(ExtTestCase):
         self.assertExists(onnx_path)
 
         model = AutoModelForCausalLM.from_pretrained(
-            MODEL_NAME, ignore_mismatched_sizes=True, dtype=dtype
+            MODEL_NAME, ignore_mismatched_sizes=True, torch_dtype=dtype
         )
         model.eval().to(provider)
         return onnx_path, model
@@ -173,7 +173,7 @@ class TestTrainedOLMo3Instruct(ExtTestCase):
         )
 
         generator = og.Generator(og_model, params)
-        generator.append_tokens(inputs["input_ids"])
+        generator.append_tokens(inputs["input_ids"].detach().cpu().numpy())
 
         og_tokens = []
         while not generator.is_done():
@@ -259,7 +259,7 @@ class TestTrainedOLMo3Instruct(ExtTestCase):
         )
 
         generator = og.Generator(og_model, params)
-        generator.append_tokens(inputs["input_ids"])
+        generator.append_tokens(inputs["input_ids"].numpy())
 
         og_tokens = []
         while not generator.is_done():
