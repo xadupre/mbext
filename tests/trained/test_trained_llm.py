@@ -81,6 +81,94 @@ class TestTrainedTinyLLM(ExtTestCase):
 
         np.testing.assert_allclose(pt_logits, onnx_logits, atol=1e-3, rtol=1e-3)
 
+    def test_trained_tiny_llm_genai_generate(self):
+        """
+        Compare ``transformers.generate`` with ``onnxruntime-genai`` generate
+        on the ``arnir0/Tiny-LLM`` trained model.
+
+        The test converts the model to fp32 ONNX (CPU), then:
+
+        * Runs ``transformers.generate(do_sample=False)`` on a short prompt.
+        * Runs ``onnxruntime_genai`` greedy generation on the same prompt and
+          ONNX model.
+
+        Both backends use greedy (argmax) decoding, so the generated token
+        sequences must be bit-for-bit identical.
+
+        The test is skipped automatically when ``onnxruntime-genai`` is not
+        installed.
+        """
+        try:
+            import onnxruntime_genai as og
+        except ImportError:
+            raise unittest.SkipTest(
+                "onnxruntime-genai is not installed; skipping genai comparison test."
+            )
+
+        import torch
+        from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
+
+        MODEL_NAME = "arnir0/Tiny-LLM"
+
+        output_dir, cache_dir = self.get_dirs("test_trained_tiny_llm_genai_generate")
+        create_model(
+            model_name=MODEL_NAME,
+            input_path="",
+            precision="fp32",
+            execution_provider="cpu",
+            output_dir=output_dir,
+            cache_dir=cache_dir,
+        )
+
+        onnx_path = os.path.join(output_dir, "model.onnx")
+        self.assertExists(onnx_path)
+        genai_config_path = os.path.join(output_dir, "genai_config.json")
+        self.assertExists(genai_config_path)
+
+        config = AutoConfig.from_pretrained(MODEL_NAME)
+        model = AutoModelForCausalLM.from_pretrained(
+            MODEL_NAME, config=config, ignore_mismatched_sizes=True
+        )
+        model.eval()
+        tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
+
+        prompt = "Once upon a time"
+        max_new_tokens = 20
+
+        # ------------------------------------------------------------------
+        # transformers greedy generation (reference)
+        # ------------------------------------------------------------------
+        inputs = tokenizer(prompt, return_tensors="pt")
+        with torch.no_grad():
+            pt_output = model.generate(
+                **inputs,
+                max_new_tokens=max_new_tokens,
+                do_sample=False,
+                pad_token_id=tokenizer.eos_token_id,
+            )
+        pt_tokens = pt_output[0].tolist()
+
+        # ------------------------------------------------------------------
+        # onnxruntime-genai greedy generation
+        # ------------------------------------------------------------------
+        og_model = og.Model(output_dir)
+
+        params = og.GeneratorParams(og_model)
+        params.input_ids = inputs["input_ids"].numpy().astype(np.int32)
+        params.set_search_options(
+            do_sample=False,
+            max_length=inputs["input_ids"].shape[1] + max_new_tokens,
+            temperature=1.0,
+            top_k=1,
+        )
+
+        og_output = og_model.generate(params)
+        og_tokens = og_output[0].tolist()
+
+        # Greedy decoding is deterministic: both backends must produce the
+        # exact same token sequence (prompt + all generated tokens).
+        self.assertEqual(pt_tokens, og_tokens)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
