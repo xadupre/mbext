@@ -89,6 +89,7 @@ def long_test(msg: Optional[Union[Callable[[], str], str]] = None) -> Callable:
 
 class ExtTestCase(unittest.TestCase):
     _warns = []
+    _do_clean = os.environ.get("DOCLEAN", "") in (1, "1", "True", "true")
 
     def shortDescription(self):
         # To remove annoying display on the screen every time verbosity is enabled.
@@ -99,19 +100,20 @@ class ExtTestCase(unittest.TestCase):
         if os.path.exists(path):
             shutil.rmtree(path)
 
-    def get_dirs(self, prefix: str) -> Tuple[str]:
-        cache_dir = f"dump_models/{prefix}/cache"
+    def get_dirs(self, prefix: str, clean: bool = True) -> Tuple[str]:
         output_dir = f"dump_models/{prefix}/output"
         cache_dir = f"dump_models/{prefix}/cache"
         os.makedirs(output_dir, exist_ok=True)
         os.makedirs(cache_dir, exist_ok=True)
-        self.addCleanup(self.clean_dir, f"dump_models/{prefix}")
+        if clean or self._do_clean:
+            self.addCleanup(self.clean_dir, f"dump_models/{prefix}")
         return output_dir, cache_dir
 
-    def get_model_dir(self, prefix: str) -> Tuple[str]:
+    def get_model_dir(self, prefix: str, clean: bool = False) -> Tuple[str]:
         model_dir = f"dump_models/{prefix}/checkpoint"
         os.makedirs(model_dir, exist_ok=True)
-        self.addCleanup(self.clean_dir, f"dump_models/{prefix}")
+        if clean or self._do_clean:
+            self.addCleanup(self.clean_dir, f"dump_models/{prefix}")
         return model_dir
 
     def assertExists(self, name):

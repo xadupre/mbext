@@ -10,44 +10,57 @@ import numpy as np
 
 from modelbuilder.ext_test_case import ExtTestCase, hide_stdout
 
-SMOLLM3_MODEL_NAME = "HuggingFaceTB/SmolLM3-3B"
+MODEL_NAME = "Olmo2ForCausalLM"
 
 
-class TestSmolLM3(ExtTestCase):
+class TestOLMo2(ExtTestCase):
     @hide_stdout()
-    def test_smollm3_fp32_cpu_random_weights(self):
+    def test_olmo2_fp32_cpu_random_weights(self):
+        """
+        Convert a model with the same architecture as OLMo2 but with randomly
+        initialised weights to an fp32 ONNX model targeting the CPU execution
+        provider.
+
+        The test verifies that:
+        * ``create_model`` completes without error when given a local model directory.
+        * The expected ``model.onnx`` file is written to the output directory.
+        * The produced ONNX file can be loaded by ``onnxruntime``.
+        * ONNX logits match PyTorch logits within a small tolerance.
+        """
+        import torch
         from tokenizers import Tokenizer
         from tokenizers.models import WordLevel
-        from transformers import AutoModelForCausalLM, PreTrainedTokenizerFast
-        from transformers.models.smollm3.configuration_smollm3 import SmolLM3Config
-
-        from modelbuilder.builder import create_model
-        import torch
-
-        num_hidden_layers = 2
-
-        # Minimal SmolLM3 config with 4 layers so that both rope and no-rope
-        # layers are exercised (no_rope_layers=[1,1,1,0] by default).
-        config = SmolLM3Config(
-            architectures=["SmolLM3ForCausalLM"],
-            hidden_size=64,
-            intermediate_size=128,
-            num_hidden_layers=num_hidden_layers,
-            num_attention_heads=4,
-            num_key_value_heads=2,
-            max_position_embeddings=128,
-            rope_theta=10000.0,
-            rms_norm_eps=1e-6,
-            vocab_size=128256,
-            pad_token_id=None,
+        from transformers import (
+            AutoModelForCausalLM,
+            Olmo2Config,
+            PreTrainedTokenizerFast,
         )
 
-        model_dir = self.get_model_dir("test_smollm3_fp32_cpu_random_weights")
+        from modelbuilder.builder import create_model
+
+        num_hidden_layers = 1
+
+        config = Olmo2Config(
+            architectures=["Olmo2ForCausalLM"],
+            hidden_act="silu",
+            hidden_size=512,
+            intermediate_size=1376,
+            max_position_embeddings=2048,
+            model_type="olmo2",
+            num_attention_heads=8,
+            num_hidden_layers=num_hidden_layers,
+            num_key_value_heads=4,
+            rms_norm_eps=1e-5,
+            rope_theta=10000.0,
+            vocab_size=50304,
+        )
+
+        model_dir = self.get_model_dir(
+            "test_olmo2_fp32_cpu_random_weights", clean=False
+        )
         model = AutoModelForCausalLM.from_config(config)
         model.save_pretrained(model_dir)
 
-        # Create and save a minimal tokenizer so that save_processing()
-        # inside create_model() can load and copy it to the output folder.
         vocab = {"<unk>": 0, "<s>": 1, "</s>": 2}
         tokenizer = PreTrainedTokenizerFast(
             tokenizer_object=Tokenizer(WordLevel(vocab=vocab, unk_token="<unk>")),
@@ -57,9 +70,12 @@ class TestSmolLM3(ExtTestCase):
         )
         tokenizer.save_pretrained(model_dir)
 
-        output_dir, cache_dir = self.get_dirs("test_smollm3_fp32_cpu_random_weights")
+        output_dir, cache_dir = self.get_dirs(
+            "test_olmo2_fp32_cpu_random_weights", clean=False
+        )
+
         create_model(
-            model_name=SMOLLM3_MODEL_NAME,
+            model_name=MODEL_NAME,
             input_path=model_dir,
             output_dir=output_dir,
             precision="fp32",
