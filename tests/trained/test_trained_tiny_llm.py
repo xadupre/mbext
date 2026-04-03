@@ -107,6 +107,7 @@ class TestTrainedTinyLLM(ExtTestCase):
 
         import torch
         from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
+        from modelbuilder.builder import create_model
 
         MODEL_NAME = "arnir0/Tiny-LLM"
 
