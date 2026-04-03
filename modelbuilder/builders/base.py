@@ -32,7 +32,7 @@ from transformers import (
     GenerationConfig,
 )
 
-from ..genai_config_utils import fix_genai_config  # noqa: F401
+from ..genai_config_utils import fix_genai_config
 
 
 def parse_hf_token(hf_token):
