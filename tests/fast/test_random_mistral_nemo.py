@@ -331,7 +331,7 @@ class TestMistralNeMo(ExtTestCase):
 
         self.assertEqual(config.head_dim, 64)
 
-    def test_fix_config_head_dim_returns_none_without_safetensors(self):
+    def test_read_head_dim_returns_none_without_safetensors(self):
         """
         Verify that ``_read_head_dim_from_safetensors`` returns ``None`` and
         ``_fix_config_head_dim`` leaves ``config.head_dim`` unchanged when no

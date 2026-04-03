@@ -72,12 +72,13 @@ def _fix_config_head_dim(config):
     safetensors header when the model is already available as a local
     directory (``config._name_or_path`` is an existing directory).
 
+    When ``config._name_or_path`` is a Hub repo ID (not a local directory)
+    this function returns immediately without modifying ``config``; the
+    correction is deferred to ``MistralNeMoModel.make_model``.
+
     Args:
         config: A HuggingFace ``PretrainedConfig`` whose ``_name_or_path``
-            points to the local model directory.  When ``_name_or_path`` is
-            a Hub repo ID (not a local directory) this function returns
-            immediately without making any change; the correction is deferred
-            to ``MistralNeMoModel.make_model``.
+            points to the local model directory or a Hub repo ID.
     """
     if not os.path.isdir(config._name_or_path):
         return
@@ -100,8 +101,8 @@ def _fix_config_head_dim(config):
 
 def _read_head_dim_from_safetensors(model_path, num_kv_heads):
     """
-    Return the actual head_dim derived from k_proj.weight in the safetensors
-    header, or ``None`` when no suitable file is found.
+    Return the actual head_dim (int) derived from k_proj.weight in the
+    safetensors header, or ``None`` when no suitable file is found.
 
     Only the compact JSON header (a few KB) is read — no tensor data is loaded.
 
