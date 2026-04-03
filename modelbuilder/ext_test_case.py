@@ -1,6 +1,7 @@
 import contextlib
 import io
 import os
+import shutil
 import unittest
 import warnings
 from typing import Any, Callable, List, Optional, Tuple, Union
@@ -93,16 +94,23 @@ class ExtTestCase(unittest.TestCase):
         # To remove annoying display on the screen every time verbosity is enabled.
         return None
 
+    def clean_dir(self, path: str):
+        """Removes a directory and all its contents if it exists."""
+        if os.path.exists(path):
+            shutil.rmtree(path)
+
     def get_dirs(self, prefix: str) -> Tuple[str]:
         output_dir = f"dump_models/{prefix}/output"
         cache_dir = f"dump_models/{prefix}/cache"
         os.makedirs(output_dir, exist_ok=True)
         os.makedirs(cache_dir, exist_ok=True)
+        self.addCleanup(self.clean_dir, f"dump_models/{prefix}")
         return output_dir, cache_dir
 
     def get_model_dir(self, prefix: str) -> Tuple[str]:
         model_dir = f"dump_models/{prefix}/checkpoint"
         os.makedirs(model_dir, exist_ok=True)
+        self.addCleanup(self.clean_dir, f"dump_models/{prefix}")
         return model_dir
 
     def assertExists(self, name):
