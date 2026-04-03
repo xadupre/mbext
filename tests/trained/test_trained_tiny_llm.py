@@ -8,7 +8,6 @@ import unittest
 
 import numpy as np
 
-from modelbuilder.builder import create_model
 from modelbuilder.ext_test_case import ExtTestCase
 
 
@@ -25,6 +24,7 @@ class TestTrainedTinyLLM(ExtTestCase):
         """
         import torch
         from transformers import AutoConfig, AutoModelForCausalLM
+        from modelbuilder.builder import create_model
 
         MODEL_NAME = "arnir0/Tiny-LLM"
 
