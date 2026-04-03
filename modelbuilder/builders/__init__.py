@@ -6,6 +6,7 @@
 # Copyright (C) [2026] Advanced Micro Devices, Inc. All rights reserved.
 # Portions of this file consist of AI generated content.
 # -------------------------------------------------------------------------
+from ..genai_config_utils import fix_genai_config
 from .base import Model
 from .chatglm import ChatGLMModel
 from .ernie import ErnieModel
@@ -14,7 +15,7 @@ from .gptoss import GPTOSSModel
 from .granite import GraniteModel
 from .internlm import InternLM2Model
 from .llama import LlamaModel
-from .mistral import MistralModel
+from .mistral import MistralModel, MistralNeMoModel
 from .nemotron import NemotronModel
 from .olmo import OLMo2Model, OLMo3Model, OLMoModel
 from .phi import (
@@ -48,6 +49,7 @@ __all__ = [
     "InternLM2Model",
     "LlamaModel",
     "MistralModel",
+    "MistralNeMoModel",
     "Model",
     "NemotronModel",
     "OLMo2Model",
@@ -68,4 +70,5 @@ __all__ = [
     "QwenModel",
     "SmolLM3Model",
     "WhisperModel",
+    "fix_genai_config",
 ]
