@@ -103,7 +103,8 @@ class TestMistralNeMo(ExtTestCase):
 
         onnx_input_names = {inp.name for inp in sess.get_inputs()}
 
-        head_size = config.hidden_size // config.num_attention_heads
+        # Use config.head_dim (the authoritative head dimension) for KV-cache shapes.
+        head_size = config.head_dim
         onnx_feed = {
             "input_ids": input_ids.numpy().astype(np.int64),
             "attention_mask": np.ones((batch_size, seq_len), dtype=np.int64),
@@ -131,6 +132,87 @@ class TestMistralNeMo(ExtTestCase):
         np.testing.assert_allclose(
             pt_logits[:, :1, :], onnx_logits[:, :1, :], atol=1e-3, rtol=1e-3
         )
+
+    def test_mistral_nemo_fix_head_size_from_weights(self):
+        """
+        Verify that ``MistralNeMoModel._fix_head_size_from_weights`` correctly
+        reads the K-projection weight shape from a safetensors shard and
+        updates ``head_size`` when the value computed from the config is wrong.
+
+        This exercises the scenario that caused
+        "Got invalid dimensions for input: past_key_values.N.value … Got: 160
+        Expected: 128" for mistralai/Mistral-Nemo-Instruct: the real model
+        has head_dim=128 while hidden_size / num_attention_heads = 160.  When
+        the ``head_dim`` field is absent from the model config the builder
+        would previously fall back to the division and produce the wrong ONNX
+        input shapes.
+        """
+        import tempfile
+
+        import numpy as np
+        from safetensors.numpy import save_file
+
+        from modelbuilder.builders.mistral import MistralNeMoModel
+
+        # ---------------------------------------------------------------------------
+        # Build a minimal on-disk representation that mimics the Mistral-NeMo layout:
+        #   hidden_size=320, num_attention_heads=2, num_kv_heads=1, head_dim=128
+        # => hidden_size // num_attention_heads = 160 (wrong)
+        # => k_proj weight shape = [num_kv_heads * head_dim, hidden_size] = [128, 320]
+        # ---------------------------------------------------------------------------
+        model_dir = tempfile.mkdtemp()
+        tensors = {
+            "model.layers.0.self_attn.k_proj.weight": np.zeros((128, 320), dtype=np.float32),
+        }
+        save_file(tensors, os.path.join(model_dir, "model.safetensors"))
+
+        # Create a minimal stub that satisfies the Model.__init__ signature but
+        # deliberately sets the *wrong* head_size (160 = 320 // 2) to simulate
+        # the case where head_dim is missing from the config.json.
+        class _StubNeMoModel(MistralNeMoModel):
+            """Minimal subclass with enough attributes to call _fix_head_size_from_weights."""
+
+            def __init__(self):  # noqa: D107
+                # Bypass Model.__init__ – we only need a handful of fields.
+                self.num_kv_heads = 1
+                self.head_size = 160  # wrong: should be 128
+
+        stub = _StubNeMoModel()
+        self.assertEqual(stub.head_size, 160)
+
+        stub._fix_head_size_from_weights(model_dir)
+
+        # After the fix the head_size must be inferred from the shard.
+        self.assertEqual(stub.head_size, 128)
+
+    def test_mistral_nemo_fix_head_size_noop_when_correct(self):
+        """
+        ``_fix_head_size_from_weights`` must be a no-op when the stored
+        head_size already matches the weight dimensions.
+        """
+        import tempfile
+
+        import numpy as np
+        from safetensors.numpy import save_file
+
+        from modelbuilder.builders.mistral import MistralNeMoModel
+
+        model_dir = tempfile.mkdtemp()
+        # k_proj shape [128, 320] → head_dim = 128
+        tensors = {
+            "model.layers.0.self_attn.k_proj.weight": np.zeros((128, 320), dtype=np.float32),
+        }
+        save_file(tensors, os.path.join(model_dir, "model.safetensors"))
+
+        class _StubNeMoModel(MistralNeMoModel):
+            def __init__(self):  # noqa: D107
+                self.num_kv_heads = 1
+                self.head_size = 128  # already correct
+
+        stub = _StubNeMoModel()
+        stub._fix_head_size_from_weights(model_dir)
+        # Should remain unchanged.
+        self.assertEqual(stub.head_size, 128)
 
 
 if __name__ == "__main__":
