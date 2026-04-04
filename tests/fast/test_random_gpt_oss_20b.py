@@ -175,6 +175,8 @@ class TestGptOss20b(ExtTestCase):
             rms_norm_eps=1e-5,
             sliding_window=32,
             vocab_size=256,
+            eos_token_id=2,
+            bos_token_id=1,
         )
 
         model_dir = self.get_model_dir(prefix, clean=False)
