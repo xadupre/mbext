@@ -133,18 +133,29 @@ class TestMinistral3(ExtTestCase):
     @hide_stdout()
     def test_ministral3_conditional_generation_fp32_cpu_random_weights(self):
         """
-        Convert a randomly-initialised Mistral3ForConditionalGeneration model
-        (text component only) to an fp32 ONNX model targeting the CPU
-        execution provider.
+        Convert a randomly-initialised Mistral3ForConditionalGeneration model to
+        fp32 ONNX models targeting the CPU execution provider.
 
-        Mistral3ForConditionalGeneration is the multimodal model class for
-        Ministral 3 family. The builder extracts the text component and routes
-        it to ``Ministral3TextModel``.
+        Mistral3ForConditionalGeneration is the multimodal model class for the
+        Ministral 3 family.  The builder now exports **two** artifacts:
+
+        1. ``vision_encoder.onnx`` – the Pixtral vision encoder (patch
+           convolution + transformer) together with the multimodal projector.
+           Input: ``pixel_values`` [1, 3, image_size, image_size].
+           Output: ``image_features`` [num_merged_patches, text_hidden_size].
+
+        2. ``model.onnx`` – the Mistral text decoder with
+           ``exclude_embeds=True`` so that it accepts ``inputs_embeds``
+           (produced by the vision encoder or from plain embed_tokens) rather
+           than raw ``input_ids``.
 
         The test verifies that:
         * ``create_model`` completes without error when given a local model directory.
-        * The expected ``model.onnx`` file is written to the output directory.
-        * The produced ONNX file can be loaded by ``onnxruntime``.
+        * Both ``vision_encoder.onnx`` and ``model.onnx`` are written to the
+          output directory.
+        * Both ONNX files can be loaded by ``onnxruntime``.
+        * The vision encoder produces output of the correct shape.
+        * The text decoder produces output when fed ``inputs_embeds``.
         """
         import torch
         from tokenizers import Tokenizer
@@ -153,12 +164,28 @@ class TestMinistral3(ExtTestCase):
             Ministral3Config,
             Mistral3Config,
             Mistral3ForConditionalGeneration,
+            PixtralVisionConfig,
             PreTrainedTokenizerFast,
         )
 
         from modelbuilder.builder import create_model
 
         num_hidden_layers = 1
+        # Use a small image size (56×56) so the test stays fast; patch_size=14
+        # gives 4×4=16 patches, then spatial_merge_size=2 → 4 merged patches.
+        image_size = 56
+        patch_size = 14
+        spatial_merge_size = 2
+
+        vision_config = PixtralVisionConfig(
+            hidden_size=64,
+            intermediate_size=128,
+            num_hidden_layers=1,
+            num_attention_heads=4,
+            head_dim=16,
+            image_size=image_size,
+            patch_size=patch_size,
+        )
         text_config = Ministral3Config(
             bos_token_id=1,
             eos_token_id=2,
@@ -174,7 +201,11 @@ class TestMinistral3(ExtTestCase):
             sliding_window=None,
             vocab_size=32000,
         )
-        config = Mistral3Config(text_config=text_config)
+        config = Mistral3Config(
+            text_config=text_config,
+            vision_config=vision_config,
+            spatial_merge_size=spatial_merge_size,
+        )
         config.architectures = ["Mistral3ForConditionalGeneration"]
 
         model_dir = self.get_model_dir(
@@ -207,11 +238,41 @@ class TestMinistral3(ExtTestCase):
             num_hidden_layers=num_hidden_layers,
         )
 
-        onnx_path = os.path.join(output_dir, "model.onnx")
-        self.assertExists(onnx_path)
-        self.check_ort(onnx_path)
+        # --- Verify both ONNX files exist and load correctly ---
+        vision_onnx_path = os.path.join(output_dir, "vision_encoder.onnx")
+        self.assertExists(vision_onnx_path)
 
-        # --- Run a forward pass to verify the model works ---
+        text_onnx_path = os.path.join(output_dir, "model.onnx")
+        self.assertExists(text_onnx_path)
+
+        # --- Verify genai_config.json has vision_encoder section ---
+        import json
+
+        genai_config_path = os.path.join(output_dir, "genai_config.json")
+        self.assertExists(genai_config_path)
+        with open(genai_config_path) as f:
+            genai_config = json.load(f)
+        self.assertIn("vision_encoder", genai_config["model"])
+        ve_cfg = genai_config["model"]["vision_encoder"]
+        self.assertEqual(ve_cfg["filename"], "vision_encoder.onnx")
+        self.assertEqual(ve_cfg["image_size"], image_size)
+        self.assertEqual(ve_cfg["patch_size"], patch_size)
+        self.assertEqual(ve_cfg["spatial_merge_size"], spatial_merge_size)
+
+        # --- Run vision encoder forward pass ---
+        num_patches_per_side = image_size // patch_size
+        expected_merged_patches = (num_patches_per_side**2) // (spatial_merge_size**2)
+
+        vision_sess = self.check_ort(vision_onnx_path)
+        pixel_values = np.zeros(
+            (1, vision_config.num_channels, image_size, image_size), dtype=np.float32
+        )
+        vision_outputs = vision_sess.run(None, {"pixel_values": pixel_values})
+        self.assertIsNotNone(vision_outputs[0])
+        self.assertEqual(vision_outputs[0].shape[0], expected_merged_patches)
+        self.assertEqual(vision_outputs[0].shape[1], text_config.hidden_size)
+
+        # --- Run text decoder forward pass ---
         # The ONNX model was built with exclude_embeds=True, so it expects
         # `inputs_embeds` (shape [batch, seq, hidden_size]) rather than
         # `input_ids`.  Compute the embeddings using the saved model weights.
@@ -223,8 +284,8 @@ class TestMinistral3(ExtTestCase):
                 model.model.language_model.embed_tokens(input_ids).numpy().astype(np.float32)
             )
 
-        sess = self.check_ort(onnx_path)
-        onnx_input_names = {inp.name for inp in sess.get_inputs()}
+        text_sess = self.check_ort(text_onnx_path)
+        onnx_input_names = {inp.name for inp in text_sess.get_inputs()}
 
         head_size = text_config.head_dim
         onnx_feed = {
@@ -243,7 +304,7 @@ class TestMinistral3(ExtTestCase):
             )
         onnx_feed = {k: v for k, v in onnx_feed.items() if k in onnx_input_names}
 
-        onnx_outputs = sess.run(None, onnx_feed)
+        onnx_outputs = text_sess.run(None, onnx_feed)
         self.assertIsNotNone(onnx_outputs[0])
 
 
