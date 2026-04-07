@@ -212,16 +212,23 @@ class TestMinistral3(ExtTestCase):
         self.check_ort(onnx_path)
 
         # --- Run a forward pass to verify the model works ---
+        # The ONNX model was built with exclude_embeds=True, so it expects
+        # `inputs_embeds` (shape [batch, seq, hidden_size]) rather than
+        # `input_ids`.  Compute the embeddings using the saved model weights.
         batch_size = 1
         seq_len = 5
         input_ids = torch.randint(0, text_config.vocab_size, (batch_size, seq_len))
+        with torch.no_grad():
+            inputs_embeds = (
+                model.model.language_model.embed_tokens(input_ids).numpy().astype(np.float32)
+            )
 
         sess = self.check_ort(onnx_path)
         onnx_input_names = {inp.name for inp in sess.get_inputs()}
 
         head_size = text_config.head_dim
         onnx_feed = {
-            "input_ids": input_ids.numpy().astype(np.int64),
+            "inputs_embeds": inputs_embeds,
             "attention_mask": np.ones((batch_size, seq_len), dtype=np.int64),
             "position_ids": np.arange(seq_len, dtype=np.int64).reshape(batch_size, seq_len),
         }
