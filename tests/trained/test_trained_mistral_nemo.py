@@ -100,7 +100,6 @@ class TestTrainedMistralNeMo(ExtTestCase):
         self.assertLess(disc["max_abs_err"], 2)
 
     @long_test()
-    @requires_cuda()
     def test_trained_mistral_nemo_discrepancies_cpu(self):
         """
         Convert mistralai/Mistral-Nemo-Instruct-2407 to an fp16 ONNX model
@@ -116,7 +115,7 @@ class TestTrainedMistralNeMo(ExtTestCase):
 
         precision, dtype, np_dtype = "fp32", torch.float32, np.float32
 
-        onnx_path, model = self._common_part(precision, dtype)
+        onnx_path, model = self._common_part(precision, dtype, provider="cpu")
         sess = self._check_with_ort(onnx_path, cpu=True)
         config = model.config
 

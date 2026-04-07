@@ -344,18 +344,18 @@ class ExtTestCase(unittest.TestCase):
         batch_size: int = 1,
         seq_len: int = 5,
         past_length: int = 0,
-        input_embeds_dim: int = -1,
+        inputs_embeds_dim: int = -1,
     ):
         import torch
         import transformers
 
-        if input_embeds_dim > 0:
+        if inputs_embeds_dim > 0:
             onnx_feed = {
                 "attention_mask": np.random.randint(
                     0, 1, (batch_size, seq_len + past_length), dtype=np.int64
                 ),
-                "input_embeds": np.random.randn(
-                    batch_size, seq_len, input_embeds_dim, 3072
+                "inputs_embeds": np.random.randn(
+                    batch_size, seq_len, inputs_embeds_dim, 3072
                 ).astype(dtype=np_dtype),
             }
         else:
@@ -419,7 +419,7 @@ def get_numpy_discrepancy(array_a, array_b):
         raise ValueError(f"Shape mismatch: {a.shape} vs {b.shape}")
 
     # 2. Calculate Absolute Difference |a - b|
-    diff = np.abs(a - b)
+    diff = np.nan_to_num(np.abs(a - b))
 
     # 3. Maximum Discrepancy (Max Error)
     max_disc = np.max(diff)
@@ -434,12 +434,13 @@ def get_numpy_discrepancy(array_a, array_b):
 
     n = np.prod(a.shape)
     return {
-        "max_abs_err": float(max_disc),
+        "max_abs_err": float(max_disc) if not np.isnan(max_disc) else np.inf,
         "%_gt_0.1": mismatches_01 / n,
         "%_gt_0.01": mismatches_001 / n,
         "avg_abs_discrepancy": float(avg_disc),
         "shape": tuple(int(i) for i in a.shape),
         "dtype": a.dtype,
+        "dnan": float(np.isnan(b).sum() - np.isnan(a).sum()) / n,
     }
 
 

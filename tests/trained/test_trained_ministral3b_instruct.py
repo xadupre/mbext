@@ -74,11 +74,10 @@ class TestTrainedMinistral3BInstruct(ExtTestCase):
             num_hidden_layers=config.text_config.num_hidden_layers,
             num_key_value_heads=config.text_config.num_key_value_heads,
             vocab_size=config.text_config.vocab_size,
-            input_embeds_dim=3072,
+            inputs_embeds_dim=3072,
         )
 
         with torch.no_grad():
-            print("****", list(torch_feed))
             pt_logits = model(**torch_feed).logits
         pt_logits = pt_logits.detach().cpu().numpy()
 
@@ -182,6 +181,98 @@ class TestTrainedMinistral3BInstruct(ExtTestCase):
                 experiment="generate",
                 provider="cuda",
                 test="test_trained_ministral3b_instruct_genai_generate_cuda",
+                expected_text=tokenizer.decode(
+                    pt_tokens[start_sequence:], skip_special_tokens=False
+                ),
+                genai_text=tokenizer.decode(og_tokens, skip_special_tokens=False),
+                input_type="text",
+            )
+        )
+        self.log_results(disc)
+        self.assertEqual(pt_tokens, og_tokens)
+
+    @long_test()
+    def test_trained_ministral3b_instruct_genai_generate_cpu(self):
+        """
+        Compare ``transformers.generate`` with ``onnxruntime-genai`` generate
+        on the ``mistralai/Ministral-3B-Instruct-2512`` trained model (CPU,
+        fp32).
+
+        Both backends use greedy (argmax) decoding, so the generated token
+        sequences must be bit-for-bit identical.
+
+        The test is skipped automatically when ``onnxruntime-genai`` is not
+        installed.
+        """
+        try:
+            import onnxruntime_genai as og
+        except ImportError:
+            raise unittest.SkipTest(
+                "onnxruntime-genai is not installed; skipping genai comparison test."
+            )
+
+        import torch
+        from transformers import AutoTokenizer
+
+        precision, dtype = "fp32", torch.float32
+
+        onnx_path, model = self._common_part(precision, dtype, provider="cpu")
+
+        genai_config_path = os.path.join(os.path.dirname(onnx_path), "genai_config.json")
+        self.assertExists(genai_config_path)
+
+        tokenizer = AutoTokenizer.from_pretrained(MINISTRAL3B_MODEL_NAME)
+        prompt = "Once upon a time"
+        max_new_tokens = 20
+
+        # ------------------------------------------------------------------
+        # transformers greedy generation (reference)
+        # ------------------------------------------------------------------
+        inputs = tokenizer(prompt, return_tensors="pt")
+        start_sequence = inputs["input_ids"].shape[1]
+        inputs = inputs.to("cuda")
+        prompt_len = inputs["input_ids"].shape[1]
+        with torch.no_grad():
+            pt_output = model.generate(
+                **inputs,
+                max_new_tokens=max_new_tokens,
+                do_sample=False,
+                pad_token_id=tokenizer.eos_token_id,
+            )
+        # Keep only the newly generated tokens (exclude the prompt).
+        pt_tokens = pt_output[0][prompt_len:].tolist()
+
+        # ------------------------------------------------------------------
+        # onnxruntime-genai greedy generation
+        # ------------------------------------------------------------------
+        og_model = og.Model(os.path.dirname(onnx_path))
+
+        params = og.GeneratorParams(og_model)
+        params.set_search_options(
+            do_sample=False,
+            max_length=prompt_len + max_new_tokens,
+            temperature=1.0,
+            top_k=1,
+        )
+
+        generator = og.Generator(og_model, params)
+        generator.append_tokens(inputs["input_ids"])
+
+        og_tokens = []
+        while not generator.is_done():
+            generator.generate_next_token()
+            og_tokens.append(int(generator.get_next_tokens()[0]))
+
+        # Greedy decoding is deterministic: both backends must produce the
+        # exact same newly-generated token sequence.
+        disc = self.first_token_diff(pt_tokens, og_tokens)
+        disc.update(
+            dict(
+                precision=precision,
+                model_id=MINISTRAL3B_MODEL_NAME,
+                experiment="generate",
+                provider="cpu",
+                test="test_trained_ministral3b_instruct_genai_generate_cpu",
                 expected_text=tokenizer.decode(
                     pt_tokens[start_sequence:], skip_special_tokens=False
                 ),

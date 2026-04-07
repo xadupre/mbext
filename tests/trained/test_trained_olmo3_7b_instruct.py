@@ -59,7 +59,7 @@ class TestTrainedOLMo3Instruct(ExtTestCase):
 
         precision, dtype, np_dtype = "fp32", torch.float32, np.float32
 
-        onnx_path, model = self._common_part(precision, dtype)
+        onnx_path, model = self._common_part(precision, dtype, provider="cpu")
         sess = self._check_with_ort(onnx_path, cpu=True)
         config = model.config
 
@@ -86,6 +86,7 @@ class TestTrainedOLMo3Instruct(ExtTestCase):
         onnx_logits = onnx_outputs[0]
 
         disc = self.get_numpy_discrepancy(pt_logits, onnx_logits)
+        print("***", pt_logits.dtype, pt_logits.shape, onnx_logits.dtype, onnx_logits.shape)
         disc.update(
             dict(
                 precision=precision,
