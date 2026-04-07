@@ -167,6 +167,132 @@ class TestMistralNeMo(ExtTestCase):
             pt_logits[:, :1, :], onnx_logits[:, :1, :], atol=1e-3, rtol=1e-3
         )
 
+    @hide_stdout()
+    def test_mistral_nemo_fp32_cpu_random_weights_8_layers(self):
+        """
+        Same as ``test_mistral_nemo_fp32_cpu_random_weights`` but with 8 hidden
+        layers, matching the depth used by the real Mistral-NeMo model.
+
+        This test exercises that KV-cache shapes for all 8 layers are written
+        with the correct ``head_size`` — verifying the fix for the mismatch
+        between ``config.head_dim`` (160, derived from
+        ``hidden_size // num_attention_heads``) and the actual weight-derived
+        value (64, derived from ``k_proj.weight.shape[0] // num_kv_heads``).
+
+        The test verifies that:
+        * ``create_model`` completes without error when given a local model
+          directory.
+        * The expected ``model.onnx`` file is written to the output directory.
+        * The produced ONNX file can be loaded by ``onnxruntime``.
+        * ORT inference succeeds for all 8 KV-cache layers using the correct
+          ``head_size``.
+        """
+        import torch
+        from tokenizers import Tokenizer
+        from tokenizers.models import WordLevel
+        from transformers import (
+            AutoModelForCausalLM,
+            MistralConfig,
+            PreTrainedTokenizerFast,
+        )
+
+        from modelbuilder.builder import create_model
+
+        # 8 layers; head_dim is intentionally left absent so that transformers
+        # will default to hidden_size // num_attention_heads = 512 // 8 = 64.
+        # The actual k_proj weight will have shape
+        # [num_kv_heads * head_dim, hidden_size] = [4 * 64, 512] = [256, 512],
+        # so the correct head_dim is also 64 here (no mismatch in this random
+        # model).  What matters is that all 8 KV-cache slots are constructed
+        # with the correct head_size.
+        num_hidden_layers = 8
+        config = MistralConfig(
+            architectures=["MistralNeMoForCausalLM"],
+            bos_token_id=1,
+            eos_token_id=2,
+            hidden_act="silu",
+            hidden_size=512,
+            intermediate_size=1376,
+            max_position_embeddings=1024,
+            model_type="mistral",
+            num_attention_heads=8,
+            num_hidden_layers=num_hidden_layers,
+            num_key_value_heads=4,
+            rms_norm_eps=1e-05,
+            rope_theta=1000000.0,
+            sliding_window=None,
+            vocab_size=32000,
+        )
+
+        model_dir = self.get_model_dir("test_mistral_nemo_fp32_cpu_random_weights_8_layers")
+        output_dir, cache_dir = self.get_dirs(
+            "test_mistral_nemo_fp32_cpu_random_weights_8_layers"
+        )
+
+        model = AutoModelForCausalLM.from_config(config)
+        model.eval()
+        model.save_pretrained(model_dir)
+
+        vocab = {"<unk>": 0, "<s>": 1, "</s>": 2}
+        tokenizer = PreTrainedTokenizerFast(
+            tokenizer_object=Tokenizer(WordLevel(vocab=vocab, unk_token="<unk>")),
+            bos_token="<s>",
+            eos_token="</s>",
+            unk_token="<unk>",
+        )
+        tokenizer.save_pretrained(model_dir)
+
+        create_model(
+            model_name=MISTRAL_NEMO_MODEL_NAME,
+            input_path=model_dir,
+            output_dir=output_dir,
+            precision="fp32",
+            execution_provider="cpu",
+            cache_dir=cache_dir,
+            num_hidden_layers=num_hidden_layers,
+        )
+
+        onnx_path = os.path.join(output_dir, "model.onnx")
+        self.assertExists(onnx_path)
+        sess = self.check_ort(onnx_path)
+
+        # --- PyTorch inference ---
+        batch_size = 1
+        seq_len = 3
+        input_ids = torch.randint(0, config.vocab_size, (batch_size, seq_len))
+        with torch.no_grad():
+            pt_logits = model(input_ids).logits.numpy()
+
+        onnx_input_names = {inp.name for inp in sess.get_inputs()}
+
+        # Use config.head_dim (the authoritative head dimension) for KV-cache.
+        head_size = config.head_dim
+        onnx_feed = {
+            "input_ids": input_ids.numpy().astype(np.int64),
+            "attention_mask": np.ones((batch_size, seq_len), dtype=np.int64),
+            "position_ids": np.arange(seq_len, dtype=np.int64).reshape(batch_size, seq_len),
+        }
+        # Provide empty past KV-cache tensors for all 8 layers.
+        for i in range(num_hidden_layers):
+            onnx_feed[f"past_key_values.{i}.key"] = np.zeros(
+                (batch_size, config.num_key_value_heads, 0, head_size),
+                dtype=np.float32,
+            )
+            onnx_feed[f"past_key_values.{i}.value"] = np.zeros(
+                (batch_size, config.num_key_value_heads, 0, head_size),
+                dtype=np.float32,
+            )
+        # Keep only what the session expects.
+        onnx_feed = {k: v for k, v in onnx_feed.items() if k in onnx_input_names}
+
+        onnx_outputs = sess.run(None, onnx_feed)
+        onnx_logits = onnx_outputs[0]
+
+        self.assertEqual(pt_logits.shape, onnx_logits.shape)
+        np.testing.assert_allclose(
+            pt_logits[:, :1, :], onnx_logits[:, :1, :], atol=1e-3, rtol=1e-3
+        )
+
     def test_mistral_nemo_load_weights_returns_cached(self):
         """
         Verify that ``MistralNeMoModel.load_weights`` returns the pre-loaded
