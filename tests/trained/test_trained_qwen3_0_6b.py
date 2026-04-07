@@ -209,7 +209,6 @@ class TestTrainedQwen3(ExtTestCase):
         # transformers greedy generation (reference)
         # ------------------------------------------------------------------
         inputs = tokenizer(prompt, return_tensors="pt")
-        start_sequence = inputs["input_ids"].shape[1]
         inputs = inputs.to("cpu")
         prompt_len = inputs["input_ids"].shape[1]
         with torch.no_grad():
@@ -253,14 +252,12 @@ class TestTrainedQwen3(ExtTestCase):
                 experiment="generate",
                 provider="cpu",
                 test="test_trained_qwen_qwen3_0_6b_genai_generate_cpu",
-                expected_text=tokenizer.decode(
-                    pt_tokens[start_sequence:], skip_special_tokens=False
-                ),
+                expected_text=tokenizer.decode(pt_tokens, skip_special_tokens=False),
                 genai_text=tokenizer.decode(og_tokens, skip_special_tokens=False),
             )
         )
         self.log_results(disc)
-        self.assertEqual(pt_tokens[start_sequence:], og_tokens)
+        self.assertEqual(pt_tokens, og_tokens)
 
     @long_test()
     @requires_cuda()
@@ -300,7 +297,6 @@ class TestTrainedQwen3(ExtTestCase):
         # transformers greedy generation (reference)
         # ------------------------------------------------------------------
         inputs = tokenizer(prompt, return_tensors="pt")
-        start_sequence = inputs["input_ids"].shape[1]
         inputs = inputs.to("cuda")
         prompt_len = inputs["input_ids"].shape[1]
         with torch.no_grad():
@@ -344,14 +340,12 @@ class TestTrainedQwen3(ExtTestCase):
                 experiment="generate",
                 provider="cuda",
                 test="test_trained_qwen_qwen3_0_6b_genai_generate_cuda",
-                expected_text=tokenizer.decode(
-                    pt_tokens[start_sequence:], skip_special_tokens=False
-                ),
+                expected_text=tokenizer.decode(pt_tokens, skip_special_tokens=False),
                 genai_text=tokenizer.decode(og_tokens, skip_special_tokens=False),
             )
         )
         self.log_results(disc)
-        self.assertEqual(pt_tokens[start_sequence:], og_tokens)
+        self.assertEqual(pt_tokens, og_tokens)
 
 
 if __name__ == "__main__":
