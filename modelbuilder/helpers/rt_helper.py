@@ -159,7 +159,7 @@ def onnx_generate(
         import onnx
         import onnx.helper as oh
         import onnx.numpy_helper as onh
-        from modelbuilder.rt_helper import onnx_generate
+        from modelbuilder.helpers.rt_helper import onnx_generate
 
         TINT64 = onnx.TensorProto.INT64
         TFLOAT = onnx.TensorProto.FLOAT
