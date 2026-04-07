@@ -354,9 +354,9 @@ class ExtTestCase(unittest.TestCase):
                 "attention_mask": np.random.randint(
                     0, 1, (batch_size, seq_len + past_length), dtype=np.int64
                 ),
-                "input_embeds": np.random.randint(
-                    0, 1, (batch_size, seq_len, input_embeds_dim), dtype=np_dtype
-                ),
+                "input_embeds": np.random.randn(
+                    batch_size, seq_len, input_embeds_dim, 3072
+                ).astype(dtype=np_dtype),
             }
         else:
             onnx_feed = {
@@ -567,9 +567,10 @@ def results_to_markdown(results: List[Dict[str, Any]]) -> str:
     ]:
         if c in df.columns:
             df = df.drop(c, axis=1)
-    df = (
-        df.set_index(["model_id", "experiment", "precision", "provider", "input_type"])
-        .reset_index(drop=False)
-        .fillna("")
-    )
+    index = [
+        c
+        for c in ["model_id", "experiment", "precision", "provider", "input_type"]
+        if c in df.columns
+    ]
+    df = df.set_index(index).reset_index(drop=False).fillna("")
     return df.to_markdown()

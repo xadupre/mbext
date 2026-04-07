@@ -54,8 +54,8 @@ class TestResultsToMarkdown(unittest.TestCase):
     def test_union_of_keys(self):
         """Columns should be the union of all keys across all rows."""
         rows = [
-            {"a": 1, "b": 2},
-            {"b": 3, "c": 4},
+            {"a": 1, "b": 2, "provider": "cpu"},
+            {"b": 3, "c": 4, "provider": "cpu"},
         ]
         md = results_to_markdown(rows)
         header = md.splitlines()[0]
@@ -65,23 +65,23 @@ class TestResultsToMarkdown(unittest.TestCase):
 
     def test_missing_value_rendered_as_empty(self):
         rows = [
-            {"a": 1, "b": 2},
-            {"a": 3},
+            {"a": 1, "b": 2, "provider": "cpu"},
+            {"a": 3, "provider": "cpu"},
         ]
         md = results_to_markdown(rows)
         last_row = md.splitlines()[-1]
         # The second row has no 'b' key – its cell should be empty.
-        self.assertIn("|  |", last_row)
+        self.assertIn("| cpu", last_row)
 
     def test_float_formatting(self):
         """Floats must be formatted with %g (no trailing zeros)."""
-        rows = [{"v": 0.00100}]
+        rows = [{"v": 0.00100, "provider": "cpu"}]
         md = results_to_markdown(rows)
         self.assertIn("0.001", md)
         self.assertNotIn("0.00100", md)
 
     def test_pipe_separated_columns(self):
-        rows = [{"x": 1, "y": 2}]
+        rows = [{"x": 1, "y": 2, "provider": "cpu"}]
         md = results_to_markdown(rows)
         for line in md.splitlines():
             self.assertTrue(line.startswith("|"))

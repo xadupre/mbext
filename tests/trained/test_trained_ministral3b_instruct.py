@@ -78,6 +78,7 @@ class TestTrainedMinistral3BInstruct(ExtTestCase):
         )
 
         with torch.no_grad():
+            print("****", list(torch_feed))
             pt_logits = model(**torch_feed).logits
         pt_logits = pt_logits.detach().cpu().numpy()
 

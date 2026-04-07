@@ -29,6 +29,7 @@ dev = [
     "pytest-coverage",
     "pytest-subtests",
     "ruff",
+    "tabulate",
     "transformers",
 ]
 
