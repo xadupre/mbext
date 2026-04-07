@@ -55,6 +55,24 @@ class PvVersion:
         return self.t_version < other.t_version
 
 
+def requires_yobx(version: str = "", msg: str = "") -> Callable:
+    try:
+        import yobx
+    except ImportError:
+        return unittest.skip(msg or "yobx not installed")
+
+    if not hasattr(yobx, "__version__"):
+        return unittest.skip(msg or "yobx not properly installed")
+
+    if not version:
+        return lambda x: x
+
+    if PvVersion(yobx.__version__) < PvVersion(version):
+        msg = f"onnx_ir version {yobx.__version__} < {version}: {msg}"
+        return unittest.skip(msg)
+    return lambda x: x
+
+
 def has_cuda() -> bool:
     """Returns ``torch.cuda.device_count() > 0``."""
     if not has_torch():
