@@ -1,5 +1,7 @@
+import ast
 import contextlib
 import io
+import json
 import os
 import re
 import shutil
@@ -322,8 +324,14 @@ class ExtTestCase(unittest.TestCase):
     def log_results(self, data: Dict[str, Any]):
         stat_folder = "stats"
         os.makedirs(stat_folder, exist_ok=True)
-        with open(os.path.join(stat_folder, "end2end_results.json"), "a") as f:
-            f.write(str(data) + "\n")
+        json_path = os.path.join(stat_folder, "end2end_results.json")
+        serializable = {k: _make_json_serializable(v) for k, v in data.items()}
+        with open(json_path, "a") as f:
+            f.write(json.dumps(serializable) + "\n")
+        results = _read_results(json_path)
+        md = results_to_markdown(results)
+        with open(os.path.join(stat_folder, "end2end_results.md"), "w") as f:
+            f.write(md + "\n")
 
 
 def first_token_diff(expected: List[int], values: List[int]) -> Dict[str, Any]:
@@ -416,3 +424,88 @@ def get_pytorch_discrepancy(tensor_a, tensor_b):
         "shape": tuple(int(i) for i in a.shape),
         "dtype": a.dtype,
     }
+
+
+def _make_json_serializable(value: Any) -> Any:
+    """Convert a value to a JSON-serializable form."""
+    if isinstance(value, np.dtype):
+        return str(value)
+    if isinstance(value, np.integer):
+        return int(value)
+    if isinstance(value, np.floating):
+        return float(value)
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+    if isinstance(value, tuple):
+        return list(value)
+    return value
+
+
+def _read_results(json_path: str) -> List[Dict[str, Any]]:
+    """Read all newline-delimited JSON records from *json_path*.
+
+    Lines that cannot be parsed (legacy ``str(dict)`` format) are loaded with
+    :func:`ast.literal_eval` as a fallback; any value that is still
+    un-evaluable is stored as the raw string.
+    """
+    results: List[Dict[str, Any]] = []
+    with open(json_path) as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                results.append(json.loads(line))
+            except json.JSONDecodeError:
+                try:
+                    results.append(ast.literal_eval(line))
+                except Exception:
+                    pass
+    return results
+
+
+def results_to_markdown(results: List[Dict[str, Any]]) -> str:
+    """Convert a list of result dictionaries to a Markdown table.
+
+    Each dictionary produces one row in the table.  Columns are derived from
+    the union of all keys found across every row, preserving insertion order.
+
+    :param results: list of result dicts (e.g. as produced by
+        :meth:`ExtTestCase.log_results`).
+    :return: a Markdown-formatted table string, or an empty string when
+        *results* is empty.
+
+    Example::
+
+        >>> from modelbuilder.ext_test_case import results_to_markdown
+        >>> rows = [
+        ...     {"model_id": "my-model", "experiment": "prefill", "max_abs_err": 1e-4},
+        ...     {"model_id": "my-model", "experiment": "decode",  "max_abs_err": 2e-4},
+        ... ]
+        >>> print(results_to_markdown(rows))
+        | model_id | experiment | max_abs_err |
+        | --- | --- | --- |
+        | my-model | prefill | 0.0001 |
+        | my-model | decode | 0.0002 |
+    """
+    if not results:
+        return ""
+
+    # Collect all keys in insertion order (across all rows).
+    all_keys: List[str] = []
+    seen: set = set()
+    for row in results:
+        for key in row:
+            if key not in seen:
+                all_keys.append(key)
+                seen.add(key)
+
+    def _fmt(v: Any) -> str:
+        if isinstance(v, float):
+            return f"{v:g}"
+        return str(v)
+
+    header = "| " + " | ".join(str(k) for k in all_keys) + " |"
+    sep = "| " + " | ".join("---" for _ in all_keys) + " |"
+    rows = ["| " + " | ".join(_fmt(row.get(k, "")) for k in all_keys) + " |" for row in results]
+    return "\n".join([header, sep] + rows)
