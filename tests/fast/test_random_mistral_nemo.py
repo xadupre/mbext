@@ -136,9 +136,19 @@ class TestMistralNeMo(ExtTestCase):
     def test_mistral_nemo_torch_onnx_export(self):
         """
         Verify that a randomly-initialised MistralNeMoForCausalLM can be
-        exported to ONNX using ``torch.onnx.export`` and that the exported
-        model produces logits that closely match those of the original PyTorch
-        model.
+        exported to ONNX using ``torch.onnx.export`` with ``attention_mask``
+        and a dynamic KV-cache (present/past key-value tensors).
+
+        The model is wrapped so that ``torch.onnx.export`` sees plain tensor
+        inputs and outputs instead of the ``DynamicCache`` objects that
+        transformers uses internally.  The wrapper:
+
+        * accepts ``input_ids``, ``attention_mask``, and one pair of
+          ``past_key`` / ``past_value`` tensors per hidden layer;
+        * reconstructs a ``DynamicCache`` from those tensors before calling
+          the underlying model with ``use_cache=True``; and
+        * unpacks the updated KV-cache back into plain tensors for the
+          outputs.
 
         Using random weights and a single hidden layer avoids downloading any
         files from Hugging Face, keeping the test completely offline.
@@ -146,10 +156,13 @@ class TestMistralNeMo(ExtTestCase):
         The test verifies that:
         * ``torch.onnx.export`` completes without error.
         * The exported ONNX file can be loaded by ``onnxruntime``.
-        * The ONNX logits closely match those of the original PyTorch model.
+        * The ONNX logits closely match those of the original PyTorch model
+          for both a **prefill** step (empty KV-cache) and a **decode** step
+          (non-empty KV-cache from the prefill).
         """
         import torch
         from transformers import AutoModelForCausalLM, MistralConfig
+        from transformers.cache_utils import DynamicCache
 
         num_hidden_layers = 1
         config = MistralConfig(
@@ -179,49 +192,111 @@ class TestMistralNeMo(ExtTestCase):
 
         batch_size = 1
         seq_len = 5
+        head_size = config.hidden_size // config.num_attention_heads
         input_ids = torch.randint(0, config.vocab_size, (batch_size, seq_len))
+        attention_mask = torch.ones(batch_size, seq_len, dtype=torch.long)
 
-        # Wrap the model to return only logits and disable the KV-cache so that
-        # torch.onnx.export does not need to handle dynamic-cache objects.
-        class LogitsWrapper(torch.nn.Module):
+        # Empty past KV-cache tensors for the prefill step.
+        past_key = torch.zeros(batch_size, config.num_key_value_heads, 0, head_size)
+        past_value = torch.zeros(batch_size, config.num_key_value_heads, 0, head_size)
+
+        # Wrapper that presents plain tensors to torch.onnx.export while
+        # using DynamicCache internally (transformers >=5 requirement).
+        class MistralNeMoWithKVCache(torch.nn.Module):
             def __init__(self, m):
                 super().__init__()
                 self.m = m
 
-            def forward(self, input_ids):
-                return self.m(input_ids, use_cache=False).logits
+            def forward(self, input_ids, attention_mask, past_key, past_value):
+                cache = DynamicCache()
+                cache.update(past_key, past_value, layer_idx=0)
+                out = self.m(
+                    input_ids=input_ids,
+                    attention_mask=attention_mask,
+                    past_key_values=cache,
+                    use_cache=True,
+                )
+                layer = out.past_key_values.layers[0]
+                return out.logits, layer.keys, layer.values
 
-        wrapper = LogitsWrapper(model)
+        wrapper = MistralNeMoWithKVCache(model)
         wrapper.eval()
 
-        # Capture PyTorch reference logits before export.
+        # Capture PyTorch reference outputs for the prefill step.
         with torch.no_grad():
-            pt_logits = wrapper(input_ids).numpy()
+            pt_logits, pt_present_key, pt_present_value = wrapper(
+                input_ids, attention_mask, past_key, past_value
+            )
 
         # Export to ONNX using torch.onnx.export.
         with torch.no_grad():
             torch.onnx.export(
                 wrapper,
-                (input_ids,),
+                (input_ids, attention_mask, past_key, past_value),
                 onnx_path,
-                input_names=["input_ids"],
-                output_names=["logits"],
+                input_names=[
+                    "input_ids",
+                    "attention_mask",
+                    "past_key_values.0.key",
+                    "past_key_values.0.value",
+                ],
+                output_names=["logits", "present.0.key", "present.0.value"],
                 dynamic_axes={
                     "input_ids": {0: "batch_size", 1: "sequence_length"},
+                    "attention_mask": {0: "batch_size", 1: "total_sequence_length"},
+                    "past_key_values.0.key": {0: "batch_size", 2: "past_sequence_length"},
+                    "past_key_values.0.value": {0: "batch_size", 2: "past_sequence_length"},
                     "logits": {0: "batch_size", 1: "sequence_length"},
+                    "present.0.key": {0: "batch_size", 2: "total_sequence_length"},
+                    "present.0.value": {0: "batch_size", 2: "total_sequence_length"},
                 },
-                opset_version=17,
+                opset_version=18,
             )
 
         self.assertExists(onnx_path)
         sess = self.check_ort(onnx_path)
 
-        onnx_logits = sess.run(
-            ["logits"],
-            {"input_ids": input_ids.numpy().astype(np.int64)},
-        )[0]
+        # ------------------------------------------------------------------
+        # Step 1: prefill — empty KV-cache
+        # ------------------------------------------------------------------
+        prefill_out = sess.run(
+            None,
+            {
+                "input_ids": input_ids.numpy().astype(np.int64),
+                "attention_mask": attention_mask.numpy().astype(np.int64),
+                "past_key_values.0.key": past_key.numpy(),
+                "past_key_values.0.value": past_value.numpy(),
+            },
+        )
+        onnx_logits, onnx_present_key, onnx_present_value = prefill_out
 
-        np.testing.assert_allclose(pt_logits, onnx_logits, atol=1e-4, rtol=1e-4)
+        np.testing.assert_allclose(
+            pt_logits.numpy(), onnx_logits, atol=1e-4, rtol=1e-4
+        )
+
+        # ------------------------------------------------------------------
+        # Step 2: decode — use KV-cache produced by the prefill step
+        # ------------------------------------------------------------------
+        decode_ids = torch.randint(0, config.vocab_size, (batch_size, 1))
+        decode_mask = torch.ones(batch_size, seq_len + 1, dtype=torch.long)
+
+        with torch.no_grad():
+            pt_dec_logits, _, _ = wrapper(
+                decode_ids, decode_mask, pt_present_key, pt_present_value
+            )
+
+        dec_out = sess.run(
+            None,
+            {
+                "input_ids": decode_ids.numpy().astype(np.int64),
+                "attention_mask": decode_mask.numpy().astype(np.int64),
+                "past_key_values.0.key": onnx_present_key,
+                "past_key_values.0.value": onnx_present_value,
+            },
+        )
+        np.testing.assert_allclose(
+            pt_dec_logits.numpy(), dec_out[0], atol=1e-4, rtol=1e-4
+        )
 
 
 if __name__ == "__main__":
