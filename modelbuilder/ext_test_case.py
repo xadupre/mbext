@@ -333,6 +333,62 @@ class ExtTestCase(unittest.TestCase):
         with open(os.path.join(stat_folder, "end2end_results.md"), "w") as f:
             f.write(md + "\n")
 
+    def make_dummy_text_inputs(
+        self,
+        np_dtype,
+        provider: str,
+        num_hidden_layers: int,
+        num_key_value_heads: int,
+        head_size: int,
+        vocab_size: int,
+        batch_size: int = 1,
+        seq_len: int = 5,
+        past_length: int = 0,
+        inputs_embeds_dim: int = -1,
+    ):
+        import torch
+        import transformers
+
+        if inputs_embeds_dim > 0:
+            onnx_feed = {
+                "attention_mask": np.random.randint(
+                    0, 1, (batch_size, seq_len + past_length), dtype=np.int64
+                ),
+                "inputs_embeds": np.random.randn(
+                    batch_size, seq_len, inputs_embeds_dim, 3072
+                ).astype(dtype=np_dtype),
+            }
+        else:
+            onnx_feed = {
+                "input_ids": np.random.randint(
+                    0, vocab_size, (batch_size, seq_len), dtype=np.int64
+                ),
+                "attention_mask": np.random.randint(
+                    0, 1, (batch_size, seq_len + past_length), dtype=np.int64
+                ),
+            }
+        torch_feed = {k: torch.from_numpy(v).to(provider) for k, v in onnx_feed.items()}
+        cache = []
+        for i in range(num_hidden_layers):
+            onnx_feed[f"past_key_values.{i}.key"] = np.random.randn(
+                batch_size, num_key_value_heads, past_length, head_size
+            ).astype(np_dtype)
+            onnx_feed[f"past_key_values.{i}.value"] = np.random.randn(
+                batch_size, num_key_value_heads, past_length, head_size
+            ).astype(np_dtype)
+            cache.append(
+                (
+                    torch.from_numpy(onnx_feed[f"past_key_values.{i}.key"]).to(provider),
+                    torch.from_numpy(onnx_feed[f"past_key_values.{i}.value"]).to(provider),
+                )
+            )
+
+        dc = transformers.cache_utils.DynamicCache()
+        for i, lay in enumerate(cache):
+            dc.update(lay[0], lay[1], layer_idx=i)
+        torch_feed["past_key_values"] = dc
+        return onnx_feed, torch_feed
+
 
 def first_token_diff(expected: List[int], values: List[int]) -> Dict[str, Any]:
     delta_length = len(values) - len(expected)
@@ -363,7 +419,7 @@ def get_numpy_discrepancy(array_a, array_b):
         raise ValueError(f"Shape mismatch: {a.shape} vs {b.shape}")
 
     # 2. Calculate Absolute Difference |a - b|
-    diff = np.abs(a - b)
+    diff = np.nan_to_num(np.abs(a - b))
 
     # 3. Maximum Discrepancy (Max Error)
     max_disc = np.max(diff)
@@ -378,12 +434,13 @@ def get_numpy_discrepancy(array_a, array_b):
 
     n = np.prod(a.shape)
     return {
-        "max_abs_err": float(max_disc),
+        "max_abs_err": float(max_disc) if not np.isnan(max_disc) else np.inf,
         "%_gt_0.1": mismatches_01 / n,
         "%_gt_0.01": mismatches_001 / n,
         "avg_abs_discrepancy": float(avg_disc),
         "shape": tuple(int(i) for i in a.shape),
         "dtype": a.dtype,
+        "dnan": float(np.isnan(b).sum() - np.isnan(a).sum()) / n,
     }
 
 
@@ -492,20 +549,29 @@ def results_to_markdown(results: List[Dict[str, Any]]) -> str:
         return ""
 
     # Collect all keys in insertion order (across all rows).
-    all_keys: List[str] = []
-    seen: set = set()
-    for row in results:
-        for key in row:
-            if key not in seen:
-                all_keys.append(key)
-                seen.add(key)
+    import pandas
 
-    def _fmt(v: Any) -> str:
-        if isinstance(v, float):
-            return f"{v:g}"
-        return str(v)
-
-    header = "| " + " | ".join(str(k) for k in all_keys) + " |"
-    sep = "| " + " | ".join("---" for _ in all_keys) + " |"
-    rows = ["| " + " | ".join(_fmt(row.get(k, "")) for k in all_keys) + " |" for row in results]
-    return "\n".join([header, sep] + rows)
+    df = pandas.DataFrame(results)
+    if "%_gt_0.1" in df.columns:
+        df["%>0.1"] = df["%_gt_0.1"]
+    if "%_gt_0.01" in df.columns:
+        df["%>0.01"] = df["%_gt_0.01"]
+    for c in [
+        "genai_text",
+        "expected_text",
+        "expected_length",
+        "delta_length",
+        "dtype",
+        "shape",
+        "%_gt_0.1",
+        "%_gt_0.01",
+    ]:
+        if c in df.columns:
+            df = df.drop(c, axis=1)
+    index = [
+        c
+        for c in ["model_id", "experiment", "precision", "provider", "input_type"]
+        if c in df.columns
+    ]
+    df = df.set_index(index).reset_index(drop=False).fillna("")
+    return df.to_markdown()

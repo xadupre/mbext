@@ -41,7 +41,7 @@ class TestTrainedSmolLM3(ExtTestCase):
         model = AutoModelForCausalLM.from_pretrained(
             SMOLLM3_MODEL_NAME, ignore_mismatched_sizes=True, dtype=dtype
         )
-        model.eval().to(provider)
+        model.eval().to(provider).to(dtype)
         return onnx_path, model
 
     @long_test()
@@ -70,32 +70,22 @@ class TestTrainedSmolLM3(ExtTestCase):
 
         batch_size = 1
         seq_len = 5
-        torch.manual_seed(0)
-        input_ids = torch.randint(0, config.vocab_size, (batch_size, seq_len)).to("cuda")
-        with torch.no_grad():
-            pt_logits = model(input_ids).logits
-        pt_logits = pt_logits.detach().cpu().numpy()
-
-        onnx_input_names = {inp.name for inp in sess.get_inputs()}
 
         head_size = config.hidden_size // config.num_attention_heads
-        onnx_feed = {
-            "input_ids": input_ids.detach().cpu().numpy().astype(np.int64),
-            "attention_mask": np.ones((batch_size, seq_len), dtype=np.int64),
-            "position_ids": np.arange(seq_len, dtype=np.int64).reshape(batch_size, seq_len),
-        }
-        # Provide empty past KV-cache tensors for every materialised layer.
-        for i in range(model.config.num_hidden_layers):
-            onnx_feed[f"past_key_values.{i}.key"] = np.zeros(
-                (batch_size, config.num_key_value_heads, 0, head_size),
-                dtype=np_dtype,
-            )
-            onnx_feed[f"past_key_values.{i}.value"] = np.zeros(
-                (batch_size, config.num_key_value_heads, 0, head_size),
-                dtype=np_dtype,
-            )
-        # Keep only what the session expects.
-        onnx_feed = {k: v for k, v in onnx_feed.items() if k in onnx_input_names}
+        onnx_feed, torch_feed = self.make_dummy_text_inputs(
+            batch_size=batch_size,
+            seq_len=seq_len,
+            np_dtype=np_dtype,
+            provider="cuda",
+            head_size=head_size,
+            num_hidden_layers=config.num_hidden_layers,
+            num_key_value_heads=config.num_key_value_heads,
+            vocab_size=config.vocab_size,
+        )
+
+        with torch.no_grad():
+            pt_logits = model(**torch_feed).logits
+        pt_logits = pt_logits.detach().cpu().numpy()
 
         onnx_outputs = sess.run(None, onnx_feed)
         onnx_logits = onnx_outputs[0]
@@ -108,6 +98,66 @@ class TestTrainedSmolLM3(ExtTestCase):
                 experiment="forward",
                 provider="cpu",
                 test="test_trained_huggingface_tb_smollm3_3b_discrepancies_cuda",
+                input_type="text",
+            )
+        )
+        self.log_results(disc)
+        self.assertLess(disc["max_abs_err"], 2)
+
+    @long_test()
+    def test_trained_huggingface_tb_smollm3_3b_discrepancies_cpu(self):
+        """
+        Convert HuggingFaceTB/SmolLM3-3B to an fp32 ONNX model targeting the
+        CPU execution provider.  Only a small number of hidden layers is
+        materialised (via ``num_hidden_layers``) so the test completes in a
+        reasonable time while still exercising both rope and no-rope code
+        paths (the default SmolLM3 config places a NoPE layer every 4th layer).
+
+        The test verifies that:
+        * ``create_model`` completes without error.
+        * The expected ``model.onnx`` file is written to the output directory.
+        * The produced ONNX file can be loaded by ``onnxruntime``.
+        * The ONNX logits closely match those of the original PyTorch model.
+        """
+        import torch
+
+        precision, dtype, np_dtype = "fp32", torch.float32, np.float32
+
+        onnx_path, model = self._common_part(precision, dtype)
+        sess = self._check_with_ort(onnx_path, cpu=True)
+        config = model.config
+
+        batch_size = 1
+        seq_len = 5
+
+        head_size = config.hidden_size // config.num_attention_heads
+        onnx_feed, torch_feed = self.make_dummy_text_inputs(
+            batch_size=batch_size,
+            seq_len=seq_len,
+            np_dtype=np_dtype,
+            provider="cpu",
+            head_size=head_size,
+            num_hidden_layers=config.num_hidden_layers,
+            num_key_value_heads=config.num_key_value_heads,
+            vocab_size=config.vocab_size,
+        )
+
+        with torch.no_grad():
+            pt_logits = model(**torch_feed).logits
+        pt_logits = pt_logits.detach().cpu().numpy()
+
+        onnx_outputs = sess.run(None, onnx_feed)
+        onnx_logits = onnx_outputs[0]
+
+        disc = self.get_numpy_discrepancy(pt_logits, onnx_logits)
+        disc.update(
+            dict(
+                precision=precision,
+                model_id=SMOLLM3_MODEL_NAME,
+                experiment="forward",
+                provider="cpu",
+                test="test_trained_huggingface_tb_smollm3_3b_discrepancies_cuda",
+                input_type="text",
             )
         )
         self.log_results(disc)
@@ -208,13 +258,13 @@ class TestTrainedSmolLM3(ExtTestCase):
                     pt_tokens[start_sequence:], skip_special_tokens=False
                 ),
                 genai_text=tokenizer.decode(og_tokens, skip_special_tokens=False),
+                input_type="text",
             )
         )
         self.log_results(disc)
         self.assertEqual(pt_tokens, og_tokens)
 
     @long_test()
-    @requires_cuda()
     def test_trained_smollm3_genai_generate_cpu(self):
         try:
             import onnxruntime_genai as og
@@ -290,6 +340,7 @@ class TestTrainedSmolLM3(ExtTestCase):
                     pt_tokens[start_sequence:], skip_special_tokens=False
                 ),
                 genai_text=tokenizer.decode(og_tokens, skip_special_tokens=False),
+                input_type="text",
             )
         )
         self.log_results(disc)

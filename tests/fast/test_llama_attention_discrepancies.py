@@ -252,6 +252,7 @@ class TestLlamaAttentionDiscrepancies(ExtTestCase):
                 experiment="attention_prefill",
                 provider="cpu",
                 test=test_name,
+                input_type="text",
             )
         )
         self.log_results(disc)
@@ -336,6 +337,7 @@ class TestLlamaAttentionDiscrepancies(ExtTestCase):
                 experiment="attention_decode",
                 provider="cpu",
                 test=test_name,
+                input_type="text",
             )
         )
         self.log_results(disc)

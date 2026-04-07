@@ -999,7 +999,7 @@ class Model:
                 model,
                 out_path,
                 external_data=os.path.basename(data_path),
-                size_threshold_bytes=0,
+                size_threshold_bytes=1024,
                 callback=callback,
             )
 
