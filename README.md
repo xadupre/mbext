@@ -16,6 +16,23 @@ black . && ruff check .
 pip install -e .[dev]
 ```
 
+## Supported Models
+
+The table below shows which models have test coverage across the three test
+tiers.  *Fast tests* use randomly-initialised weights and run entirely offline.
+*Trained tests* download the real model weights and check numerical
+discrepancies against PyTorch.  *Genai tests* additionally verify end-to-end
+token generation via ``onnxruntime-genai``.
+
+| Model | Architecture | Fast tests | Trained tests | Genai tests |
+|-------|-------------|:---------:|:------------:|:-----------:|
+| [arnir0/Tiny-LLM](https://huggingface.co/arnir0/Tiny-LLM) | `LlamaForCausalLM` | ✓ | ✓ CPU | ✓ CPU |
+| [openai/gpt-oss-20b](https://huggingface.co/openai/gpt-oss-20b) | `GptOssForCausalLM` | ✓ | | ✓ CPU |
+| [mistralai/Mistral-Nemo-Instruct-2407](https://huggingface.co/mistralai/Mistral-Nemo-Instruct-2407) | `MistralNeMoForCausalLM` | ✓ | ✓ CUDA | ✓ CUDA, CPU |
+| [allenai/OLMo-2-1124-7B](https://huggingface.co/allenai/OLMo-2-1124-7B) | `Olmo2ForCausalLM` | ✓ | | |
+| [allenai/OLMo-3-7B-Instruct](https://huggingface.co/allenai/OLMo-3-7B-Instruct) | `Olmo3ForCausalLM` | ✓ | ✓ CUDA | ✓ CUDA, CPU |
+| [HuggingFaceTB/SmolLM3-3B](https://huggingface.co/HuggingFaceTB/SmolLM3-3B) | `SmolLM3ForCausalLM` | ✓ | ✓ CUDA | ✓ CUDA, CPU |
+
 ## Fast Unit tests
 
 ```bash
