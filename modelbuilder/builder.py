@@ -30,6 +30,7 @@ from .builders import (
     GraniteModel,
     InternLM2Model,
     LlamaModel,
+    Ministral3TextModel,
     MistralModel,
     MistralNeMoModel,
     Model,
@@ -294,6 +295,22 @@ def create_model(
         )
     elif config.architectures[0] == "MistralForCausalLM":
         onnx_model = MistralModel(
+            config, io_dtype, onnx_dtype, execution_provider, cache_dir, extra_options
+        )
+    elif config.architectures[0] == "Ministral3ForCausalLM":
+        onnx_model = Ministral3TextModel(
+            config, io_dtype, onnx_dtype, execution_provider, cache_dir, extra_options
+        )
+    elif config.architectures[0] == "Mistral3ForConditionalGeneration":
+        text_config = config.text_config
+        for key in text_config:
+            if not hasattr(config, key):
+                setattr(config, key, getattr(text_config, key))
+        print(
+            "WARNING: This is only generating the text component of the model. Setting `--extra_options exclude_embeds=true` by default."
+        )
+        extra_options["exclude_embeds"] = True
+        onnx_model = Ministral3TextModel(
             config, io_dtype, onnx_dtype, execution_provider, cache_dir, extra_options
         )
     elif config.architectures[0] == "MistralNeMoForCausalLM":

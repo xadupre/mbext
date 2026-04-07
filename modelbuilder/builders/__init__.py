@@ -15,7 +15,7 @@ from .gptoss import GPTOSSModel
 from .granite import GraniteModel
 from .internlm import InternLM2Model
 from .llama import LlamaModel
-from .mistral import MistralModel, MistralNeMoModel
+from .mistral import Ministral3TextModel, MistralModel, MistralNeMoModel
 from .nemotron import NemotronModel
 from .olmo import OLMo2Model, OLMo3Model, OLMoModel
 from .phi import (
@@ -48,6 +48,7 @@ __all__ = [
     "GraniteModel",
     "InternLM2Model",
     "LlamaModel",
+    "Ministral3TextModel",
     "MistralModel",
     "MistralNeMoModel",
     "Model",
