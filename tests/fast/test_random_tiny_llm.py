@@ -275,6 +275,132 @@ class TestRandomTinyLLM(ExtTestCase):
         np.testing.assert_allclose(pt_decode_logits, onnx_decode_logits, atol=1e-3, rtol=1e-3)
 
     @hide_stdout()
+    def test_tiny_llm_int4_cpu_random_weights(self):
+        """
+        Convert a model with the same architecture as arnir0/Tiny-LLM but with
+        randomly initialised weights to an int4 ONNX model targeting the CPU
+        execution provider.
+
+        Using random weights avoids downloading the pretrained weights from
+        Hugging Face, making this test completely offline and suitable for CI
+        environments without internet access.  A single hidden layer is used
+        to keep the test fast.
+
+        For CPU + int4 the builder uses FP32 I/O with MatMulNBits quantized
+        weights (block size 32 by default), so inputs and outputs remain
+        float32 while the weight matrices are stored as 4-bit integers.
+
+        The test verifies that:
+        * ``create_model`` completes without error when given a local model
+          directory and ``precision="int4"``.
+        * The expected ``model.onnx`` file is written to the output directory.
+        * The produced ONNX file can be loaded by ``onnxruntime``.
+        * A forward pass produces logits with the correct shape and all-finite
+          values (no NaN or Inf).  Exact numeric agreement with the PyTorch
+          model is not expected because int4 quantisation introduces precision
+          loss.
+        """
+        import torch
+        from tokenizers import Tokenizer
+        from tokenizers.models import WordLevel
+        from transformers import (
+            AutoModelForCausalLM,
+            LlamaConfig,
+            PreTrainedTokenizerFast,
+        )
+
+        from modelbuilder.builder import create_model
+
+        # Config matching the arnir0/Tiny-LLM architecture (LlamaForCausalLM)
+        # but with a single hidden layer to keep the test fast.  These values
+        # are hardcoded so the test runs completely offline.
+        # All weight dimensions (512, 1376, 256) are divisible by the default
+        # int4 block size of 32, which is required by MatMulNBitsQuantizer.
+        num_hidden_layers = 1
+        config = LlamaConfig(
+            architectures=["LlamaForCausalLM"],
+            bos_token_id=1,
+            eos_token_id=2,
+            hidden_act="silu",
+            hidden_size=512,
+            intermediate_size=1376,
+            max_position_embeddings=2048,
+            model_type="llama",
+            num_attention_heads=8,
+            num_hidden_layers=num_hidden_layers,
+            num_key_value_heads=4,
+            rms_norm_eps=1e-05,
+            rope_theta=10000.0,
+            vocab_size=32000,
+        )
+
+        model_dir = self.get_model_dir("test_tiny_llm_int4_cpu_random_weights")
+        output_dir, cache_dir = self.get_dirs("test_tiny_llm_int4_cpu_random_weights")
+
+        torch.manual_seed(0)
+        model = AutoModelForCausalLM.from_config(config)
+        model.eval()
+        model.save_pretrained(model_dir)
+
+        vocab = {"<unk>": 0, "<s>": 1, "</s>": 2}
+        tokenizer = PreTrainedTokenizerFast(
+            tokenizer_object=Tokenizer(WordLevel(vocab=vocab, unk_token="<unk>")),
+            bos_token="<s>",
+            eos_token="</s>",
+            unk_token="<unk>",
+        )
+        tokenizer.save_pretrained(model_dir)
+
+        create_model(
+            model_name="arnir0/Tiny-LLM",
+            input_path=model_dir,
+            output_dir=output_dir,
+            precision="int4",
+            execution_provider="cpu",
+            cache_dir=cache_dir,
+            num_hidden_layers=num_hidden_layers,
+        )
+
+        onnx_path = os.path.join(output_dir, "model.onnx")
+        self.assertExists(onnx_path)
+        sess = self.check_ort(onnx_path)
+
+        # --- ONNX inference ---
+        # For int4 CPU, the I/O dtype is float32 (same as fp32 models).
+        batch_size = 1
+        seq_len = 5
+        input_ids = torch.randint(0, config.vocab_size, (batch_size, seq_len))
+
+        onnx_input_names = {inp.name for inp in sess.get_inputs()}
+
+        head_size = config.hidden_size // config.num_attention_heads
+        onnx_feed = {
+            "input_ids": input_ids.numpy().astype(np.int64),
+            "attention_mask": np.ones((batch_size, seq_len), dtype=np.int64),
+            "position_ids": np.arange(seq_len, dtype=np.int64).reshape(batch_size, seq_len),
+        }
+        # Provide empty past KV-cache tensors for every materialised layer.
+        for i in range(num_hidden_layers):
+            onnx_feed[f"past_key_values.{i}.key"] = np.zeros(
+                (batch_size, config.num_key_value_heads, 0, head_size),
+                dtype=np.float32,
+            )
+            onnx_feed[f"past_key_values.{i}.value"] = np.zeros(
+                (batch_size, config.num_key_value_heads, 0, head_size),
+                dtype=np.float32,
+            )
+        # Keep only what the session expects.
+        onnx_feed = {k: v for k, v in onnx_feed.items() if k in onnx_input_names}
+
+        onnx_outputs = sess.run(None, onnx_feed)
+        onnx_logits = onnx_outputs[0]
+
+        # Verify output shape: (batch_size, seq_len, vocab_size).
+        self.assertEqual(onnx_logits.shape, (batch_size, seq_len, config.vocab_size))
+        # Verify no NaN or Inf values are produced.
+        self.assertTrue(np.all(np.isfinite(onnx_logits)), "int4 logits contain non-finite values")
+
+    @hide_stdout()
     def test_tiny_llm_fp32_cpu_greedy_generation(self):
         """
         Verify that a full greedy-generation loop driven by the ONNX model via
