@@ -535,7 +535,20 @@ def results_to_markdown(results: List[Dict[str, Any]]) -> str:
     import pandas
 
     df = pandas.DataFrame(results)
-    for c in ["genai_text", "expected_text", "expected_length", "delta_length", "dtype"]:
+    if "%_gt_0.1" in df.columns:
+        df["%>0.1"] = df["%_gt_0.1"]
+    if "%_gt_0.01" in df.columns:
+        df["%>0.01"] = df["%_gt_0.01"]
+    for c in [
+        "genai_text",
+        "expected_text",
+        "expected_length",
+        "delta_length",
+        "dtype",
+        "shape",
+        "%_gt_0.1",
+        "%_gt_0.01",
+    ]:
         if c in df.columns:
             df = df.drop(c, axis=1)
     df = (
