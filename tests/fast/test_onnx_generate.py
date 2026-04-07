@@ -4,7 +4,7 @@
 # license information.
 # --------------------------------------------------------------------------
 """
-Tests for :func:`modelbuilder.rt_helper.onnx_generate`.
+Tests for :func:`modelbuilder.helpers.rt_helper.onnx_generate`.
 """
 
 import unittest
@@ -15,7 +15,7 @@ import onnx.helper as oh
 import onnx.numpy_helper as onh
 
 from modelbuilder.ext_test_case import ExtTestCase, hide_stdout
-from modelbuilder.rt_helper import onnx_generate
+from modelbuilder.helpers.rt_helper import onnx_generate
 
 TINT64 = onnx.TensorProto.INT64
 TFLOAT = onnx.TensorProto.FLOAT
