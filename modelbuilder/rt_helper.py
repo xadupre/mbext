@@ -35,7 +35,7 @@ _ORT_TYPE_TO_NUMPY: Dict[str, type] = {
 
 
 def _ort_type_to_numpy_dtype(ort_type: str) -> type:
-    """Converts an OnnxRuntime type string (e.g. ``"tensor(float)"``).
+    """Converts an OnnxRuntime type string (e.g. ``"tensor(float)"``) to a NumPy dtype.
 
     :param ort_type: type string returned by ``NodeArg.type``
     :return: corresponding NumPy dtype
@@ -97,10 +97,11 @@ def _make_empty_cache(
     feeds: Dict[str, np.ndarray] = {}
     for name, shape, ort_type in zip(cache_names, cache_shapes, cache_types):
         new_shape = tuple(_get_dim(i, s, batch=batch) for i, s in enumerate(shape))
-        assert new_shape and new_shape[0] > 0, (
-            f"new_shape={new_shape} cannot have a null batch size, "
-            f"name={name!r}, shape={shape}"
-        )
+        if not new_shape or new_shape[0] <= 0:
+            raise ValueError(
+                f"new_shape={new_shape} cannot have a null batch size, "
+                f"name={name!r}, shape={shape}"
+            )
         dtype = _ort_type_to_numpy_dtype(ort_type)
         feeds[name] = np.zeros(new_shape, dtype=dtype)
     return feeds
@@ -203,9 +204,10 @@ def onnx_generate(
     """
     from onnxruntime import InferenceSession
 
-    assert (
-        input_ids.ndim == 2
-    ), f"input_ids must be a 2-D array [batch, seq_len], got shape {input_ids.shape}"
+    if input_ids.ndim != 2:
+        raise ValueError(
+            f"input_ids must be a 2-D array [batch, seq_len], got shape {input_ids.shape}"
+        )
     input_ids = np.asarray(input_ids, dtype=np.int64)
 
     if not isinstance(model_or_session, InferenceSession):
@@ -254,7 +256,8 @@ def onnx_generate(
 
     if has_position_ids:
         seq_len = input_ids.shape[1]
-        assert seq_len > 0, f"unexpected value for input_ids shape={input_ids.shape}"
+        if seq_len <= 0:
+            raise ValueError(f"unexpected value for input_ids shape={input_ids.shape}")
         feeds["position_ids"] = np.tile(np.arange(seq_len, dtype=np.int64), (batch_size, 1))
 
     if has_cache_position:

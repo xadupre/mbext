@@ -78,7 +78,7 @@ class TestOnnxGenerate(ExtTestCase):
         tokens = onnx_generate(model, prompt, max_new_tokens=max_new_tokens, eos_token_id=3)
 
         self.assertEqual(tokens.shape, (1, 2 + max_new_tokens))
-        # All generated tokens must be 5.
+        # Verify all generated tokens are 5.
         np.testing.assert_array_equal(tokens[0, 2:], np.full(max_new_tokens, 5, dtype=np.int64))
 
     @hide_stdout()
