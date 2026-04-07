@@ -333,6 +333,46 @@ class ExtTestCase(unittest.TestCase):
         with open(os.path.join(stat_folder, "end2end_results.md"), "w") as f:
             f.write(md + "\n")
 
+    def make_dummy_text_inputs(
+        self,
+        np_dtype,
+        provider: str,
+        batch_size: int,
+        seq_len: int,
+        num_hidden_layers: int,
+        num_key_value_heads: int,
+        head_size: int,
+        vocab_size: int,
+    ):
+        import torch
+        import transformers
+
+        onnx_feed = {
+            "input_ids": np.random.randint(0, vocab_size, (batch_size, seq_len), dtype=np.int64),
+            "attention_mask": np.random.randint(0, 1, (batch_size, seq_len), dtype=np.int64),
+        }
+        torch_feed = {k: torch.from_numpy(v).to(provider) for k, v in onnx_feed.items()}
+        cache = []
+        for i in range(num_hidden_layers):
+            onnx_feed[f"past_key_values.{i}.key"] = np.random.randn(
+                batch_size, num_key_value_heads, 0, head_size
+            ).astype(np_dtype)
+            onnx_feed[f"past_key_values.{i}.value"] = np.random.randn(
+                batch_size, num_key_value_heads, 0, head_size
+            ).astype(np_dtype)
+            cache.append(
+                (
+                    torch.from_numpy(onnx_feed[f"past_key_values.{i}.key"]).to(provider),
+                    torch.from_numpy(onnx_feed[f"past_key_values.{i}.value"]).to(provider),
+                )
+            )
+
+        dc = transformers.cache_utils.DynamicCache()
+        for i, lay in enumerate(cache):
+            dc.update(lay[0], lay[1], layer_idx=i)
+        torch_feed["past_key_values"] = dc
+        return onnx_feed, torch_feed
+
 
 def first_token_diff(expected: List[int], values: List[int]) -> Dict[str, Any]:
     delta_length = len(values) - len(expected)
@@ -492,20 +532,15 @@ def results_to_markdown(results: List[Dict[str, Any]]) -> str:
         return ""
 
     # Collect all keys in insertion order (across all rows).
-    all_keys: List[str] = []
-    seen: set = set()
-    for row in results:
-        for key in row:
-            if key not in seen:
-                all_keys.append(key)
-                seen.add(key)
+    import pandas
 
-    def _fmt(v: Any) -> str:
-        if isinstance(v, float):
-            return f"{v:g}"
-        return str(v)
-
-    header = "| " + " | ".join(str(k) for k in all_keys) + " |"
-    sep = "| " + " | ".join("---" for _ in all_keys) + " |"
-    rows = ["| " + " | ".join(_fmt(row.get(k, "")) for k in all_keys) + " |" for row in results]
-    return "\n".join([header, sep] + rows)
+    df = pandas.DataFrame(results)
+    for c in ["genai_text", "expected_text", "expected_length", "delta_length", "dtype"]:
+        if c in df.columns:
+            df = df.drop(c, axis=1)
+    df = (
+        df.set_index(["model_id", "experiment", "precision", "provider", "input_type"])
+        .reset_index(drop=False)
+        .fillna("")
+    )
+    return df.to_markdown()

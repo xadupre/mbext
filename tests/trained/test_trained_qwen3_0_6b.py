@@ -39,7 +39,7 @@ class TestTrainedQwen3(ExtTestCase):
         model = AutoModelForCausalLM.from_pretrained(
             QWEN3_MODEL_NAME, ignore_mismatched_sizes=True, torch_dtype=dtype
         )
-        model.eval().to(provider)
+        model.eval().to(provider).to(dtype)
         return onnx_path, model
 
     @long_test()
@@ -101,6 +101,7 @@ class TestTrainedQwen3(ExtTestCase):
                 experiment="forward",
                 provider="cpu",
                 test="test_trained_qwen_qwen3_0_6b_discrepancies_cpu",
+                input_type="text",
             )
         )
         self.log_results(disc)
@@ -167,6 +168,7 @@ class TestTrainedQwen3(ExtTestCase):
                 experiment="forward",
                 provider="cuda",
                 test="test_trained_qwen_qwen3_0_6b_discrepancies_cuda",
+                input_type="text",
             )
         )
         self.log_results(disc)
@@ -254,6 +256,7 @@ class TestTrainedQwen3(ExtTestCase):
                 test="test_trained_qwen_qwen3_0_6b_genai_generate_cpu",
                 expected_text=tokenizer.decode(pt_tokens, skip_special_tokens=False),
                 genai_text=tokenizer.decode(og_tokens, skip_special_tokens=False),
+                input_type="text",
             )
         )
         self.log_results(disc)
@@ -342,6 +345,7 @@ class TestTrainedQwen3(ExtTestCase):
                 test="test_trained_qwen_qwen3_0_6b_genai_generate_cuda",
                 expected_text=tokenizer.decode(pt_tokens, skip_special_tokens=False),
                 genai_text=tokenizer.decode(og_tokens, skip_special_tokens=False),
+                input_type="text",
             )
         )
         self.log_results(disc)

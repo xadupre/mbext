@@ -39,7 +39,7 @@ class TestTrainedMistralNeMo(ExtTestCase):
         model = AutoModelForCausalLM.from_pretrained(
             MISTRAL_NEMO_MODEL_NAME, ignore_mismatched_sizes=True, dtype=dtype
         )
-        model.eval().to(provider)
+        model.eval().to(provider).to(dtype)
         return onnx_path, model
 
     @long_test()
@@ -103,6 +103,7 @@ class TestTrainedMistralNeMo(ExtTestCase):
                 experiment="forward",
                 provider="cuda",
                 test="test_trained_mistral_nemo_discrepancies_cuda",
+                input_type="text",
             )
         )
         self.log_results(disc)
@@ -195,6 +196,7 @@ class TestTrainedMistralNeMo(ExtTestCase):
                     pt_tokens[start_sequence:], skip_special_tokens=False
                 ),
                 genai_text=tokenizer.decode(og_tokens, skip_special_tokens=False),
+                input_type="text",
             )
         )
         self.log_results(disc)
@@ -286,6 +288,7 @@ class TestTrainedMistralNeMo(ExtTestCase):
                     pt_tokens[start_sequence:], skip_special_tokens=False
                 ),
                 genai_text=tokenizer.decode(og_tokens, skip_special_tokens=False),
+                input_type="text",
             )
         )
         self.log_results(disc)

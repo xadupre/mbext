@@ -41,7 +41,7 @@ class TestTrainedSmolLM3(ExtTestCase):
         model = AutoModelForCausalLM.from_pretrained(
             SMOLLM3_MODEL_NAME, ignore_mismatched_sizes=True, dtype=dtype
         )
-        model.eval().to(provider)
+        model.eval().to(provider).to(dtype)
         return onnx_path, model
 
     @long_test()
@@ -108,6 +108,7 @@ class TestTrainedSmolLM3(ExtTestCase):
                 experiment="forward",
                 provider="cpu",
                 test="test_trained_huggingface_tb_smollm3_3b_discrepancies_cuda",
+                input_type="text",
             )
         )
         self.log_results(disc)
@@ -208,6 +209,7 @@ class TestTrainedSmolLM3(ExtTestCase):
                     pt_tokens[start_sequence:], skip_special_tokens=False
                 ),
                 genai_text=tokenizer.decode(og_tokens, skip_special_tokens=False),
+                input_type="text",
             )
         )
         self.log_results(disc)
@@ -289,6 +291,7 @@ class TestTrainedSmolLM3(ExtTestCase):
                     pt_tokens[start_sequence:], skip_special_tokens=False
                 ),
                 genai_text=tokenizer.decode(og_tokens, skip_special_tokens=False),
+                input_type="text",
             )
         )
         self.log_results(disc)

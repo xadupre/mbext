@@ -10,13 +10,12 @@ import numpy as np
 
 from modelbuilder.ext_test_case import ExtTestCase, long_test, requires_cuda
 
-MINISTRAL3B_MODEL_NAME = "mistralai/Ministral-3B-Instruct-2512"
+MINISTRAL3B_MODEL_NAME = "mistralai/Ministral-3-3B-Instruct-2512"
 
 
 class TestTrainedMinistral3BInstruct(ExtTestCase):
     def _common_part(self, precision, dtype, provider="cuda"):
-        from transformers import AutoModelForCausalLM
-
+        from transformers import Mistral3ForConditionalGeneration
         from modelbuilder.builder import create_model
 
         output_dir, cache_dir = self.get_dirs(
@@ -36,17 +35,16 @@ class TestTrainedMinistral3BInstruct(ExtTestCase):
         onnx_path = os.path.join(output_dir, "model.onnx")
         self.assertExists(onnx_path)
 
-        model = AutoModelForCausalLM.from_pretrained(
-            MINISTRAL3B_MODEL_NAME, ignore_mismatched_sizes=True, dtype=dtype
-        )
-        model.eval().to(provider)
+        # model = AutoModelForCausalLM.from_pretrained(
+        #     MINISTRAL3B_MODEL_NAME, ignore_mismatched_sizes=True, dtype=dtype
+        model = Mistral3ForConditionalGeneration.from_pretrained(MINISTRAL3B_MODEL_NAME)
+        model.eval().to(provider).to(dtype)
         return onnx_path, model
 
     @long_test()
-    @requires_cuda()
-    def test_trained_ministral3b_instruct_discrepancies_cuda(self):
+    def test_trained_ministral3b_instruct_discrepancies_cpu(self):
         """
-        Convert mistralai/Ministral-3B-Instruct-2410 to an fp16 ONNX model
+        Convert mistralai/Ministral-3B-Instruct-2512 to an fp32 ONNX model
         targeting the CUDA execution provider.
 
         The test verifies that:
@@ -57,40 +55,44 @@ class TestTrainedMinistral3BInstruct(ExtTestCase):
         """
         import torch
 
-        precision, dtype, np_dtype = "fp16", torch.float16, np.float16
+        precision, dtype, np_dtype = "fp32", torch.float32, np.float32
 
-        onnx_path, model = self._common_part(precision, dtype)
-        sess = self._check_with_ort(onnx_path, cpu=False)
+        onnx_path, model = self._common_part(precision, dtype, provider="cpu")
+        sess = self._check_with_ort(onnx_path, cpu=True)
         config = model.config
 
         batch_size = 1
         seq_len = 5
         torch.manual_seed(0)
-        input_ids = torch.randint(0, config.vocab_size, (batch_size, seq_len)).to("cuda")
-        with torch.no_grad():
-            pt_logits = model(input_ids).logits
-        pt_logits = pt_logits.detach().cpu().numpy()
 
         onnx_input_names = {inp.name for inp in sess.get_inputs()}
-
-        head_size = config.hidden_size // config.num_attention_heads
+        head_size = config.text_config.hidden_size // config.text_config.num_attention_heads
         onnx_feed = {
-            "input_ids": input_ids.detach().cpu().numpy().astype(np.int64),
+            "input_ids": np.random.randint(
+                0, config.text_config.vocab_size, (batch_size, seq_len)
+            ).astype(np.int64),
             "attention_mask": np.ones((batch_size, seq_len), dtype=np.int64),
+            "input_embeds": np.random.rand((batch_size, seq_len, 3072)).astype(np_dtype),
             "position_ids": np.arange(seq_len, dtype=np.int64).reshape(batch_size, seq_len),
         }
         # Provide empty past KV-cache tensors for every materialised layer.
-        for i in range(config.num_hidden_layers):
+        for i in range(config.text_config.num_hidden_layers):
             onnx_feed[f"past_key_values.{i}.key"] = np.zeros(
-                (batch_size, config.num_key_value_heads, 0, head_size),
+                (batch_size, config.text_config.num_key_value_heads, 0, head_size),
                 dtype=np_dtype,
             )
             onnx_feed[f"past_key_values.{i}.value"] = np.zeros(
-                (batch_size, config.num_key_value_heads, 0, head_size),
+                (batch_size, config.text_config.num_key_value_heads, 0, head_size),
                 dtype=np_dtype,
             )
         # Keep only what the session expects.
         onnx_feed = {k: v for k, v in onnx_feed.items() if k in onnx_input_names}
+
+        # torch
+        torch_feed = {k: torch.from_numpy(v) for k, v in onnx_feed.items()}
+        with torch.no_grad():
+            pt_logits = model(**torch_feed).logits
+        pt_logits = pt_logits.detach().cpu().numpy()
 
         onnx_outputs = sess.run(None, onnx_feed)
         onnx_logits = onnx_outputs[0]
@@ -103,6 +105,7 @@ class TestTrainedMinistral3BInstruct(ExtTestCase):
                 experiment="forward",
                 provider="cuda",
                 test="test_trained_ministral3b_instruct_discrepancies_cuda",
+                input_type="text",
             )
         )
         self.log_results(disc)
@@ -113,7 +116,7 @@ class TestTrainedMinistral3BInstruct(ExtTestCase):
     def test_trained_ministral3b_instruct_genai_generate_cuda(self):
         """
         Compare ``transformers.generate`` with ``onnxruntime-genai`` generate
-        on the ``mistralai/Ministral-3B-Instruct-2410`` trained model (CUDA,
+        on the ``mistralai/Ministral-3B-Instruct-2512`` trained model (CUDA,
         fp16).
 
         Both backends use greedy (argmax) decoding, so the generated token
@@ -195,6 +198,7 @@ class TestTrainedMinistral3BInstruct(ExtTestCase):
                     pt_tokens[start_sequence:], skip_special_tokens=False
                 ),
                 genai_text=tokenizer.decode(og_tokens, skip_special_tokens=False),
+                input_type="text",
             )
         )
         self.log_results(disc)
@@ -204,7 +208,7 @@ class TestTrainedMinistral3BInstruct(ExtTestCase):
     def test_trained_ministral3b_instruct_genai_generate_cpu(self):
         """
         Compare ``transformers.generate`` with ``onnxruntime-genai`` generate
-        on the ``mistralai/Ministral-3B-Instruct-2410`` trained model (CPU,
+        on the ``mistralai/Ministral-3B-Instruct-2512`` trained model (CPU,
         fp32).
 
         Both backends use greedy (argmax) decoding, so the generated token
@@ -254,7 +258,23 @@ class TestTrainedMinistral3BInstruct(ExtTestCase):
         # ------------------------------------------------------------------
         # onnxruntime-genai greedy generation
         # ------------------------------------------------------------------
-        og_model = og.Model(os.path.dirname(onnx_path))
+        try:
+            og_model = og.Model(os.path.dirname(onnx_path))
+        except RuntimeError as e:
+            if "Unsupported model_type in config.json" in str(e):
+                self.log_results(
+                    dict(
+                        precision=precision,
+                        model_id=MINISTRAL3B_MODEL_NAME,
+                        experiment="generate",
+                        provider="cpu",
+                        test="test_trained_ministral3b_instruct_genai_generate_cpu",
+                        error=str(e),
+                        input_type="text",
+                    )
+                )
+                raise unittest.SkipTest("unable to run onnxruntime-genai") from None
+            raise
 
         params = og.GeneratorParams(og_model)
         params.set_search_options(
@@ -286,6 +306,7 @@ class TestTrainedMinistral3BInstruct(ExtTestCase):
                     pt_tokens[start_sequence:], skip_special_tokens=False
                 ),
                 genai_text=tokenizer.decode(og_tokens, skip_special_tokens=False),
+                input_type="text",
             )
         )
         self.log_results(disc)

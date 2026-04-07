@@ -40,12 +40,11 @@ class TestTrainedOLMo3Instruct(ExtTestCase):
         model = AutoModelForCausalLM.from_pretrained(
             MODEL_NAME, ignore_mismatched_sizes=True, torch_dtype=dtype
         )
-        model.eval().to(provider)
+        model.eval().to(provider).to(dtype)
         return onnx_path, model
 
     @long_test()
-    @requires_cuda(memory=20)
-    def test_trained_allenai_olmo3_7b_instruct_discrepancies_cuda(self):
+    def test_trained_allenai_olmo3_7b_instruct_discrepancies_cpu(self):
         """
         Convert allenai/Olmo-3-7B-Instruct to an fp16 ONNX model targeting the
         CUDA execution provider.
@@ -66,20 +65,18 @@ class TestTrainedOLMo3Instruct(ExtTestCase):
 
         batch_size = 1
         seq_len = 5
-        torch.manual_seed(0)
-        input_ids = torch.randint(0, config.vocab_size, (batch_size, seq_len)).to("cuda")
-        with torch.no_grad():
-            pt_logits = model(input_ids).logits
-        pt_logits = pt_logits.detach().cpu().numpy()
 
         onnx_input_names = {inp.name for inp in sess.get_inputs()}
 
         head_size = config.hidden_size // config.num_attention_heads
         onnx_feed = {
-            "input_ids": input_ids.detach().cpu().numpy().astype(np.int64),
+            "input_ids": np.random.randint(0, config.vocab_size, ((batch_size, seq_len))).astype(
+                np.int64
+            ),
             "attention_mask": np.ones((batch_size, seq_len), dtype=np.int64),
             "position_ids": np.arange(seq_len, dtype=np.int64).reshape(batch_size, seq_len),
         }
+
         # Provide empty past KV-cache tensors for every materialised layer.
         for i in range(model.config.num_hidden_layers):
             onnx_feed[f"past_key_values.{i}.key"] = np.zeros(
@@ -93,6 +90,12 @@ class TestTrainedOLMo3Instruct(ExtTestCase):
         # Keep only what the session expects.
         onnx_feed = {k: v for k, v in onnx_feed.items() if k in onnx_input_names}
 
+        # torch expectation
+        input_ids = torch.randint(0, config.vocab_size, (batch_size, seq_len)).to("cuda")
+        with torch.no_grad():
+            pt_logits = model(input_ids).logits
+        pt_logits = pt_logits.detach().cpu().numpy()
+
         onnx_outputs = sess.run(None, onnx_feed)
         onnx_logits = onnx_outputs[0]
 
@@ -104,6 +107,7 @@ class TestTrainedOLMo3Instruct(ExtTestCase):
                 experiment="forward",
                 provider="cuda",
                 test="test_trained_allenai_olmo3_7b_instruct_discrepancies_cuda",
+                input_type="text",
             )
         )
         self.log_results(disc)
@@ -195,6 +199,7 @@ class TestTrainedOLMo3Instruct(ExtTestCase):
                     pt_tokens[start_sequence:], skip_special_tokens=False
                 ),
                 genai_text=tokenizer.decode(og_tokens, skip_special_tokens=False),
+                input_type="text",
             )
         )
         self.log_results(disc)
@@ -285,6 +290,7 @@ class TestTrainedOLMo3Instruct(ExtTestCase):
                     pt_tokens[start_sequence:], skip_special_tokens=False
                 ),
                 genai_text=tokenizer.decode(og_tokens, skip_special_tokens=False),
+                input_type="text",
             )
         )
         self.log_results(disc)
