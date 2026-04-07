@@ -201,7 +201,6 @@ class TestTrainedOLMo3Instruct(ExtTestCase):
         self.assertEqual(pt_tokens[start_sequence:], og_tokens)
 
     @long_test()
-    @requires_cuda(memory=20)
     def test_trained_allenai_olmo3_7b_instruct_genai_generate_cpu(self):
         """
         Compare ``transformers.generate`` with ``onnxruntime-genai`` generate

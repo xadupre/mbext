@@ -214,7 +214,6 @@ class TestTrainedSmolLM3(ExtTestCase):
         self.assertEqual(pt_tokens, og_tokens)
 
     @long_test()
-    @requires_cuda()
     def test_trained_smollm3_genai_generate_cpu(self):
         try:
             import onnxruntime_genai as og

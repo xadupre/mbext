@@ -10,7 +10,7 @@ import numpy as np
 
 from modelbuilder.ext_test_case import ExtTestCase, long_test, requires_cuda
 
-MINISTRAL3B_MODEL_NAME = "mistralai/Ministral-3B-Instruct-2410"
+MINISTRAL3B_MODEL_NAME = "mistralai/Ministral-3B-Instruct-2512"
 
 
 class TestTrainedMinistral3BInstruct(ExtTestCase):

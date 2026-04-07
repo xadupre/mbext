@@ -202,7 +202,6 @@ class TestTrainedQwen3_14B(ExtTestCase):
         self.assertEqual(pt_tokens, og_tokens)
 
     @long_test()
-    @requires_cuda(memory=30)
     def test_trained_qwen3_14b_genai_generate_cpu(self):
         """
         Compare ``transformers.generate`` with ``onnxruntime-genai`` generate
