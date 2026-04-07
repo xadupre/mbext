@@ -132,6 +132,97 @@ class TestMistralNeMo(ExtTestCase):
             pt_logits[:, :1, :], onnx_logits[:, :1, :], atol=1e-3, rtol=1e-3
         )
 
+    @hide_stdout()
+    def test_mistral_nemo_torch_onnx_export(self):
+        """
+        Verify that a randomly-initialised MistralNeMoForCausalLM can be
+        exported to ONNX using ``torch.onnx.export`` and that the exported
+        model produces logits that closely match those of the original PyTorch
+        model.
+
+        Using random weights and a single hidden layer avoids downloading any
+        files from Hugging Face, keeping the test completely offline.
+
+        The test verifies that:
+        * ``torch.onnx.export`` completes without error.
+        * The exported ONNX file can be loaded by ``onnxruntime``.
+        * The ONNX logits closely match those of the original PyTorch model.
+        """
+        import torch
+        from transformers import AutoModelForCausalLM, MistralConfig
+
+        num_hidden_layers = 1
+        config = MistralConfig(
+            architectures=["MistralNeMoForCausalLM"],
+            bos_token_id=1,
+            eos_token_id=2,
+            hidden_act="silu",
+            hidden_size=512,
+            intermediate_size=1376,
+            max_position_embeddings=1024,
+            model_type="mistral",
+            num_attention_heads=8,
+            num_hidden_layers=num_hidden_layers,
+            num_key_value_heads=4,
+            rms_norm_eps=1e-05,
+            rope_theta=1000000.0,
+            sliding_window=None,
+            vocab_size=32000,
+        )
+
+        output_dir, _ = self.get_dirs("test_mistral_nemo_torch_onnx_export")
+        onnx_path = os.path.join(output_dir, "model.onnx")
+
+        torch.manual_seed(0)
+        model = AutoModelForCausalLM.from_config(config)
+        model.eval()
+
+        batch_size = 1
+        seq_len = 5
+        input_ids = torch.randint(0, config.vocab_size, (batch_size, seq_len))
+
+        # Wrap the model to return only logits and disable the KV-cache so that
+        # torch.onnx.export does not need to handle dynamic-cache objects.
+        class LogitsWrapper(torch.nn.Module):
+            def __init__(self, m):
+                super().__init__()
+                self.m = m
+
+            def forward(self, input_ids):
+                return self.m(input_ids, use_cache=False).logits
+
+        wrapper = LogitsWrapper(model)
+        wrapper.eval()
+
+        # Capture PyTorch reference logits before export.
+        with torch.no_grad():
+            pt_logits = wrapper(input_ids).numpy()
+
+        # Export to ONNX using torch.onnx.export.
+        with torch.no_grad():
+            torch.onnx.export(
+                wrapper,
+                (input_ids,),
+                onnx_path,
+                input_names=["input_ids"],
+                output_names=["logits"],
+                dynamic_axes={
+                    "input_ids": {0: "batch_size", 1: "sequence_length"},
+                    "logits": {0: "batch_size", 1: "sequence_length"},
+                },
+                opset_version=17,
+            )
+
+        self.assertExists(onnx_path)
+        sess = self.check_ort(onnx_path)
+
+        onnx_logits = sess.run(
+            ["logits"],
+            {"input_ids": input_ids.numpy().astype(np.int64)},
+        )[0]
+
+        np.testing.assert_allclose(pt_logits, onnx_logits, atol=1e-4, rtol=1e-4)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
