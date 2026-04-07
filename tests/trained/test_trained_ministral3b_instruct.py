@@ -63,33 +63,19 @@ class TestTrainedMinistral3BInstruct(ExtTestCase):
 
         batch_size = 1
         seq_len = 5
-        torch.manual_seed(0)
 
-        onnx_input_names = {inp.name for inp in sess.get_inputs()}
         head_size = config.text_config.hidden_size // config.text_config.num_attention_heads
-        onnx_feed = {
-            "input_ids": np.random.randint(
-                0, config.text_config.vocab_size, (batch_size, seq_len)
-            ).astype(np.int64),
-            "attention_mask": np.ones((batch_size, seq_len), dtype=np.int64),
-            "input_embeds": np.random.rand((batch_size, seq_len, 3072)).astype(np_dtype),
-            "position_ids": np.arange(seq_len, dtype=np.int64).reshape(batch_size, seq_len),
-        }
-        # Provide empty past KV-cache tensors for every materialised layer.
-        for i in range(config.text_config.num_hidden_layers):
-            onnx_feed[f"past_key_values.{i}.key"] = np.zeros(
-                (batch_size, config.text_config.num_key_value_heads, 0, head_size),
-                dtype=np_dtype,
-            )
-            onnx_feed[f"past_key_values.{i}.value"] = np.zeros(
-                (batch_size, config.text_config.num_key_value_heads, 0, head_size),
-                dtype=np_dtype,
-            )
-        # Keep only what the session expects.
-        onnx_feed = {k: v for k, v in onnx_feed.items() if k in onnx_input_names}
+        onnx_feed, torch_feed = self.make_dummy_text_inputs(
+            batch_size=batch_size,
+            seq_len=seq_len,
+            np_dtype=np_dtype,
+            provider="cpu",
+            head_size=head_size,
+            num_hidden_layers=config.text_config.num_hidden_layers,
+            num_key_value_heads=config.text_config.num_key_value_heads,
+            vocab_size=config.text_config.vocab_size,
+        )
 
-        # torch
-        torch_feed = {k: torch.from_numpy(v) for k, v in onnx_feed.items()}
         with torch.no_grad():
             pt_logits = model(**torch_feed).logits
         pt_logits = pt_logits.detach().cpu().numpy()
