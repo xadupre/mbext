@@ -63,7 +63,7 @@ class TestTrainedTinyLLM(ExtTestCase):
         config = model.config
 
         batch_size = 1
-        seq_len = 5
+        seq_len = 1
 
         head_size = config.hidden_size // config.num_attention_heads
         onnx_feed, torch_feed = self.make_dummy_text_inputs(

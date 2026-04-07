@@ -337,28 +337,44 @@ class ExtTestCase(unittest.TestCase):
         self,
         np_dtype,
         provider: str,
-        batch_size: int,
-        seq_len: int,
         num_hidden_layers: int,
         num_key_value_heads: int,
         head_size: int,
         vocab_size: int,
+        batch_size: int = 1,
+        seq_len: int = 5,
+        past_length: int = 0,
+        input_embeds_dim: int = -1,
     ):
         import torch
         import transformers
 
-        onnx_feed = {
-            "input_ids": np.random.randint(0, vocab_size, (batch_size, seq_len), dtype=np.int64),
-            "attention_mask": np.random.randint(0, 1, (batch_size, seq_len), dtype=np.int64),
-        }
+        if input_embeds_dim > 0:
+            onnx_feed = {
+                "attention_mask": np.random.randint(
+                    0, 1, (batch_size, seq_len + past_length), dtype=np.int64
+                ),
+                "input_embeds": np.random.randint(
+                    0, 1, (batch_size, seq_len, input_embeds_dim), dtype=np_dtype
+                ),
+            }
+        else:
+            onnx_feed = {
+                "input_ids": np.random.randint(
+                    0, vocab_size, (batch_size, seq_len), dtype=np.int64
+                ),
+                "attention_mask": np.random.randint(
+                    0, 1, (batch_size, seq_len + past_length), dtype=np.int64
+                ),
+            }
         torch_feed = {k: torch.from_numpy(v).to(provider) for k, v in onnx_feed.items()}
         cache = []
         for i in range(num_hidden_layers):
             onnx_feed[f"past_key_values.{i}.key"] = np.random.randn(
-                batch_size, num_key_value_heads, 0, head_size
+                batch_size, num_key_value_heads, past_length, head_size
             ).astype(np_dtype)
             onnx_feed[f"past_key_values.{i}.value"] = np.random.randn(
-                batch_size, num_key_value_heads, 0, head_size
+                batch_size, num_key_value_heads, past_length, head_size
             ).astype(np_dtype)
             cache.append(
                 (

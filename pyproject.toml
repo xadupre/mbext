@@ -23,6 +23,7 @@ dev = [
     "huggingface_hub",
     "onnxruntime>=1.24",
     "onnxruntime-genai",
+    "pandas",
     "pytest>=7",
     "py-cpuinfo",
     "pytest-coverage",

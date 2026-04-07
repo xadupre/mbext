@@ -100,6 +100,7 @@ class TestTrainedOLMo3Instruct(ExtTestCase):
         self.assertLess(disc["max_abs_err"], 2)
 
     @long_test()
+    @requires_cuda()
     def test_trained_allenai_olmo3_7b_instruct_discrepancies_cuda(self):
         """
         Convert allenai/Olmo-3-7B-Instruct to an fp16 ONNX model targeting the
