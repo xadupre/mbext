@@ -75,6 +75,24 @@ def requires_yobx(version: str = "", msg: str = "") -> Callable:
     return lambda x: x
 
 
+def requires_transformers(version: str = "", msg: str = "") -> Callable:
+    try:
+        import transformers
+    except ImportError:
+        return unittest.skip(msg or "transformers not installed")
+
+    if not hasattr(transformers, "__version__"):
+        return unittest.skip(msg or "transformers not properly installed")
+
+    if not version:
+        return lambda x: x
+
+    if PvVersion(transformers.__version__) < PvVersion(version):
+        msg = msg or f"transformers version {transformers.__version__} < {version}"
+        return unittest.skip(msg)
+    return lambda x: x
+
+
 def has_cuda() -> bool:
     """Returns ``torch.cuda.device_count() > 0``."""
     if not has_torch():
