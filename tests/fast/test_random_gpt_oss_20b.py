@@ -158,6 +158,175 @@ class TestGptOss20b(ExtTestCase):
                 pt_decode_logits, onnx_decode_logits, atol=atol[precision], rtol=rtol[precision]
             )
 
+    def common_gpt_oss_20b_greedy_generation(self, precision, provider):
+        import torch
+        from tokenizers import Tokenizer
+        from tokenizers.models import WordLevel
+        from transformers import AutoModelForCausalLM, GptOssConfig, PreTrainedTokenizerFast
+
+        from modelbuilder.builder import create_model
+
+        # Two layers: layer 0 is local (sliding-window) attention,
+        # layer 1 is full attention, matching the is_local = lambda i: i % 2 == 0
+        # logic in GPTOSSModel.
+        num_hidden_layers = 2
+
+        config = GptOssConfig(
+            architectures=["GptOssForCausalLM"],
+            bos_token_id=1,
+            eos_token_id=2,
+            hidden_act="silu",
+            hidden_size=64,
+            intermediate_size=64,
+            head_dim=32,
+            num_attention_heads=4,
+            num_hidden_layers=num_hidden_layers,
+            num_key_value_heads=2,
+            num_local_experts=4,
+            num_experts_per_tok=2,
+            rms_norm_eps=1e-5,
+            sliding_window=32,
+            vocab_size=256,
+        )
+
+        basename = f"test_generation_gpt_oss_20b_{precision}_{provider}"
+        model_dir = self.get_model_dir(basename)
+        output_dir, cache_dir = self.get_dirs(basename)
+
+        torch.manual_seed(42)
+        model = AutoModelForCausalLM.from_config(config)
+        model.eval().to(provider)
+        model.save_pretrained(model_dir)
+
+        vocab = {"<unk>": 0, "<s>": 1, "</s>": 2}
+        tokenizer = PreTrainedTokenizerFast(
+            tokenizer_object=Tokenizer(WordLevel(vocab=vocab, unk_token="<unk>")),
+            bos_token="<s>",
+            eos_token="</s>",
+            unk_token="<unk>",
+        )
+        tokenizer.save_pretrained(model_dir)
+
+        create_model(
+            model_name=MODEL_NAME,
+            input_path=model_dir,
+            output_dir=output_dir,
+            precision=precision,
+            execution_provider=provider,
+            cache_dir=cache_dir,
+        )
+
+        onnx_path = os.path.join(output_dir, "model.onnx")
+        self.assertExists(onnx_path)
+        sess = self._check_with_ort(onnx_path, cpu=provider == "cpu")
+
+        input_names = {inp.name for inp in sess.get_inputs()}
+        output_names = [out.name for out in sess.get_outputs()]
+
+        batch_size = 1
+        head_size = config.head_dim
+        max_new_tokens = 10
+
+        torch.manual_seed(0)
+        prompt_ids = torch.randint(3, config.vocab_size, (batch_size, 5)).to(provider)
+
+        with torch.no_grad():
+            pt_output = model.generate(
+                prompt_ids,
+                max_new_tokens=max_new_tokens,
+                do_sample=False,
+                pad_token_id=config.eos_token_id,
+            )
+        pt_tokens = pt_output[0].tolist()
+
+        current_ids = prompt_ids.detach().cpu().numpy().astype(np.int64)
+
+        past_kv = {}
+        for i in range(num_hidden_layers):
+            past_kv[f"past_key_values.{i}.key"] = np.zeros(
+                (batch_size, config.num_key_value_heads, 0, head_size),
+                dtype=self.get_input_np_dtype(precision),
+            )
+            past_kv[f"past_key_values.{i}.value"] = np.zeros(
+                (batch_size, config.num_key_value_heads, 0, head_size),
+                dtype=self.get_input_np_dtype(precision),
+            )
+
+        onnx_tokens = current_ids[0].tolist()
+        for _ in range(max_new_tokens):
+            past_len = past_kv["past_key_values.0.key"].shape[2]
+            cur_len = current_ids.shape[1]
+
+            feed = {
+                "input_ids": current_ids,
+                "attention_mask": np.ones((batch_size, past_len + cur_len), dtype=np.int64),
+                "position_ids": np.arange(past_len, past_len + cur_len, dtype=np.int64).reshape(
+                    batch_size, cur_len
+                ),
+            }
+            for i in range(num_hidden_layers):
+                feed[f"past_key_values.{i}.key"] = past_kv[f"past_key_values.{i}.key"]
+                feed[f"past_key_values.{i}.value"] = past_kv[f"past_key_values.{i}.value"]
+            feed = {k: v for k, v in feed.items() if k in input_names}
+
+            outputs = sess.run(None, feed)
+            results = dict(zip(output_names, outputs))
+
+            next_token = int(np.argmax(results["logits"][0, -1, :]))
+            onnx_tokens.append(next_token)
+
+            for i in range(num_hidden_layers):
+                past_kv[f"past_key_values.{i}.key"] = results[f"present.{i}.key"]
+                past_kv[f"past_key_values.{i}.value"] = results[f"present.{i}.value"]
+
+            current_ids = np.array([[next_token]], dtype=np.int64)
+
+            if next_token == config.eos_token_id:
+                break
+
+        diff = self.first_token_diff(pt_tokens, onnx_tokens)
+        diff.update(
+            dict(
+                precision=precision,
+                model_id=MODEL_NAME,
+                experiment="generate",
+                provider=provider,
+                test=basename,
+                input_type="text",
+                kind="fast",
+            )
+        )
+        self.log_results(diff)
+        if precision == "fp16":
+            pt_tokens = pt_tokens[:-5]
+            onnx_tokens = onnx_tokens[:-5]
+        self.assertEqual(pt_tokens, onnx_tokens)
+
+    @hide_stdout()
+    def test_gpt_oss_20b_fp32_cpu_greedy_generation(self):
+        self.common_gpt_oss_20b_greedy_generation("fp32", "cpu")
+
+    @unittest.skip("discrepancies issues")
+    @hide_stdout()
+    def test_gpt_oss_20b_fp16_cpu_greedy_generation(self):
+        self.common_gpt_oss_20b_greedy_generation("fp16", "cpu")
+
+    @unittest.skip("fails due to incorrect model")
+    @hide_stdout()
+    def test_gpt_oss_20b_fp32_cuda_greedy_generation(self):
+        self.common_gpt_oss_20b_greedy_generation("fp32", "cuda")
+
+    @hide_stdout()
+    @requires_cuda()
+    def test_gpt_oss_20b_fp16_cuda_greedy_generation(self):
+        self.common_gpt_oss_20b_greedy_generation("fp16", "cuda")
+
+    @unittest.skip("onnxruntime python binding does not support bf16 easily")
+    @hide_stdout()
+    @requires_cuda()
+    def test_gpt_oss_20b_bf16_cuda_greedy_generation(self):
+        self.common_gpt_oss_20b_greedy_generation("bf16", "cuda")
+
     @hide_stdout()
     def test_fast_discrepancy_gpt_oss_20b_fp32_cpu(self):
         self.common_fast_gpt_oss_20b_random_weights("fp32", "cpu")
