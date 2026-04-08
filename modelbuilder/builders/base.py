@@ -63,7 +63,8 @@ class Model:
             else (
                 config.rope_scaling["original_max_position_embeddings"]
                 if hasattr(config, "rope_scaling")
-                and hasattr(config.rope_scaling, "original_max_position_embeddings")
+                and isinstance(config.rope_scaling, dict)
+                and "original_max_position_embeddings" in config.rope_scaling
                 else self.context_length
             )
         )
