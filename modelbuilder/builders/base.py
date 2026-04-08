@@ -648,7 +648,6 @@ class Model:
     def is_packed_attn_supported(self) -> bool:
         valid_packed_attn_configurations = {
             ("cpu", ir.DataType.FLOAT),
-            ("cuda", ir.DataType.FLOAT),
             ("cuda", ir.DataType.FLOAT16),
             ("cuda", ir.DataType.BFLOAT16),
             ("dml", ir.DataType.FLOAT16),
@@ -3226,7 +3225,7 @@ class Model:
                 "batch_size",
                 self.num_kv_heads,
                 1,
-                "sequence_length",
+                "total_sequence_length",
                 self.head_size,
             ],
         )
@@ -3240,7 +3239,7 @@ class Model:
                 "batch_size",
                 self.num_kv_heads,
                 self.num_attn_heads // self.num_kv_heads,
-                "sequence_length",
+                "total_sequence_length",
                 self.head_size,
             ],
         )
@@ -3253,7 +3252,7 @@ class Model:
             shape=[
                 "batch_size",
                 self.num_attn_heads,
-                "sequence_length",
+                "total_sequence_length",
                 self.head_size,
             ],
         )
@@ -3265,7 +3264,7 @@ class Model:
             dtype=self.io_dtype,
             shape=[
                 "batch_size",
-                "sequence_length",
+                "total_sequence_length",
                 self.num_attn_heads,
                 self.head_size,
             ],
@@ -3282,7 +3281,7 @@ class Model:
             dtype=self.io_dtype,
             shape=[
                 "batch_size",
-                "sequence_length",
+                "total_sequence_length",
                 self.num_attn_heads * self.head_size,
             ],
         )

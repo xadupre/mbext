@@ -457,7 +457,7 @@ def get_numpy_discrepancy(array_a, array_b):
     if len(array_a.shape) == 3:
         a_token = int(np.argmax(array_a[0, -1, :]))
         b_token = int(np.argmax(array_b[0, -1, :]))
-        data["next_token"] = int(a_token == b_token)
+        data["next_token"] = "OK" if a_token == b_token else "FAIL"
     return data
 
 
