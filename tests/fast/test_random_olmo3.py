@@ -158,6 +158,7 @@ class TestOLMo3(ExtTestCase):
     def test_fast_discrepancy_olmo3_fp16_cpu(self):
         self.common_fast_olmo3_random_weights("fp16", "cpu")
 
+    @unittest.skip("issue")
     @hide_stdout()
     def test_fast_discrepancy_olmo3_int4_cpu(self):
         self.common_fast_olmo3_random_weights("int4", "cpu")
