@@ -39,7 +39,7 @@ jobs:
         run: pip install torch==2.10.0+cpu torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
 
       - name: Install dependencies
-        run: pip install -e ".[dev]" torch transformers tokenizers
+        run: pip install -e ".[dev]" torch "transformers==${{ matrix.transformers-version }}" tokenizers
 
       - name: Run fast tests
         run: DOCLEAN=1&&pytest tests/fast -v
