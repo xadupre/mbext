@@ -79,7 +79,7 @@ class TestRandomQwen3_5(ExtTestCase):
     # Internal helpers                                                    #
     # ------------------------------------------------------------------ #
 
-    def _build_and_save_model(self, config, model_dir, precision, provider):
+    def _build_and_save_model(self, config, precision, provider):
         """Create a random-weight HF model and build its ONNX export.
 
         Returns the (model, output_dir) tuple so callers can run inference.
@@ -154,7 +154,8 @@ class TestRandomQwen3_5(ExtTestCase):
         position_ids_3d = np.stack([pos, pos, pos], axis=0)  # [3, seq_len]
         position_ids_3d = np.stack([position_ids_3d] * batch_size, axis=1)  # [3, B, S]
 
-        # linear_conv_dim = n_k_heads * k_head_dim * 2 + n_v_heads * v_head_dim
+        # linear_conv_dim = linear_num_key_heads * linear_key_head_dim * 2
+        #                   + linear_num_value_heads * linear_value_head_dim
         linear_conv_dim = (
             text_cfg.linear_num_key_heads * text_cfg.linear_key_head_dim * 2
             + text_cfg.linear_num_value_heads * text_cfg.linear_value_head_dim
@@ -216,7 +217,7 @@ class TestRandomQwen3_5(ExtTestCase):
         ``inputs_embeds``-based interface.
         """
         config = _make_qwen3_5_config(["full_attention", "full_attention"])
-        model, output_dir = self._build_and_save_model(config, None, "fp32", "cpu")
+        model, output_dir = self._build_and_save_model(config, "fp32", "cpu")
 
         outputs = self._run_text_decoder(
             model, output_dir, config, "fp32", ["full_attention", "full_attention"]
@@ -230,7 +231,7 @@ class TestRandomQwen3_5(ExtTestCase):
     def test_qwen3_5_fp16_cpu_full_attention(self):
         """fp16 variant of :meth:`test_qwen3_5_fp32_cpu_full_attention`."""
         config = _make_qwen3_5_config(["full_attention", "full_attention"])
-        model, output_dir = self._build_and_save_model(config, None, "fp16", "cpu")
+        model, output_dir = self._build_and_save_model(config, "fp16", "cpu")
 
         outputs = self._run_text_decoder(
             model, output_dir, config, "fp16", ["full_attention", "full_attention"]
@@ -244,7 +245,7 @@ class TestRandomQwen3_5(ExtTestCase):
     def test_qwen3_5_fp16_cuda_full_attention(self):
         """fp16 / CUDA variant of :meth:`test_qwen3_5_fp32_cpu_full_attention`."""
         config = _make_qwen3_5_config(["full_attention", "full_attention"])
-        model, output_dir = self._build_and_save_model(config, None, "fp16", "cuda")
+        model, output_dir = self._build_and_save_model(config, "fp16", "cuda")
 
         outputs = self._run_text_decoder(
             model, output_dir, config, "fp16", ["full_attention", "full_attention"], cpu=False
@@ -275,7 +276,7 @@ class TestRandomQwen3_5(ExtTestCase):
         import onnx
 
         config = _make_qwen3_5_config(["full_attention", "linear_attention"])
-        _, output_dir = self._build_and_save_model(config, None, "fp32", "cpu")
+        _, output_dir = self._build_and_save_model(config, "fp32", "cpu")
 
         text_onnx_path = os.path.join(output_dir, "model.onnx")
         self.assertExists(text_onnx_path)
@@ -296,7 +297,7 @@ class TestRandomQwen3_5(ExtTestCase):
         import onnx
 
         config = _make_qwen3_5_config(["full_attention", "linear_attention"])
-        _, output_dir = self._build_and_save_model(config, None, "fp16", "cpu")
+        _, output_dir = self._build_and_save_model(config, "fp16", "cpu")
 
         text_onnx_path = os.path.join(output_dir, "model.onnx")
         self.assertExists(text_onnx_path)
