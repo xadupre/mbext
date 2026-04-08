@@ -13,6 +13,7 @@ from transformers import (
     AutoConfig,
     Qwen2_5_VLForConditionalGeneration,
     Qwen3VLForConditionalGeneration,
+    Qwen3_5ForConditionalGeneration,
 )
 
 from .base import Model
@@ -2167,6 +2168,19 @@ class Qwen35TextModel(Model):
         gated_output = f"{gated_name}/output_0"
 
         return gated_output
+
+    def load_weights(self, input_path):
+        # Qwen3_5ForConditionalGeneration is not registered with AutoModelForCausalLM.
+        # Load the full multimodal model directly; make_model will find the
+        # embedded language-model sub-modules (embed_tokens, Qwen3_5TextModel
+        # decoder layers, norm, lm_head) via standard module iteration.
+        print("Loading Qwen3_5ForConditionalGeneration model...")
+        return Qwen3_5ForConditionalGeneration.from_pretrained(
+            self.model_name_or_path,
+            cache_dir=self.cache_dir,
+            token=self.hf_token,
+            trust_remote_code=self.hf_remote,
+        )
 
     def make_genai_config(self, model_name_or_path, extra_kwargs, out_dir):
         """Generate genai_config.json for the decoder (text-only) model.
