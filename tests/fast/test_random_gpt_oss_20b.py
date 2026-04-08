@@ -306,7 +306,6 @@ class TestGptOss20b(ExtTestCase):
     def test_gpt_oss_20b_fp32_cpu_greedy_generation(self):
         self.common_gpt_oss_20b_greedy_generation("fp32", "cpu")
 
-    @unittest.skip("discrepancies issues")
     @hide_stdout()
     def test_gpt_oss_20b_fp16_cpu_greedy_generation(self):
         self.common_gpt_oss_20b_greedy_generation("fp16", "cpu")
@@ -331,7 +330,6 @@ class TestGptOss20b(ExtTestCase):
     def test_fast_discrepancy_gpt_oss_20b_fp32_cpu(self):
         self.common_fast_gpt_oss_20b_random_weights("fp32", "cpu")
 
-    @unittest.skip("discrepancies issues")
     @hide_stdout()
     def test_fast_discrepancy_gpt_oss_20b_fp16_cpu(self):
         self.common_fast_gpt_oss_20b_random_weights("fp16", "cpu")
