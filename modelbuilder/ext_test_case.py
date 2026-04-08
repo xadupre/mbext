@@ -389,6 +389,17 @@ class ExtTestCase(unittest.TestCase):
         torch_feed["past_key_values"] = dc
         return onnx_feed, torch_feed
 
+    def get_input_np_dtype(self, precision):
+        if precision == "bf16":
+            import ml_dtypes
+
+            return ml_dtypes.bfloat16
+        return {
+            "int4": np.float32,
+            "fp16": np.float16,
+            "fp32": np.float32,
+        }[precision]
+
 
 def first_token_diff(expected: List[int], values: List[int]) -> Dict[str, Any]:
     delta_length = len(values) - len(expected)
@@ -433,7 +444,7 @@ def get_numpy_discrepancy(array_a, array_b):
     avg_disc = np.mean(diff)
 
     n = np.prod(a.shape)
-    return {
+    data = {
         "max_abs_err": float(max_disc) if not np.isnan(max_disc) else np.inf,
         "%_gt_0.1": mismatches_01 / n,
         "%_gt_0.01": mismatches_001 / n,
@@ -442,6 +453,12 @@ def get_numpy_discrepancy(array_a, array_b):
         "dtype": a.dtype,
         "dnan": float(np.isnan(b).sum() - np.isnan(a).sum()) / n,
     }
+
+    if len(array_a.shape) == 3:
+        a_token = int(np.argmax(array_a[0, -1, :]))
+        b_token = int(np.argmax(array_b[0, -1, :]))
+        data["next_token"] = int(a_token == b_token)
+    return data
 
 
 def get_pytorch_discrepancy(tensor_a, tensor_b):
