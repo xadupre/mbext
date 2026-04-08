@@ -304,22 +304,18 @@ class TestMinistral3(ExtTestCase):
             onnx_tokens = onnx_tokens[:-5]
         self.assertEqual(pt_tokens, onnx_tokens)
 
-    @unittest.skip("issue")
     @hide_stdout()
     def test_ministral3_fp32_cpu_greedy_generation(self):
         self.common_ministral3_greedy_generation("fp32", "cpu")
 
-    @unittest.skip("issue")
     @hide_stdout()
     def test_ministral3_fp16_cpu_greedy_generation(self):
         self.common_ministral3_greedy_generation("fp16", "cpu")
 
-    @unittest.skip("issue")
     @hide_stdout()
     def test_ministral3_fp32_cuda_greedy_generation(self):
         self.common_ministral3_greedy_generation("fp32", "cuda")
 
-    @unittest.skip("issue")
     @hide_stdout()
     @requires_cuda()
     def test_ministral3_fp16_cuda_greedy_generation(self):
@@ -331,12 +327,10 @@ class TestMinistral3(ExtTestCase):
     def test_ministral3_bf16_cuda_greedy_generation(self):
         self.common_ministral3_greedy_generation("bf16", "cuda")
 
-    @unittest.skip("issue")
     @hide_stdout()
     def test_fast_discrepancy_ministral3_fp32_cpu(self):
         self.common_fast_ministral3_random_weights("fp32", "cpu")
 
-    @unittest.skip("issue")
     @hide_stdout()
     def test_fast_discrepancy_ministral3_fp16_cpu(self):
         self.common_fast_ministral3_random_weights("fp16", "cpu")
@@ -345,7 +339,6 @@ class TestMinistral3(ExtTestCase):
     def test_fast_discrepancy_ministral3_int4_cpu(self):
         self.common_fast_ministral3_random_weights("int4", "cpu")
 
-    @unittest.skip("issue")
     @hide_stdout()
     @requires_cuda()
     def test_fast_discrepancy_ministral3_fp16_cuda(self):
