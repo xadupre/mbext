@@ -313,6 +313,7 @@ class TestMinistral3(ExtTestCase):
         self.common_ministral3_greedy_generation("fp16", "cpu")
 
     @hide_stdout()
+    @requires_cuda()
     def test_ministral3_fp32_cuda_greedy_generation(self):
         self.common_ministral3_greedy_generation("fp32", "cuda")
 
