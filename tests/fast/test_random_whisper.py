@@ -166,7 +166,7 @@ class TestWhisperModel(ExtTestCase):
                 input_ids=pt_input_ids,
                 encoder_hidden_states=pt_enc_out.last_hidden_state,
             )
-        pt_logits = model.lm_head(pt_dec_out.last_hidden_state).detach().cpu().numpy()
+        pt_logits = model.proj_out(pt_dec_out.last_hidden_state).detach().cpu().numpy()
 
         dec_disc = self.get_numpy_discrepancy(pt_logits.astype(np_dtype), dec_results["logits"])
         self.log_results({"step": "decoder", **dec_disc, **log_data})
