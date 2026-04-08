@@ -43,3 +43,11 @@ jobs:
 
       - name: Run fast tests
         run: DOCLEAN=1&&pytest tests/fast -v
+
+      - name: Upload stats artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: stats-${{ matrix.os }}-py${{ matrix.python-version }}-torch${{ matrix.torch-version }}-transformers${{ matrix.transformers-version }}
+          path: stats/
+          if-no-files-found: ignore
