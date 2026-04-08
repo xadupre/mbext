@@ -180,7 +180,6 @@ class TestRandomTinyLLM(ExtTestCase):
     def test_fast_discrepancy_tiny_llm_int4_cpu(self):
         self.common_fast_tiny_llm_random_weights("int4", "cpu")
 
-    @unittest.skip("fails due to incorrect model")
     @hide_stdout()
     @requires_cuda()
     def test_fast_discrepancy_tiny_llm_fp32_cuda(self):
