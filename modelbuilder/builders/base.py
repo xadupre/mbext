@@ -3225,7 +3225,7 @@ class Model:
                 "batch_size",
                 self.num_kv_heads,
                 1,
-                "sequence_length",
+                "total_sequence_length",
                 self.head_size,
             ],
         )
@@ -3239,7 +3239,7 @@ class Model:
                 "batch_size",
                 self.num_kv_heads,
                 self.num_attn_heads // self.num_kv_heads,
-                "sequence_length",
+                "total_sequence_length",
                 self.head_size,
             ],
         )
@@ -3252,7 +3252,7 @@ class Model:
             shape=[
                 "batch_size",
                 self.num_attn_heads,
-                "sequence_length",
+                "total_sequence_length",
                 self.head_size,
             ],
         )
@@ -3264,7 +3264,7 @@ class Model:
             dtype=self.io_dtype,
             shape=[
                 "batch_size",
-                "sequence_length",
+                "total_sequence_length",
                 self.num_attn_heads,
                 self.head_size,
             ],
@@ -3281,7 +3281,7 @@ class Model:
             dtype=self.io_dtype,
             shape=[
                 "batch_size",
-                "sequence_length",
+                "total_sequence_length",
                 self.num_attn_heads * self.head_size,
             ],
         )
