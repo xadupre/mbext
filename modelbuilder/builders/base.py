@@ -637,6 +637,7 @@ class Model:
                 "factor": factor,
                 "ntk_alpha": beta_slow,
                 "ntk_beta": beta_fast,
+                "truncate": config.rope_scaling.get("truncate", True),
             }
 
         elif "mrope_section" in config.rope_scaling:
@@ -2174,8 +2175,9 @@ class Model:
         # low = find_correction_dim(beta_fast, dim, base, original_max_pos)
         #      = (dim * log(max_pos / (beta_fast * 2π))) / (2 * log(base))
         #      = d_half * log(max_pos / (beta_fast * 2π)) / log(base)
-        # and truncated to integer (floor/ceil) when truncate=True (the default).
-        low = np.floor(
+        # When truncate=True (the default), boundaries are floor/ceil'd to integers.
+        truncate = self.rope_attrs["rescale_inv_freq"].get("truncate", True)
+        low = (
             d_half
             * np.log(
                 self.original_context_length
@@ -2183,7 +2185,7 @@ class Model:
             )
             / np.log(self.rope_attrs["theta"])
         )
-        high = np.ceil(
+        high = (
             d_half
             * np.log(
                 self.original_context_length
@@ -2191,6 +2193,9 @@ class Model:
             )
             / np.log(self.rope_attrs["theta"])
         )
+        if truncate:
+            low = np.floor(low)
+            high = np.ceil(high)
         assert 0 < low < high < d_half - 1
 
         # HuggingFace convention:
