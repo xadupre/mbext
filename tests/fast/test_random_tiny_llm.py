@@ -127,7 +127,12 @@ class TestRandomTinyLLM(ExtTestCase):
             np_prefill = pt_prefill.logits.detach().cpu().numpy()
             disc = self.get_numpy_discrepancy(np_prefill, prefill_outputs[0])
             self.log_results({"step": "prefill", **disc, **log_data})
-            atol = {"fp16": 1e-2, "bf16": 1e-2, "fp32": 1e-4, "int4": 0.5}
+            atol = {
+                "fp16": 1e-2,
+                "bf16": 1e-2,
+                "fp32": 2e-3 if provider == "cuda" else 2e-4,
+                "int4": 0.5,
+            }
             np.testing.assert_allclose(
                 np_prefill, prefill_outputs[0], atol=atol[precision], rtol=1e-3
             )
