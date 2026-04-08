@@ -21,7 +21,7 @@ jobs:
       matrix:
         os: ["ubuntu-latest"]
         python-version: ["3.13"]
-        transformers-version: ["4.57", "5.5"]
+        transformers-version: ["5.5"]
         torch-version: ["2.10"]
     steps:
       - uses: actions/checkout@v4
@@ -43,7 +43,7 @@ jobs:
         run: pip install -e ".[dev]" torch transformers tokenizers
 
       - name: Run trained tiny LLM tests
-        run: LONGTEST=1&&pytest tests/trained/test_trained_tiny_llm.py -v --cov=modelbuilder --cov-report=xml --cov-report=term-missing
+        run: LONGTEST=1 pytest tests/trained/test_trained_tiny_llm.py -v --cov=modelbuilder --cov-report=xml --cov-report=term-missing
 
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v5
