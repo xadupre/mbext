@@ -1,5 +1,7 @@
 # ModelBuilder for onnxruntime-genai
 
+[![codecov](https://codecov.io/gh/xadupre/mbext/branch/main/graph/badge.svg)](https://codecov.io/gh/xadupre/mbext)
+
 The code base comes from https://github.com/microsoft/onnxruntime-genai/tree/main/src/python/py/models.
 It adds fast unit tests checking discrepancies, end to end test with the trained model.
 It supports more architectures.
