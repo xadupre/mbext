@@ -198,10 +198,22 @@ class TestRandomQwen3VL(ExtTestCase):
     def test_fast_discrepancy_qwen3_vl_int4_cpu(self):
         self.common_fast_qwen3_vl_random_weights("int4", "cpu")
 
+    @unittest.skip("fails due to incorrect model")
+    @hide_stdout()
+    @requires_cuda()
+    def test_fast_discrepancy_qwen3_vl_fp32_cuda(self):
+        self.common_fast_qwen3_vl_random_weights("fp32", "cuda")
+
     @hide_stdout()
     @requires_cuda()
     def test_fast_discrepancy_qwen3_vl_fp16_cuda(self):
         self.common_fast_qwen3_vl_random_weights("fp16", "cuda")
+
+    @unittest.skip("onnxruntime python binding does not support bf16 easily")
+    @hide_stdout()
+    @requires_cuda()
+    def test_fast_discrepancy_qwen3_vl_bf16_cuda(self):
+        self.common_fast_qwen3_vl_random_weights("bf16", "cuda")
 
 
 if __name__ == "__main__":
