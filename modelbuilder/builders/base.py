@@ -2170,8 +2170,12 @@ class Model:
 
     def make_inv_freq_rescaled_with_ntk(self, inv_freq):
         d_half = self.head_size / 2
-        # NTK by parts
-        low = (
+        # NTK by parts — mirror HuggingFace's _compute_yarn_parameters:
+        # low = find_correction_dim(beta_fast, dim, base, original_max_pos)
+        #      = (dim * log(max_pos / (beta_fast * 2π))) / (2 * log(base))
+        #      = d_half * log(max_pos / (beta_fast * 2π)) / log(base)
+        # and truncated to integer (floor/ceil) when truncate=True (the default).
+        low = np.floor(
             d_half
             * np.log(
                 self.original_context_length
@@ -2179,7 +2183,7 @@ class Model:
             )
             / np.log(self.rope_attrs["theta"])
         )
-        high = (
+        high = np.ceil(
             d_half
             * np.log(
                 self.original_context_length
@@ -2189,8 +2193,11 @@ class Model:
         )
         assert 0 < low < high < d_half - 1
 
-        interpolation = 1.0 / (self.rope_attrs["rescale_inv_freq"]["factor"] * inv_freq)
-        extrapolation = 1.0 / inv_freq
+        # HuggingFace convention:
+        #   inv_freq_extrapolation = 1 / pos_freqs = inv_freq  (keep original)
+        #   inv_freq_interpolation = 1 / (factor * pos_freqs) = inv_freq / factor
+        interpolation = inv_freq / self.rope_attrs["rescale_inv_freq"]["factor"]
+        extrapolation = inv_freq
 
         ramp = (torch.arange(d_half, dtype=torch.float32, device=inv_freq.device) - low) / (
             high - low
