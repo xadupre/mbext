@@ -89,6 +89,7 @@ class TestTrainedTinyLLM(ExtTestCase):
                 provider=provider,
                 test=f"test_trained_tiny_llm_{precision}_discrepancies_{provider}",
                 input_type="text",
+                kind="trained",
             )
         )
         self.log_results(disc)
@@ -169,6 +170,7 @@ class TestTrainedTinyLLM(ExtTestCase):
                 ),
                 genai_text=tokenizer.decode(og_tokens, skip_special_tokens=False),
                 input_type="text",
+                kind="trained",
             )
         )
         self.log_results(disc)
