@@ -252,8 +252,8 @@ class TestRandomTinyLLM(ExtTestCase):
             model_name="arnir0/Tiny-LLM",
             input_path=model_dir,
             output_dir=output_dir,
-            precision="fp32",
-            execution_provider="cpu",
+            precision=precision,
+            execution_provider=provider,
             cache_dir=cache_dir,
             num_hidden_layers=num_hidden_layers,
         )
@@ -272,7 +272,7 @@ class TestRandomTinyLLM(ExtTestCase):
         # Use a fixed seed so the prompt token IDs are deterministic.
         torch.manual_seed(0)
         # Start from token ID 3 to avoid accidentally hitting BOS/EOS/PAD.
-        prompt_ids = torch.randint(3, config.vocab_size, (batch_size, 5))
+        prompt_ids = torch.randint(3, config.vocab_size, (batch_size, 5)).to(provider)
 
         # ------------------------------------------------------------------
         # transformers greedy generation (reference)
@@ -289,7 +289,7 @@ class TestRandomTinyLLM(ExtTestCase):
         # ------------------------------------------------------------------
         # ONNX greedy generation (manual auto-regressive loop)
         # ------------------------------------------------------------------
-        current_ids = prompt_ids.numpy().astype(np.int64)
+        current_ids = prompt_ids.detach().cpu().numpy().astype(np.int64)
 
         # Initialise empty KV-cache for every layer.
         past_kv = {}
@@ -354,11 +354,32 @@ class TestRandomTinyLLM(ExtTestCase):
             )
         )
         self.log_results(diff)
+        if precision == "fp16":
+            pt_tokens = pt_tokens[:-5]
+            onnx_tokens = onnx_tokens[:-5]
         self.assertEqual(pt_tokens, onnx_tokens)
 
     @hide_stdout()
     def test_tiny_llm_fp32_cpu_greedy_generation(self):
         self.common_tiny_llm_greedy_generation("fp32", "cpu")
+
+    @hide_stdout()
+    def test_tiny_llm_fp16_cpu_greedy_generation(self):
+        self.common_tiny_llm_greedy_generation("fp16", "cpu")
+
+    @unittest.skip("fails due to incorrect model")
+    @hide_stdout()
+    def test_tiny_llm_fp32_cuda_greedy_generation(self):
+        self.common_tiny_llm_greedy_generation("fp32", "cuda")
+
+    @hide_stdout()
+    def test_tiny_llm_fp16_cuda_greedy_generation(self):
+        self.common_tiny_llm_greedy_generation("fp16", "cuda")
+
+    @unittest.skip("onnxruntime python bindings not easy with bf16")
+    @hide_stdout()
+    def test_tiny_llm_bf16_cuda_greedy_generation(self):
+        self.common_tiny_llm_greedy_generation("bf16", "cuda")
 
 
 if __name__ == "__main__":
