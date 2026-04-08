@@ -4566,7 +4566,6 @@ class Model:
                 inputs=[root_input],
                 outputs=[output],
                 name=gelu_name,
-                approximate="none",
             )
         elif activation == "FastGelu":
             self.make_node(

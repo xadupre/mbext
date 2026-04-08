@@ -125,7 +125,6 @@ class WhisperEncoder(Model):
             inputs=[f"{conv_1_name}/output_0"],
             outputs=[gelu_1_output],
             name=gelu_1_name,
-            approximate="none",
         )
         self.make_value(
             gelu_1_output,
@@ -163,7 +162,6 @@ class WhisperEncoder(Model):
             inputs=[f"{conv_2_name}/output_0"],
             outputs=[gelu_2_output],
             name=gelu_2_name,
-            approximate="none",
         )
         self.make_value(
             gelu_2_output,
