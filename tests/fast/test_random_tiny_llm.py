@@ -369,15 +369,18 @@ class TestRandomTinyLLM(ExtTestCase):
 
     @unittest.skip("fails due to incorrect model")
     @hide_stdout()
+    @requires_cuda()
     def test_tiny_llm_fp32_cuda_greedy_generation(self):
         self.common_tiny_llm_greedy_generation("fp32", "cuda")
 
     @hide_stdout()
+    @requires_cuda()
     def test_tiny_llm_fp16_cuda_greedy_generation(self):
         self.common_tiny_llm_greedy_generation("fp16", "cuda")
 
     @unittest.skip("onnxruntime python bindings not easy with bf16")
     @hide_stdout()
+    @requires_cuda()
     def test_tiny_llm_bf16_cuda_greedy_generation(self):
         self.common_tiny_llm_greedy_generation("bf16", "cuda")
 
