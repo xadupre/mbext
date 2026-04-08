@@ -128,7 +128,7 @@ class TestWhisperModel(ExtTestCase):
         )
         self.log_results({"step": "encoder", **enc_disc, **log_data})
 
-        atol_enc = {"fp32": 1e-4, "fp16": 5e-2}
+        atol_enc = {"fp32": 1e-4, "fp16": 5e-2, "int4": 0.5}
         np.testing.assert_allclose(
             pt_hidden.astype(np_dtype),
             enc_results["hidden_states"],
@@ -171,7 +171,7 @@ class TestWhisperModel(ExtTestCase):
         dec_disc = self.get_numpy_discrepancy(pt_logits.astype(np_dtype), dec_results["logits"])
         self.log_results({"step": "decoder", **dec_disc, **log_data})
 
-        atol_dec = {"fp32": 1e-3, "fp16": 5e-2}
+        atol_dec = {"fp32": 1e-3, "fp16": 5e-2, "int4": 0.5}
         np.testing.assert_allclose(
             pt_logits.astype(np_dtype),
             dec_results["logits"],
@@ -192,6 +192,10 @@ class TestWhisperModel(ExtTestCase):
     @hide_stdout()
     def test_fast_whisper_random_weights_fp16_cpu(self):
         self.common_fast_whisper_random_weights("fp16", "cpu")
+
+    @hide_stdout()
+    def test_fast_whisper_random_weights_int4_cpu(self):
+        self.common_fast_whisper_random_weights("int4", "cpu")
 
     @hide_stdout()
     @requires_cuda()
