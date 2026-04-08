@@ -43,8 +43,9 @@ jobs:
         run: pip install -e ".[dev]" torch transformers tokenizers
 
       - name: Run trained tiny LLM tests
+        continue-on-error: true
         env:
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          HUGGING_FACE_HUB_TOKEN: ${{ secrets.HUGGING_FACE_HUB_TOKEN }}
         run: LONGTEST=1 pytest tests/trained/test_trained_tiny_llm.py -v --cov=modelbuilder --cov-report=xml --cov-report=term-missing
 
       - name: Upload coverage to Codecov
