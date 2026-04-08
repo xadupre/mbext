@@ -160,7 +160,6 @@ class TestMinistral3(ExtTestCase):
                 pt_decode_logits, onnx_decode_logits, atol=atol[precision], rtol=rtol[precision]
             )
 
-    @unittest.skip("issue")
     @hide_stdout()
     def test_fast_discrepancy_ministral3_fp32_cpu(self):
         self.common_fast_ministral3_random_weights("fp32", "cpu")

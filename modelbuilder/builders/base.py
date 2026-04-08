@@ -609,7 +609,7 @@ class Model:
             }
 
         elif "beta_fast" in config.rope_scaling:
-            # For models that use YARN (e.g. OpenAI OS-minier)
+            # For models that use YARN (e.g. OpenAI OS-minier, Ministral3)
             factor = config.rope_scaling["factor"] if "factor" in config.rope_scaling else 0
             beta_slow = (
                 config.rope_scaling["beta_slow"] if "beta_slow" in config.rope_scaling else 0
@@ -619,7 +619,20 @@ class Model:
             )
 
             self.rope_attrs["mscale_policy"] = config.rope_scaling["rope_type"]
-            self.rope_attrs["mscale"] = self.make_mscale(config.rope_scaling["factor"])
+            mscale_param = config.rope_scaling.get("mscale", 1.0)
+            mscale_all_dim = config.rope_scaling.get("mscale_all_dim", 0.0)
+            if mscale_all_dim:
+                # HuggingFace YaRN formula:
+                # final_mscale = yarn_get_mscale(factor, mscale) / yarn_get_mscale(factor, mscale_all_dim)
+                # where yarn_get_mscale(s, m) = 0.1 * m * log(s) + 1 if s > 1 else 1
+                def _yarn_get_mscale(s, m):
+                    return (0.1 * m * float(np.log(s)) + 1.0) if s > 1.0 else 1.0
+
+                self.rope_attrs["mscale"] = _yarn_get_mscale(
+                    factor, mscale_param
+                ) / _yarn_get_mscale(factor, mscale_all_dim)
+            else:
+                self.rope_attrs["mscale"] = self.make_mscale(factor)
             self.rope_attrs["rescale_inv_freq"] = {
                 "factor": factor,
                 "ntk_alpha": beta_slow,
