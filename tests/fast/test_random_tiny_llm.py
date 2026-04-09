@@ -44,8 +44,9 @@ def _ort_io_binding_helper(sess, input_tensors, output_tensors, device="cuda:0")
     """
     import torch
 
-    ort_device = device.split(":")[0]
-    ort_device_id = int(device.split(":")[1]) if ":" in device else 0
+    parts = device.split(":")
+    ort_device = parts[0]
+    ort_device_id = int(parts[1]) if len(parts) > 1 else 0
 
     bind = sess.io_binding()
     torch_refs = []  # keep tensors alive for the duration of run_with_iobinding
