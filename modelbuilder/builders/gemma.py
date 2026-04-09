@@ -126,7 +126,19 @@ class Gemma3Model(Gemma2Model):
     def __init__(self, config, io_dtype, onnx_dtype, ep, cache_dir, extra_options):
         super().__init__(config, io_dtype, onnx_dtype, ep, cache_dir, extra_options)
 
-        self.rope_local_theta = config.rope_local_base_freq
+        if hasattr(config, "rope_local_base_freq"):
+            # Older transformers: rope_local_base_freq and rope_theta are top-level fields
+            self.rope_local_theta = config.rope_local_base_freq
+        elif hasattr(config, "rope_parameters") and isinstance(config.rope_parameters, dict):
+            # Newer transformers (v5+): rope info lives in a nested rope_parameters dict
+            sliding_params = config.rope_parameters.get("sliding_attention", {})
+            self.rope_local_theta = sliding_params.get("rope_theta", 10000.0)
+            # Update the global theta (full-attention layers) which the base class
+            # could not infer because config.rope_theta is absent in this format.
+            full_params = config.rope_parameters.get("full_attention", {})
+            self.rope_attrs["theta"] = full_params.get("rope_theta", self.rope_attrs["theta"])
+        else:
+            self.rope_local_theta = 10000.0
         self.make_rotary_embedding_multi_cache()
 
     def is_local(self, layer_id):
