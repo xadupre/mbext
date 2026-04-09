@@ -24,6 +24,7 @@ dev = [
     "onnxruntime>=1.24",
     "onnxruntime-genai",
     "pandas",
+    "peft",
     "pytest>=7",
     "py-cpuinfo",
     "pytest-cov",
