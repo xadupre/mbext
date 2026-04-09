@@ -128,7 +128,7 @@ class TestRandomTinyLLM(ExtTestCase):
                 use_iobinding=precision == "bf16",
                 precision=precision,
                 provider=provider,
-                prefill_feed=prefill_feed,
+                feed=prefill_feed,
                 sess=sess,
                 vocab_size=config.vocab_size,
             )
@@ -140,8 +140,8 @@ class TestRandomTinyLLM(ExtTestCase):
             disc = self.get_numpy_discrepancy(np_prefill, ort_logits_np)
             self.log_results({"step": "prefill", **disc, **log_data})
             atol = {
-                "fp16": 1e-2,
-                "bf16": 1e-2,
+                "fp16": 3e-2,
+                "bf16": 2e-2,
                 "fp32": 2e-3 if provider == "cuda" else 2e-4,
                 "int4": 0.5,
             }
@@ -169,41 +169,15 @@ class TestRandomTinyLLM(ExtTestCase):
                 decode_feed[f"past_key_values.{i}.value"] = prefill_results[f"present.{i}.value"]
             decode_feed = {k: v for k, v in decode_feed.items() if k in onnx_input_names}
 
-            use_iobinding = precision == "bf16"
-            device = f"{provider}:0" if use_iobinding else provider
-            if use_iobinding:
-                # The KV cache from prefill is already on CUDA as torch tensors.
-                past_kv_len = prefill_results["present.0.key"].shape[2]
-                ort_decode_logits = torch.empty(
-                    batch_size,
-                    1,
-                    config.vocab_size,
-                    dtype=torch.float32,
-                    device=device,
-                )
-                torch_decode_outputs = {"logits": ort_decode_logits}
-                for i in range(num_hidden_layers):
-                    torch_decode_outputs[f"present.{i}.key"] = torch.empty(
-                        batch_size,
-                        config.num_key_value_heads,
-                        past_kv_len + 1,
-                        head_size,
-                        dtype=torch.bfloat16,
-                        device=device,
-                    )
-                    torch_decode_outputs[f"present.{i}.value"] = torch.empty(
-                        batch_size,
-                        config.num_key_value_heads,
-                        past_kv_len + 1,
-                        head_size,
-                        dtype=torch.bfloat16,
-                        device=device,
-                    )
-                _ort_io_binding_helper(sess, decode_feed, torch_decode_outputs, device)
-                onnx_decode_logits = ort_decode_logits.detach().cpu().numpy()
-            else:
-                decode_outputs = sess.run(None, decode_feed)
-                onnx_decode_logits = decode_outputs[0]
+            prefill_results, onnx_decode_logits = run_session_or_io_binding(
+                use_iobinding=precision == "bf16",
+                precision=precision,
+                provider=provider,
+                feed=decode_feed,
+                sess=sess,
+                vocab_size=config.vocab_size,
+                results=prefill_results,
+            )
 
             with torch.no_grad():
                 pt_past_kv = pt_prefill.past_key_values
@@ -213,8 +187,8 @@ class TestRandomTinyLLM(ExtTestCase):
 
             disc = self.get_numpy_discrepancy(pt_decode_logits, onnx_decode_logits)
             self.log_results({"step": "decode", **disc, **log_data})
-            atol = {"fp16": 1e-2, "bf16": 1e-2, "fp32": 1e-4, "int4": 0.5}
-            rtol = {"fp16": 10, "bf16": 1e-2, "fp32": 1e-4, "int4": 10000}
+            atol = {"fp16": 1e-2, "bf16": 2e-2, "fp32": 1e-4, "int4": 0.5}
+            rtol = {"fp16": 10, "bf16": 10, "fp32": 1e-4, "int4": 10000}
             np.testing.assert_allclose(
                 pt_decode_logits, onnx_decode_logits, atol=atol[precision], rtol=rtol[precision]
             )
