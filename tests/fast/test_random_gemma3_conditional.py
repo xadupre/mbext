@@ -354,6 +354,10 @@ class TestRandomGemma3Conditional(ExtTestCase):
         )
         self.log_results(diff)
         if precision in ("fp16", "bf16"):
+            # fp16/bf16 precision can cause small numerical errors that
+            # accumulate over long sequences, leading the last few generated
+            # tokens to diverge. Trim the trailing 5 tokens to avoid flaky
+            # comparisons while still validating the majority of the output.
             pt_tokens = pt_tokens[:-5]
             onnx_tokens = onnx_tokens[:-5]
         self.assertEqual(pt_tokens, onnx_tokens)
