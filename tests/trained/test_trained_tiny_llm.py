@@ -5,7 +5,6 @@
 # --------------------------------------------------------------------------
 import os
 import unittest
-
 from modelbuilder.ext_test_case import ExtTestCase, hide_stdout, long_test
 
 MODEL_NAME = "arnir0/Tiny-LLM"
