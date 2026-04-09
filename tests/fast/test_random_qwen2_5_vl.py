@@ -47,7 +47,19 @@ class TestRandomQwen25VL(ExtTestCase):
             vocab_size=32000,
             rope_scaling={"type": "mrope", "mrope_section": [16, 24, 24]},
         )
-        config = Qwen2_5_VLConfig(text_config=text_config)
+        # Use a minimal vision config to avoid allocating the default 7B-scale
+        # vision encoder (depth=32, hidden_size=3584) which causes OOM in CI.
+        # Text-only inference never invokes the vision encoder, so its exact
+        # dimensions don't affect correctness.
+        vision_config = {
+            "depth": 1,
+            "hidden_size": 64,
+            "intermediate_size": 128,
+            "num_heads": 4,
+            "out_hidden_size": 64,
+            "fullatt_block_indexes": [0],
+        }
+        config = Qwen2_5_VLConfig(text_config=text_config, vision_config=vision_config)
         config.architectures = ["Qwen2_5_VLForConditionalGeneration"]
 
         basename = f"test_discrepancies_qwen25vl_{precision}_{provider}"
