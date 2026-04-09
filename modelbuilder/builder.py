@@ -286,10 +286,18 @@ def create_model(
     elif config.architectures[0] == "Ministral3ForCausalLM":
         from .builders.mistral import Ministral3TextModel
 
+        if hasattr(config, "quantization_config"):
+            # Remove FP8 quantization_config to avoid wrong weight loading via
+            # QuantModel; Ministral3TextModel.load_weights handles dequantization.
+            delattr(config, "quantization_config")
         onnx_model = Ministral3TextModel(
             config, io_dtype, onnx_dtype, execution_provider, cache_dir, extra_options
         )
     elif config.architectures[0] == "Mistral3ForConditionalGeneration":
+        if hasattr(config, "quantization_config"):
+            # Remove FP8 quantization_config to avoid wrong weight loading via
+            # QuantModel; Ministral3TextModel.load_weights handles dequantization.
+            delattr(config, "quantization_config")
         print(
             "WARNING: Exporting the text decoder with `exclude_embeds=true` and a separate "
             "vision encoder (vision_encoder.onnx) for Mistral3ForConditionalGeneration."
