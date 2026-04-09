@@ -31,8 +31,6 @@ class TestRandomQwen25VL(ExtTestCase):
 
         # Minimal Qwen2.5-VL text config matching the architecture but with
         # small dimensions to keep the test fast and completely offline.
-        # mrope_section=[16, 24, 24] sums to 64 == head_size (hidden_size //
-        # num_attention_heads = 512 // 8 = 64).
         text_config = Qwen2_5_VLTextConfig(
             bos_token_id=1,
             eos_token_id=2,
@@ -45,7 +43,10 @@ class TestRandomQwen25VL(ExtTestCase):
             num_key_value_heads=4,
             rms_norm_eps=1e-6,
             vocab_size=32000,
-            rope_scaling={"type": "mrope", "mrope_section": [16, 24, 24]},
+            # mrope_section must satisfy: sum(mrope_section) * 2 == head_size
+            # head_size = hidden_size // num_attention_heads = 512 // 8 = 64
+            # so sum(mrope_section) must be 32: [8, 12, 12] sums to 32.
+            rope_scaling={"type": "mrope", "mrope_section": [8, 12, 12]},
         )
         # Use a minimal vision config to avoid allocating the default 7B-scale
         # vision encoder (depth=32, hidden_size=3584) which causes OOM in CI.
