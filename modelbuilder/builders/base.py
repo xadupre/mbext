@@ -558,7 +558,12 @@ class Model:
 
         if "short_factor" in config.rope_scaling:
             # For models with multiple rotary embedding caches (e.g. Phi-3 mini 128K)
-            self.rope_attrs["mscale_policy"] = config.rope_scaling["type"]
+            # Support both old ("type") and new ("rope_type") key names for rope scaling type
+            self.rope_attrs["mscale_policy"] = (
+                config.rope_scaling["type"]
+                if "type" in config.rope_scaling
+                else config.rope_scaling.get("rope_type", "")
+            )
             short_factor = torch.tensor(config.rope_scaling["short_factor"], dtype=torch.float32)
             long_factor = torch.tensor(config.rope_scaling["long_factor"], dtype=torch.float32)
 
