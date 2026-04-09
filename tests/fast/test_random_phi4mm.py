@@ -30,9 +30,11 @@ def _make_phi4mm_config():
     ``rope_attrs["multi_cache"]``, which is populated only when
     ``config.rope_scaling`` contains ``short_factor`` / ``long_factor``.
 
-    Phi3Config in transformers 5.5+ accepts ``rope_parameters`` and
-    automatically exposes the same dict under the legacy ``rope_scaling``
-    attribute, so the builder's ``make_rope_init`` receives the expected keys.
+    The ``rope_scaling`` attribute is set directly after construction to work
+    with both transformers 4.x (plain attribute) and 5.x (property backed by
+    ``rope_parameters``).  The dict uses the ``"type"`` key so that the
+    builder's ``make_rope_init`` finds it without relying on the newer
+    ``"rope_type"`` alias.
     """
     from transformers import Phi3Config
 
@@ -50,15 +52,14 @@ def _make_phi4mm_config():
         bos_token_id=1,
         eos_token_id=2,
         pad_token_id=2,
-        rope_parameters={
-            "rope_type": "longrope",
-            "short_factor": [1.0] * _ROTARY_DIM_HALF,
-            "long_factor": [1.0] * _ROTARY_DIM_HALF,
-            "rope_theta": 10000.0,
-            "short_mscale": 1.0,
-            "long_mscale": 1.0,
-        },
     )
+    # Set rope_scaling directly to bypass version-specific constructor
+    # validation.  Both transformers 4.x and 5.x accept attribute assignment.
+    config.rope_scaling = {
+        "type": "longrope",
+        "short_factor": [1.0] * _ROTARY_DIM_HALF,
+        "long_factor": [1.0] * _ROTARY_DIM_HALF,
+    }
     # Override architectures so the builder dispatches to Phi4MMModel.
     config.architectures = ["Phi4MMForCausalLM"]
     return config
@@ -71,11 +72,16 @@ def _make_peft_model(config):
     zero-initialised by PEFT, the combined model produces identical logits to
     the plain base model.  Phi4MMModel.make_layer reassigns the vision adapter
     to default before building the ONNX graph, so both outputs agree at init.
+
+    The base config intentionally omits ``rope_scaling`` (uses default RoPE)
+    to avoid version-specific rope-validation across transformers 4.x / 5.x.
+    The weight shapes are identical regardless of the rotary-embedding variant.
     """
     from peft import LoraConfig, get_peft_model
     from transformers import AutoModelForCausalLM, Phi3Config
 
-    # Build the base model using a plain Phi3 config (no architectural change).
+    # Build the base model using a plain Phi3 config without LongRoPE so that
+    # AutoModelForCausalLM.from_config succeeds on both transformers 4.x and 5.x.
     base_cfg = Phi3Config(
         architectures=["Phi3ForCausalLM"],
         hidden_size=config.hidden_size,
@@ -90,7 +96,6 @@ def _make_peft_model(config):
         bos_token_id=config.bos_token_id,
         eos_token_id=config.eos_token_id,
         pad_token_id=config.pad_token_id,
-        rope_parameters=config.rope_parameters,
     )
     base_model = AutoModelForCausalLM.from_config(base_cfg)
 
