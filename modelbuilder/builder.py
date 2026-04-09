@@ -193,7 +193,7 @@ def create_model(
         # Quantized ChatGLM model has ChatGLMForConditionalGeneration as architecture whereas HF model as the latter
         config.bos_token_id = 1
         config.hidden_act = "swiglu"
-        from .chatglm import ChatGLMModel
+        from .builders.chatglm import ChatGLMModel
 
         onnx_model = ChatGLMModel(
             config, io_dtype, onnx_dtype, execution_provider, cache_dir, extra_options
