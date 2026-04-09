@@ -731,35 +731,13 @@ def _ort_io_binding_helper(sess, input_tensors, output_tensors, device="cuda:0")
 
 
 def results_to_dataframe(results: List[Dict[str, Any]]) -> str:
-    """Convert a list of result dictionaries to a Markdown table.
-
-    Each dictionary produces one row in the table.  Columns are derived from
-    the union of all keys found across every row, preserving insertion order.
-
-    :param results: list of result dicts (e.g. as produced by
-        :meth:`ExtTestCase.log_results`).
-    :return: a Markdown-formatted table string, or an empty string when
-        *results* is empty.
-
-    Example::
-
-        >>> from modelbuilder.ext_test_case import results_to_markdown
-        >>> rows = [
-        ...     {"model_id": "my-model", "experiment": "prefill", "max_abs_err": 1e-4},
-        ...     {"model_id": "my-model", "experiment": "decode",  "max_abs_err": 2e-4},
-        ... ]
-        >>> print(results_to_markdown(rows))
-        | model_id | experiment | max_abs_err |
-        | --- | --- | --- |
-        | my-model | prefill | 0.0001 |
-        | my-model | decode | 0.0002 |
-    """
-    if not results:
-        return ""
-
-    # Collect all keys in insertion order (across all rows).
+    """Convert a list of result dictionaries to a DataFrame."""
     import pandas
 
+    if not results:
+        return pandas.DataFrame()
+
+    # Collect all keys in insertion order (across all rows).
     df = pandas.DataFrame(results)
     if "%_gt_0.1" in df.columns:
         df["%>0.1"] = df["%_gt_0.1"]
