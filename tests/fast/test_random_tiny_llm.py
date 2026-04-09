@@ -51,19 +51,16 @@ def _ort_io_binding_helper(sess, input_tensors, output_tensors, device="cuda:0")
     bind = sess.io_binding()
     torch_refs = []  # keep tensors alive for the duration of run_with_iobinding
 
+    import ml_dtypes
+
     for name, value in input_tensors.items():
         if isinstance(value, np.ndarray):
-            try:
-                import ml_dtypes
-
-                if value.dtype == ml_dtypes.bfloat16:
-                    # NumPy has no native bf16; reinterpret the bits as int16
-                    # (same 16-bit width) so torch can create a bfloat16 view.
-                    arr_c = np.ascontiguousarray(value)
-                    t = torch.from_numpy(arr_c.view(np.int16)).view(torch.bfloat16).to(device)
-                else:
-                    t = torch.from_numpy(np.ascontiguousarray(value)).to(device)
-            except ImportError:
+            if value.dtype == ml_dtypes.bfloat16:
+                # NumPy has no native bf16; reinterpret the bits as int16
+                # (same 16-bit width) so torch can create a bfloat16 view.
+                arr_c = np.ascontiguousarray(value)
+                t = torch.from_numpy(arr_c.view(np.int16)).view(torch.bfloat16).to(device)
+            else:
                 t = torch.from_numpy(np.ascontiguousarray(value)).to(device)
         else:
             t = value.to(device) if value.device.type != ort_device else value
