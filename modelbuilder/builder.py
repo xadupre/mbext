@@ -200,7 +200,7 @@ def create_model(
         )
         onnx_model.model_type = "chatglm"
     elif config.architectures[0] == "Ernie4_5ForCausalLM":
-        from .ernie import ErnieModel
+        from .builders.ernie import ErnieModel
 
         onnx_model = ErnieModel(
             config, io_dtype, onnx_dtype, execution_provider, cache_dir, extra_options
