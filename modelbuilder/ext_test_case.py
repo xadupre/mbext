@@ -813,3 +813,85 @@ def run_session_or_io_binding(
         prefill_results = dict(zip(onnx_output_names, prefill_outputs))
         ort_logits_np = prefill_outputs[0]
     return prefill_results, ort_logits_np
+
+
+def run_decode_session_or_io_binding(
+    use_iobinding: bool,
+    precision: str,
+    provider: str,
+    feed: Dict,
+    sess: "onnxruntime.InferenceSession",  # noqa: F821
+    vocab_size: int,
+) -> Tuple[Dict[str, Any], np.ndarray]:
+    """Run a single decode step via IOBinding or :meth:`~onnxruntime.InferenceSession.run`.
+
+    Mirrors :func:`run_session_or_io_binding` for the decode/generation loop
+    where past KV-cache tensors already exist in *feed*.  KV-cache values in
+    *feed* may be :class:`numpy.ndarray` (including ``ml_dtypes.bfloat16``) or
+    CUDA :class:`torch.Tensor` objects; both are handled transparently by
+    :func:`_ort_io_binding_helper`.
+
+    :param use_iobinding: when ``True`` use ``sess.io_binding()`` (required for bfloat16 on CUDA).
+    :param precision: one of ``"fp32"``, ``"fp16"``, ``"bf16"``, ``"int4"``.
+    :param provider: ORT execution provider, e.g. ``"cuda"`` or ``"cpu"``.
+    :param feed: input dict; past KV-cache values may be ndarray or Tensor.
+    :param sess: :class:`onnxruntime.InferenceSession`.
+    :param vocab_size: vocabulary size for pre-allocating the logits output tensor.
+    :return: ``(results, logits_numpy)`` where *results* maps output names to
+        tensors/arrays and *logits_numpy* is a :class:`numpy.ndarray`.
+    """
+    import ml_dtypes
+    import torch
+
+    device = f"{provider}:0" if use_iobinding else provider
+    onnx_input_names = [i.name for i in sess.get_inputs()]
+    onnx_output_names = [i.name for i in sess.get_outputs()]
+
+    batch_size = feed["input_ids"].shape[0]
+    cur_len = feed["input_ids"].shape[1]
+    inputs_without_cache = [k for k in feed if not k.startswith("past_key_value")]
+    num_hidden_layers = (len(feed) - len(inputs_without_cache)) // 2
+    kv_sample = feed["past_key_values.0.key"]
+    num_key_value_heads = kv_sample.shape[1]
+    past_len = kv_sample.shape[2]
+    head_size = kv_sample.shape[-1]
+    kv_out_len = past_len + cur_len
+
+    if use_iobinding:
+        torch_feed = {k: v for k, v in feed.items() if k in onnx_input_names}
+        kv_dtype = get_input_torch_dtype(precision)
+        ort_logits = torch.empty(batch_size, cur_len, vocab_size, dtype=kv_dtype, device=device)
+        torch_outputs = {"logits": ort_logits}
+        for i in range(num_hidden_layers):
+            torch_outputs[f"present.{i}.key"] = torch.empty(
+                batch_size,
+                num_key_value_heads,
+                kv_out_len,
+                head_size,
+                dtype=kv_dtype,
+                device=device,
+            )
+            torch_outputs[f"present.{i}.value"] = torch.empty(
+                batch_size,
+                num_key_value_heads,
+                kv_out_len,
+                head_size,
+                dtype=kv_dtype,
+                device=device,
+            )
+        _ort_io_binding_helper(sess, torch_feed, torch_outputs, device)
+        if ort_logits.dtype == torch.bfloat16:
+            logits_np = (
+                ort_logits.detach().cpu().to(torch.float32).numpy().astype(ml_dtypes.bfloat16)
+            )
+        else:
+            logits_np = ort_logits.detach().cpu().numpy()
+        results = {"logits": logits_np}
+        for i in range(num_hidden_layers):
+            results[f"present.{i}.key"] = torch_outputs[f"present.{i}.key"]
+            results[f"present.{i}.value"] = torch_outputs[f"present.{i}.value"]
+    else:
+        outputs = sess.run(None, feed)
+        results = dict(zip(onnx_output_names, outputs))
+        logits_np = outputs[0]
+    return results, logits_np

@@ -10,10 +10,10 @@ import numpy as np
 
 from modelbuilder.ext_test_case import (
     ExtTestCase,
+    run_decode_session_or_io_binding,
     run_session_or_io_binding,
     hide_stdout,
     requires_cuda,
-    _ort_io_binding_helper,
 )
 
 MODEL_NAME = "arnir0/Tiny-LLM"
@@ -169,41 +169,14 @@ class TestRandomTinyLLM(ExtTestCase):
                 decode_feed[f"past_key_values.{i}.value"] = prefill_results[f"present.{i}.value"]
             decode_feed = {k: v for k, v in decode_feed.items() if k in onnx_input_names}
 
-            use_iobinding = precision == "bf16"
-            device = f"{provider}:0" if use_iobinding else provider
-            if use_iobinding:
-                # The KV cache from prefill is already on CUDA as torch tensors.
-                past_kv_len = prefill_results["present.0.key"].shape[2]
-                ort_decode_logits = torch.empty(
-                    batch_size,
-                    1,
-                    config.vocab_size,
-                    dtype=torch.float32,
-                    device=device,
-                )
-                torch_decode_outputs = {"logits": ort_decode_logits}
-                for i in range(num_hidden_layers):
-                    torch_decode_outputs[f"present.{i}.key"] = torch.empty(
-                        batch_size,
-                        config.num_key_value_heads,
-                        past_kv_len + 1,
-                        head_size,
-                        dtype=torch.bfloat16,
-                        device=device,
-                    )
-                    torch_decode_outputs[f"present.{i}.value"] = torch.empty(
-                        batch_size,
-                        config.num_key_value_heads,
-                        past_kv_len + 1,
-                        head_size,
-                        dtype=torch.bfloat16,
-                        device=device,
-                    )
-                _ort_io_binding_helper(sess, decode_feed, torch_decode_outputs, device)
-                onnx_decode_logits = ort_decode_logits.detach().cpu().numpy()
-            else:
-                decode_outputs = sess.run(None, decode_feed)
-                onnx_decode_logits = decode_outputs[0]
+            _, onnx_decode_logits = run_decode_session_or_io_binding(
+                use_iobinding=precision == "bf16",
+                precision=precision,
+                provider=provider,
+                feed=decode_feed,
+                sess=sess,
+                vocab_size=config.vocab_size,
+            )
 
             with torch.no_grad():
                 pt_past_kv = pt_prefill.past_key_values
@@ -310,7 +283,6 @@ class TestRandomTinyLLM(ExtTestCase):
         sess = self._check_with_ort(onnx_path, cpu=provider == "cpu")
 
         input_names = {inp.name for inp in sess.get_inputs()}
-        output_names = [out.name for out in sess.get_outputs()]
 
         batch_size = 1
         head_size = config.hidden_size // config.num_attention_heads
@@ -350,32 +322,6 @@ class TestRandomTinyLLM(ExtTestCase):
                 dtype=self.get_input_np_dtype(precision),
             )
 
-        # For bf16 on CUDA, use IOBinding so bfloat16 KV-cache tensors can be
-        # passed without going through NumPy (which has no native bf16 type).
-        use_iobinding = precision == "bf16"
-        device = f"{provider}:0" if use_iobinding else provider
-
-        # When using IOBinding, replace the initial empty numpy KV-cache with
-        # empty torch CUDA tensors so they can be bound directly.
-        if use_iobinding:
-            for i in range(num_hidden_layers):
-                past_kv[f"past_key_values.{i}.key"] = torch.empty(
-                    batch_size,
-                    config.num_key_value_heads,
-                    0,
-                    head_size,
-                    dtype=torch.bfloat16,
-                    device=device,
-                )
-                past_kv[f"past_key_values.{i}.value"] = torch.empty(
-                    batch_size,
-                    config.num_key_value_heads,
-                    0,
-                    head_size,
-                    dtype=torch.bfloat16,
-                    device=device,
-                )
-
         onnx_tokens = current_ids[0].tolist()
         for _ in range(max_new_tokens):
             past_len = past_kv["past_key_values.0.key"].shape[2]
@@ -394,43 +340,14 @@ class TestRandomTinyLLM(ExtTestCase):
             # Drop any inputs the model does not declare.
             feed = {k: v for k, v in feed.items() if k in input_names}
 
-            if use_iobinding:
-                # Pre-allocate output tensors for this step.
-                # Logits are float32 (builder upcasts bf16 logits); KV cache is bf16.
-                kv_out_len = past_len + cur_len
-                ort_step_logits = torch.empty(
-                    batch_size,
-                    cur_len,
-                    config.vocab_size,
-                    dtype=torch.float32,
-                    device=device,
-                )
-                torch_step_outputs = {"logits": ort_step_logits}
-                for i in range(num_hidden_layers):
-                    torch_step_outputs[f"present.{i}.key"] = torch.empty(
-                        batch_size,
-                        config.num_key_value_heads,
-                        kv_out_len,
-                        head_size,
-                        dtype=torch.bfloat16,
-                        device=device,
-                    )
-                    torch_step_outputs[f"present.{i}.value"] = torch.empty(
-                        batch_size,
-                        config.num_key_value_heads,
-                        kv_out_len,
-                        head_size,
-                        dtype=torch.bfloat16,
-                        device=device,
-                    )
-                _ort_io_binding_helper(sess, feed, torch_step_outputs, device)
-                results = {"logits": ort_step_logits.detach().cpu().numpy()}
-                for i in range(num_hidden_layers):
-                    results[f"present.{i}.key"] = torch_step_outputs[f"present.{i}.key"]
-                    results[f"present.{i}.value"] = torch_step_outputs[f"present.{i}.value"]
-            else:
-                outputs = sess.run(None, feed)
-                results = dict(zip(output_names, outputs))
+            results, _ = run_decode_session_or_io_binding(
+                use_iobinding=precision == "bf16",
+                precision=precision,
+                provider=provider,
+                feed=feed,
+                sess=sess,
+                vocab_size=config.vocab_size,
+            )
 
             # Greedy: pick the token with the highest logit at the last position.
             next_token = int(np.argmax(results["logits"][0, -1, :]))
