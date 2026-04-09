@@ -247,6 +247,7 @@ def create_model(
         onnx_model = Gemma3Model(
             config, io_dtype, onnx_dtype, execution_provider, cache_dir, extra_options
         )
+        onnx_model.model_type = "gemma3_text"
     elif config.architectures[0] == "GptOssForCausalLM":
         print("WARNING: This model only supports symmetric quantization for `QMoE`.")
         if (
