@@ -556,6 +556,81 @@ def _read_results(json_path: str) -> List[Dict[str, Any]]:
     return results
 
 
+def _torch_dtype_to_ort_element_type(dtype):
+    """Map a :class:`torch.dtype` to the corresponding ORT TensorProto element type int."""
+    from onnx import TensorProto
+    import torch
+
+    return {
+        torch.float32: TensorProto.FLOAT,
+        torch.float16: TensorProto.FLOAT16,
+        torch.bfloat16: TensorProto.BFLOAT16,
+        torch.int64: TensorProto.INT64,
+        torch.int32: TensorProto.INT32,
+        torch.bool: TensorProto.BOOL,
+    }[dtype]
+
+
+def _ort_io_binding_helper(sess, input_tensors, output_tensors, device="cuda:0"):
+    """Run an ORT session using IOBinding so that bfloat16 tensors work.
+
+    Follows the pattern from the onnxruntime-genai test suite.
+    Inputs may be numpy arrays (including ml_dtypes.bfloat16) or CUDA
+    :class:`torch.Tensor` objects; they are moved to *device* if needed.
+    Output tensors must be pre-allocated :class:`torch.Tensor` objects on
+    *device*; they are filled **in-place** by ORT.
+
+    :param sess: :class:`onnxruntime.InferenceSession`
+    :param input_tensors: ``dict[str, np.ndarray | torch.Tensor]``
+    :param output_tensors: ``dict[str, torch.Tensor]`` – pre-allocated on *device*
+    :param device: CUDA device string, e.g. ``"cuda:0"``
+    """
+    import ml_dtypes
+    import torch
+
+    parts = device.split(":")
+    ort_device = parts[0]
+    ort_device_id = int(parts[1]) if len(parts) > 1 else 0
+
+    bind = sess.io_binding()
+    torch_refs = []  # keep tensors alive for the duration of run_with_iobinding
+
+    for name, value in input_tensors.items():
+        if isinstance(value, np.ndarray):
+            if value.dtype == ml_dtypes.bfloat16:
+                # NumPy has no native bf16; reinterpret the bits as int16
+                # (same 16-bit width) so torch can create a bfloat16 view.
+                arr_c = np.ascontiguousarray(value)
+                t = torch.from_numpy(arr_c.view(np.int16)).view(torch.bfloat16).to(device)
+            else:
+                t = torch.from_numpy(np.ascontiguousarray(value)).to(device)
+        else:
+            t = value.to(device) if value.device.type != ort_device else value
+            t = t.contiguous()
+        torch_refs.append(t)
+        bind.bind_input(
+            name,
+            ort_device,
+            ort_device_id,
+            _torch_dtype_to_ort_element_type(t.dtype),
+            list(t.shape),
+            t.data_ptr(),
+        )
+
+    for name, tensor in output_tensors.items():
+        t = tensor.contiguous()
+        bind.bind_output(
+            name,
+            ort_device,
+            ort_device_id,
+            _torch_dtype_to_ort_element_type(t.dtype),
+            list(t.shape),
+            t.data_ptr(),
+        )
+
+    sess.run_with_iobinding(bind)
+
+
 def results_to_markdown(results: List[Dict[str, Any]]) -> str:
     """Convert a list of result dictionaries to a Markdown table.
 
