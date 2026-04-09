@@ -18,6 +18,7 @@ from modelbuilder.ext_test_case import (
 MINISTRAL3_MODEL_NAME = "mistralai/Ministral-3-3B-Instruct-2512"
 
 
+@requires_transformers("5")
 class TestMinistral3(ExtTestCase):
     def common_fast_ministral3_random_weights(self, precision, provider):
         import torch
@@ -309,22 +310,19 @@ class TestMinistral3(ExtTestCase):
             onnx_tokens = onnx_tokens[:-5]
         self.assertEqual(pt_tokens, onnx_tokens)
 
-    @unittest.skip("issue")
     @hide_stdout()
     def test_ministral3_fp32_cpu_greedy_generation(self):
         self.common_ministral3_greedy_generation("fp32", "cpu")
 
-    @unittest.skip("issue")
     @hide_stdout()
     def test_ministral3_fp16_cpu_greedy_generation(self):
         self.common_ministral3_greedy_generation("fp16", "cpu")
 
-    @unittest.skip("issue")
     @hide_stdout()
+    @requires_cuda()
     def test_ministral3_fp32_cuda_greedy_generation(self):
         self.common_ministral3_greedy_generation("fp32", "cuda")
 
-    @unittest.skip("issue")
     @hide_stdout()
     @requires_cuda()
     def test_ministral3_fp16_cuda_greedy_generation(self):
@@ -336,28 +334,23 @@ class TestMinistral3(ExtTestCase):
     def test_ministral3_bf16_cuda_greedy_generation(self):
         self.common_ministral3_greedy_generation("bf16", "cuda")
 
-    @unittest.skip("issue")
     @hide_stdout()
     def test_fast_discrepancy_ministral3_fp32_cpu(self):
         self.common_fast_ministral3_random_weights("fp32", "cpu")
 
-    @unittest.skip("issue")
     @hide_stdout()
     def test_fast_discrepancy_ministral3_fp16_cpu(self):
         self.common_fast_ministral3_random_weights("fp16", "cpu")
 
-    @requires_transformers("5.0")
     @hide_stdout()
     def test_fast_discrepancy_ministral3_int4_cpu(self):
         self.common_fast_ministral3_random_weights("int4", "cpu")
 
-    @unittest.skip("issue")
     @hide_stdout()
     @requires_cuda()
     def test_fast_discrepancy_ministral3_fp16_cuda(self):
         self.common_fast_ministral3_random_weights("fp16", "cuda")
 
-    @requires_transformers("5.0")
     @hide_stdout()
     def test_ministral3_conditional_generation_fp32_cpu_random_weights(self):
         """
