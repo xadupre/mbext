@@ -10,6 +10,7 @@ import warnings
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 import numpy as np
+import onnx
 
 
 class PvVersion:
@@ -408,15 +409,39 @@ class ExtTestCase(unittest.TestCase):
         return onnx_feed, torch_feed
 
     def get_input_np_dtype(self, precision):
-        if precision == "bf16":
-            import ml_dtypes
+        return get_input_np_dtype(precision)
 
-            return ml_dtypes.bfloat16
-        return {
-            "int4": np.float32,
-            "fp16": np.float16,
-            "fp32": np.float32,
-        }[precision]
+
+def get_input_np_dtype(precision):
+    if precision == "bf16":
+        import ml_dtypes
+
+        return ml_dtypes.bfloat16
+    return {
+        "int4": np.float32,
+        "fp16": np.float16,
+        "fp32": np.float32,
+    }[precision]
+
+
+def get_input_torch_dtype(precision):
+    import torch
+
+    return {
+        "int4": torch.float32,
+        "fp16": torch.float16,
+        "fp32": torch.float32,
+        "bf16": torch.bfloat16,
+    }[precision]
+
+
+def ort_dtype_to_onnx_dtype(stype: str):
+    return {
+        "tensor(bfloat16)": onnx.TensorProto.BFLOAT16,
+        "tensor(float)": onnx.TensorProto.FLOAT,
+        "tensor(float16)": onnx.TensorProto.FLOAT16,
+        "tensor(int64)": onnx.TensorProto.INT64,
+    }[stype]
 
 
 def first_token_diff(expected: List[int], values: List[int]) -> Dict[str, Any]:
@@ -594,6 +619,8 @@ def _ort_io_binding_helper(sess, input_tensors, output_tensors, device="cuda:0")
 
     bind = sess.io_binding()
     torch_refs = []  # keep tensors alive for the duration of run_with_iobinding
+    ort_input_type = {i.name: ort_dtype_to_onnx_dtype(i.type) for i in sess.get_inputs()}
+    ort_output_type = {i.name: ort_dtype_to_onnx_dtype(i.type) for i in sess.get_outputs()}
 
     for name, value in input_tensors.items():
         if isinstance(value, np.ndarray):
@@ -612,7 +639,7 @@ def _ort_io_binding_helper(sess, input_tensors, output_tensors, device="cuda:0")
             name,
             ort_device,
             ort_device_id,
-            _torch_dtype_to_ort_element_type(t.dtype),
+            ort_input_type[name],
             list(t.shape),
             t.data_ptr(),
         )
@@ -623,7 +650,7 @@ def _ort_io_binding_helper(sess, input_tensors, output_tensors, device="cuda:0")
             name,
             ort_device,
             ort_device_id,
-            _torch_dtype_to_ort_element_type(t.dtype),
+            ort_output_type[name],
             list(t.shape),
             t.data_ptr(),
         )
@@ -685,3 +712,104 @@ def results_to_markdown(results: List[Dict[str, Any]]) -> str:
     ]
     df = df.set_index(index).reset_index(drop=False).fillna("")
     return df.to_markdown()
+
+
+def run_session_or_io_binding(
+    use_iobinding: bool,
+    precision: str,
+    provider: str,
+    prefill_feed: Dict[str, np.ndarray],
+    sess: "onnxruntime.InferenceSession",  # noqa: F821
+    vocab_size: int,
+) -> Tuple[Dict[str, "torch.Tensor"], np.ndarray]:  # noqa: F821
+    import torch
+    import ml_dtypes
+
+    device = f"{provider}:0" if use_iobinding else provider
+    # Build torch input tensors on the CUDA device.
+    inputs_without_cache = [k for k in prefill_feed if not k.startswith("past_key_value")]
+    torch_prefill_feed = {
+        k: torch.from_numpy(prefill_feed[k]).to(device) for k in inputs_without_cache
+    }
+    num_hidden_layers = (len(prefill_feed) - len(inputs_without_cache)) // 2
+    batch_size = prefill_feed["input_ids"].shape[0]
+    seq_len = prefill_feed["input_ids"].shape[1]
+    num_key_value_heads = prefill_feed["past_key_values.0.key"].shape[1]
+    head_size = prefill_feed["past_key_values.0.key"].shape[-1]
+    onnx_input_names = [i.name for i in sess.get_inputs()]
+    onnx_output_names = [i.name for i in sess.get_outputs()]
+
+    if use_iobinding:
+        # For bf16 on CUDA, ORT Python bindings cannot pass bfloat16 tensors
+        # through NumPy, so we use IOBinding with pre-allocated torch CUDA
+        # tensors instead (following the onnxruntime-genai test pattern).
+        for i in range(num_hidden_layers):
+            torch_prefill_feed[f"past_key_values.{i}.key"] = torch.empty(
+                batch_size,
+                num_key_value_heads,
+                0,
+                head_size,
+                dtype=get_input_torch_dtype(precision),
+                device=device,
+            )
+            torch_prefill_feed[f"past_key_values.{i}.value"] = torch.empty(
+                batch_size,
+                num_key_value_heads,
+                0,
+                head_size,
+                dtype=get_input_torch_dtype(precision),
+                device=device,
+            )
+        torch_prefill_feed = {
+            k: v for k, v in torch_prefill_feed.items() if k in onnx_input_names
+        }
+
+        # Pre-allocate output tensors.
+        # The builder upcasts bf16 logits to float32 for accuracy.
+        ort_prefill_logits = torch.empty(
+            batch_size,
+            seq_len,
+            vocab_size,
+            dtype=get_input_torch_dtype(precision),
+            device=device,
+        )
+        torch_prefill_outputs = {"logits": ort_prefill_logits}
+        for i in range(num_hidden_layers):
+            torch_prefill_outputs[f"present.{i}.key"] = torch.empty(
+                batch_size,
+                num_key_value_heads,
+                seq_len,
+                head_size,
+                dtype=get_input_torch_dtype(precision),
+                device=device,
+            )
+            torch_prefill_outputs[f"present.{i}.value"] = torch.empty(
+                batch_size,
+                num_key_value_heads,
+                seq_len,
+                head_size,
+                dtype=get_input_torch_dtype(precision),
+                device=device,
+            )
+        _ort_io_binding_helper(sess, torch_prefill_feed, torch_prefill_outputs, device)
+        # Extract float32 logits as numpy; keep KV cache as torch tensors
+        # so they can be fed directly into the decode io_binding call.
+        if ort_prefill_logits.dtype == torch.bfloat16:
+            ort_logits_np = (
+                ort_prefill_logits.detach()
+                .cpu()
+                .to(torch.float32)
+                .numpy()
+                .astype(ml_dtypes.bfloat16)
+            )
+        else:
+            ort_logits_np = ort_prefill_logits.detach().cpu().numpy()
+        prefill_results = {"logits": ort_logits_np}
+        for i in range(num_hidden_layers):
+            prefill_results[f"present.{i}.key"] = torch_prefill_outputs[f"present.{i}.key"]
+            prefill_results[f"present.{i}.value"] = torch_prefill_outputs[f"present.{i}.value"]
+    else:
+        prefill_outputs = sess.run(None, prefill_feed)
+        prefill_results = dict(zip(onnx_output_names, prefill_outputs))
+        ort_logits_np = prefill_outputs[0]
+    return prefill_results, ort_logits_np

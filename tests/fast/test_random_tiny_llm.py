@@ -10,9 +10,10 @@ import numpy as np
 
 from modelbuilder.ext_test_case import (
     ExtTestCase,
-    _ort_io_binding_helper,
+    run_session_or_io_binding,
     hide_stdout,
     requires_cuda,
+    _ort_io_binding_helper,
 )
 
 MODEL_NAME = "arnir0/Tiny-LLM"
@@ -104,13 +105,6 @@ class TestRandomTinyLLM(ExtTestCase):
         torch.manual_seed(0)
         input_ids = torch.randint(0, config.vocab_size, (batch_size, seq_len)).to(provider)
         onnx_input_names = [i.name for i in sess.get_inputs()]
-        onnx_output_names = [i.name for i in sess.get_outputs()]
-
-        # For bf16 on CUDA, ORT Python bindings cannot pass bfloat16 tensors
-        # through NumPy, so we use IOBinding with pre-allocated torch CUDA
-        # tensors instead (following the onnxruntime-genai test pattern).
-        use_iobinding = precision == "bf16"
-        device = f"{provider}:0" if use_iobinding else provider
 
         prefill_results = None
         with self.subTest(step="prefill"):
@@ -130,76 +124,14 @@ class TestRandomTinyLLM(ExtTestCase):
                 )
             prefill_feed = {k: v for k, v in prefill_feed.items() if k in onnx_input_names}
 
-            if use_iobinding:
-                # Build torch input tensors on the CUDA device.
-                torch_prefill_feed = {
-                    "input_ids": torch.from_numpy(prefill_feed["input_ids"]).to(device),
-                    "attention_mask": torch.from_numpy(prefill_feed["attention_mask"]).to(device),
-                    "position_ids": torch.from_numpy(prefill_feed["position_ids"]).to(device),
-                }
-                for i in range(num_hidden_layers):
-                    torch_prefill_feed[f"past_key_values.{i}.key"] = torch.empty(
-                        batch_size,
-                        config.num_key_value_heads,
-                        0,
-                        head_size,
-                        dtype=torch.bfloat16,
-                        device=device,
-                    )
-                    torch_prefill_feed[f"past_key_values.{i}.value"] = torch.empty(
-                        batch_size,
-                        config.num_key_value_heads,
-                        0,
-                        head_size,
-                        dtype=torch.bfloat16,
-                        device=device,
-                    )
-                torch_prefill_feed = {
-                    k: v for k, v in torch_prefill_feed.items() if k in onnx_input_names
-                }
-                # Pre-allocate output tensors.
-                # The builder upcasts bf16 logits to float32 for accuracy.
-                ort_prefill_logits = torch.empty(
-                    batch_size,
-                    seq_len,
-                    config.vocab_size,
-                    dtype=torch.float32,
-                    device=device,
-                )
-                torch_prefill_outputs = {"logits": ort_prefill_logits}
-                for i in range(num_hidden_layers):
-                    torch_prefill_outputs[f"present.{i}.key"] = torch.empty(
-                        batch_size,
-                        config.num_key_value_heads,
-                        seq_len,
-                        head_size,
-                        dtype=torch.bfloat16,
-                        device=device,
-                    )
-                    torch_prefill_outputs[f"present.{i}.value"] = torch.empty(
-                        batch_size,
-                        config.num_key_value_heads,
-                        seq_len,
-                        head_size,
-                        dtype=torch.bfloat16,
-                        device=device,
-                    )
-                _ort_io_binding_helper(sess, torch_prefill_feed, torch_prefill_outputs, device)
-                # Extract float32 logits as numpy; keep KV cache as torch tensors
-                # so they can be fed directly into the decode io_binding call.
-                ort_logits_np = ort_prefill_logits.detach().cpu().numpy()
-                prefill_results = {"logits": ort_logits_np}
-                for i in range(num_hidden_layers):
-                    prefill_results[f"present.{i}.key"] = torch_prefill_outputs[
-                        f"present.{i}.key"
-                    ]
-                    prefill_results[f"present.{i}.value"] = torch_prefill_outputs[
-                        f"present.{i}.value"
-                    ]
-            else:
-                prefill_outputs = sess.run(None, prefill_feed)
-                prefill_results = dict(zip(onnx_output_names, prefill_outputs))
-                ort_logits_np = prefill_outputs[0]
+            prefill_results, ort_logits_np = run_session_or_io_binding(
+                use_iobinding=precision == "bf16",
+                precision=precision,
+                provider=provider,
+                prefill_feed=prefill_feed,
+                sess=sess,
+                vocab_size=config.vocab_size,
+            )
 
             with torch.no_grad():
                 pt_prefill = model(input_ids)
@@ -237,6 +169,8 @@ class TestRandomTinyLLM(ExtTestCase):
                 decode_feed[f"past_key_values.{i}.value"] = prefill_results[f"present.{i}.value"]
             decode_feed = {k: v for k, v in decode_feed.items() if k in onnx_input_names}
 
+            use_iobinding = precision == "bf16"
+            device = f"{provider}:0" if use_iobinding else provider
             if use_iobinding:
                 # The KV cache from prefill is already on CUDA as torch tensors.
                 past_kv_len = prefill_results["present.0.key"].shape[2]
