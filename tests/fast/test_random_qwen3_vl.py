@@ -10,6 +10,7 @@ import numpy as np
 
 from modelbuilder.ext_test_case import (
     ExtTestCase,
+    run_session_or_io_binding,
     hide_stdout,
     requires_cuda,
     requires_transformers,
@@ -109,7 +110,6 @@ class TestRandomQwen3VL(ExtTestCase):
         torch.manual_seed(0)
         input_ids = torch.randint(0, text_config.vocab_size, (batch_size, seq_len)).to(provider)
         onnx_input_names = [i.name for i in sess.get_inputs()]
-        onnx_output_names = [i.name for i in sess.get_outputs()]
 
         np_dtype = self.get_input_np_dtype(precision)
 
@@ -138,19 +138,24 @@ class TestRandomQwen3VL(ExtTestCase):
                     dtype=np_dtype,
                 )
             prefill_feed = {k: v for k, v in prefill_feed.items() if k in onnx_input_names}
-            prefill_outputs = sess.run(None, prefill_feed)
-            prefill_results = dict(zip(onnx_output_names, prefill_outputs))
+
+            prefill_results, ort_logits_np = run_session_or_io_binding(
+                use_iobinding=precision == "bf16",
+                precision=precision,
+                provider=provider,
+                feed=prefill_feed,
+                sess=sess,
+                vocab_size=text_config.vocab_size,
+            )
 
             with torch.no_grad():
                 pt_prefill = model(input_ids=input_ids)
 
             np_prefill = pt_prefill.logits.detach().cpu().numpy()
-            disc = self.get_numpy_discrepancy(np_prefill, prefill_outputs[0])
+            disc = self.get_numpy_discrepancy(np_prefill, ort_logits_np)
             self.log_results({"step": "prefill", **disc, **log_data})
             atol = {"fp16": 1e-2, "bf16": 1e-2, "fp32": 1e-3, "int4": 0.5}
-            np.testing.assert_allclose(
-                np_prefill, prefill_outputs[0], atol=atol[precision], rtol=1e-3
-            )
+            np.testing.assert_allclose(np_prefill, ort_logits_np, atol=atol[precision], rtol=1e-3)
 
         with self.subTest(step="decode"):
             next_token = int(np.argmax(prefill_results["logits"][0, -1, :]))
@@ -173,8 +178,15 @@ class TestRandomQwen3VL(ExtTestCase):
                 decode_feed[f"past_key_values.{i}.value"] = prefill_results[f"present.{i}.value"]
             decode_feed = {k: v for k, v in decode_feed.items() if k in onnx_input_names}
 
-            decode_outputs = sess.run(None, decode_feed)
-            onnx_decode_logits = decode_outputs[0]
+            prefill_results, onnx_decode_logits = run_session_or_io_binding(
+                use_iobinding=precision == "bf16",
+                precision=precision,
+                provider=provider,
+                feed=decode_feed,
+                sess=sess,
+                vocab_size=text_config.vocab_size,
+                results=prefill_results,
+            )
 
             with torch.no_grad():
                 pt_past_kv = pt_prefill.past_key_values
@@ -215,7 +227,6 @@ class TestRandomQwen3VL(ExtTestCase):
     def test_fast_discrepancy_qwen3_vl_fp16_cuda(self):
         self.common_fast_qwen3_vl_random_weights("fp16", "cuda")
 
-    @unittest.skip("onnxruntime python binding does not support bf16 easily")
     @hide_stdout()
     @requires_cuda()
     def test_fast_discrepancy_qwen3_vl_bf16_cuda(self):
