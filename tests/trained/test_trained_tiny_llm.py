@@ -5,7 +5,12 @@
 # --------------------------------------------------------------------------
 import os
 import unittest
-from modelbuilder.ext_test_case import ExtTestCase, hide_stdout, long_test
+from modelbuilder.ext_test_case import (
+    ExtTestCase,
+    hide_stdout,
+    long_test,
+    run_session_or_io_binding,
+)
 
 MODEL_NAME = "arnir0/Tiny-LLM"
 
@@ -76,8 +81,14 @@ class TestTrainedTinyLLM(ExtTestCase):
         with torch.no_grad():
             pt_logits = model(**torch_feed).logits.numpy()
 
-        onnx_outputs = sess.run(None, onnx_feed)
-        onnx_logits = onnx_outputs[0]
+        _, onnx_logits = run_session_or_io_binding(
+            use_iobinding=precision == "bf16",
+            precision=precision,
+            provider=provider,
+            feed=onnx_feed,
+            sess=sess,
+            vocab_size=config.vocab_size,
+        )
 
         disc = self.get_numpy_discrepancy(pt_logits, onnx_logits)
         disc.update(
