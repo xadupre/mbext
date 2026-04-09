@@ -138,6 +138,7 @@ class Gemma3Model(Gemma2Model):
             full_params = config.rope_parameters.get("full_attention", {})
             self.rope_attrs["theta"] = full_params.get("rope_theta", self.rope_attrs["theta"])
         else:
+            # Default local RoPE theta matching Gemma3's original rope_local_base_freq
             self.rope_local_theta = 10000.0
         self.make_rotary_embedding_multi_cache()
 
