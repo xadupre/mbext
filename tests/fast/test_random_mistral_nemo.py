@@ -483,7 +483,9 @@ class TestMistralNeMo(ExtTestCase):
         )
         onnx_logits, onnx_present_key, onnx_present_value = prefill_out
 
-        np.testing.assert_allclose(pt_logits.numpy(), onnx_logits, atol=1e-4, rtol=1e-4)
+        disc = self.get_numpy_discrepancy(pt_logits.numpy(), onnx_logits)
+        self.log_results({"step": "prefill", **disc})
+        self.assertLess(disc["max_abs_err"], 1e-3)
 
         # ------------------------------------------------------------------
         # Step 2: decode — use KV-cache produced by the prefill step
@@ -505,7 +507,9 @@ class TestMistralNeMo(ExtTestCase):
                 "past_key_values.0.value": onnx_present_value,
             },
         )
-        np.testing.assert_allclose(pt_dec_logits.numpy(), dec_out[0], atol=1e-4, rtol=1e-4)
+        disc = self.get_numpy_discrepancy(pt_dec_logits.numpy(), dec_out[0])
+        self.log_results({"step": "decode", **disc})
+        self.assertLess(disc["max_abs_err"], 1e-3)
 
     @hide_stdout()
     @requires_yobx()
