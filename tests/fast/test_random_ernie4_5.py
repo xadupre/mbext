@@ -365,6 +365,11 @@ class TestErnie4_5(ExtTestCase):
     def test_fast_discrepancy_ernie4_5_fp16_cuda(self):
         self.common_fast_ernie4_5_random_weights("fp16", "cuda")
 
+    @hide_stdout()
+    @requires_cuda()
+    def test_fast_discrepancy_ernie4_5_bf16_cuda(self):
+        self.common_fast_ernie4_5_random_weights("bf16", "cuda")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
