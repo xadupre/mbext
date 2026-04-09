@@ -326,7 +326,7 @@ _MODELING_CODE = textwrap.dedent("""\
 
 
 def _write_modeling_file(model_dir):
-    """Write the custom modeling code to *model_dir* so that
+    """Write the custom modeling code to ``model_dir`` so that
     AutoModelForCausalLM.from_pretrained(..., trust_remote_code=True) can
     load Phi3SmallForCausalLM via the auto_map in config.json."""
     path = os.path.join(model_dir, "modeling_phi3_small.py")
@@ -336,7 +336,7 @@ def _write_modeling_file(model_dir):
 
 
 def _load_phi3_small_class(modeling_path):
-    """Dynamically import Phi3SmallForCausalLM from *modeling_path*.
+    """Dynamically import Phi3SmallForCausalLM from ``modeling_path``.
 
     The module is also registered in ``sys.modules`` so that transformers'
     ``_can_set_experts_implementation`` (which looks up the class module via
