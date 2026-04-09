@@ -8,7 +8,12 @@ import unittest
 
 import numpy as np
 
-from modelbuilder.ext_test_case import ExtTestCase, hide_stdout, requires_cuda
+from modelbuilder.ext_test_case import (
+    ExtTestCase,
+    run_session_or_io_binding,
+    hide_stdout,
+    requires_cuda,
+)
 
 MODEL_NAME = "Olmo2ForCausalLM"
 
@@ -90,7 +95,6 @@ class TestOLMo2(ExtTestCase):
         torch.manual_seed(0)
         input_ids = torch.randint(0, config.vocab_size, (batch_size, seq_len)).to(provider)
         onnx_input_names = [i.name for i in sess.get_inputs()]
-        onnx_output_names = [i.name for i in sess.get_outputs()]
 
         with self.subTest(step="prefill"):
             prefill_feed = {
@@ -108,19 +112,24 @@ class TestOLMo2(ExtTestCase):
                     dtype=self.get_input_np_dtype(precision),
                 )
             prefill_feed = {k: v for k, v in prefill_feed.items() if k in onnx_input_names}
-            prefill_outputs = sess.run(None, prefill_feed)
-            prefill_results = dict(zip(onnx_output_names, prefill_outputs))
+
+            prefill_results, ort_logits_np = run_session_or_io_binding(
+                use_iobinding=precision == "bf16",
+                precision=precision,
+                provider=provider,
+                feed=prefill_feed,
+                sess=sess,
+                vocab_size=config.vocab_size,
+            )
 
             with torch.no_grad():
                 pt_prefill = model(input_ids)
 
             np_prefill = pt_prefill.logits.detach().cpu().numpy()
-            disc = self.get_numpy_discrepancy(np_prefill, prefill_outputs[0])
+            disc = self.get_numpy_discrepancy(np_prefill, ort_logits_np)
             self.log_results({"step": "prefill", **disc, **log_data})
             atol = {"fp16": 1e-2, "bf16": 1e-2, "fp32": 1e-3, "int4": 0.5}
-            np.testing.assert_allclose(
-                np_prefill, prefill_outputs[0], atol=atol[precision], rtol=1e-3
-            )
+            np.testing.assert_allclose(np_prefill, ort_logits_np, atol=atol[precision], rtol=1e-3)
 
         with self.subTest(step="decode"):
             next_token = int(np.argmax(prefill_results["logits"][0, -1, :]))
@@ -135,8 +144,15 @@ class TestOLMo2(ExtTestCase):
                 decode_feed[f"past_key_values.{i}.value"] = prefill_results[f"present.{i}.value"]
             decode_feed = {k: v for k, v in decode_feed.items() if k in onnx_input_names}
 
-            decode_outputs = sess.run(None, decode_feed)
-            onnx_decode_logits = decode_outputs[0]
+            prefill_results, onnx_decode_logits = run_session_or_io_binding(
+                use_iobinding=precision == "bf16",
+                precision=precision,
+                provider=provider,
+                feed=decode_feed,
+                sess=sess,
+                vocab_size=config.vocab_size,
+                results=prefill_results,
+            )
 
             with torch.no_grad():
                 pt_past_kv = pt_prefill.past_key_values
@@ -144,7 +160,7 @@ class TestOLMo2(ExtTestCase):
                 pt_decode = model(next_token_tensor, past_key_values=pt_past_kv)
                 pt_decode_logits = pt_decode.logits.detach().cpu().numpy()
 
-            disc = self.get_numpy_discrepancy(pt_decode_logits, decode_outputs[0])
+            disc = self.get_numpy_discrepancy(pt_decode_logits, onnx_decode_logits)
             self.log_results({"step": "decode", **disc, **log_data})
             atol = {"fp16": 1e-2, "bf16": 1e-2, "fp32": 1e-3, "int4": 0.5}
             rtol = {"fp16": 10, "bf16": 1e-2, "fp32": 1e-3, "int4": 10000}
@@ -215,7 +231,6 @@ class TestOLMo2(ExtTestCase):
         sess = self._check_with_ort(onnx_path, cpu=provider == "cpu")
 
         input_names = {inp.name for inp in sess.get_inputs()}
-        output_names = [out.name for out in sess.get_outputs()]
 
         batch_size = 1
         head_size = config.hidden_size // config.num_attention_heads
@@ -247,6 +262,7 @@ class TestOLMo2(ExtTestCase):
             )
 
         onnx_tokens = current_ids[0].tolist()
+        results = None
         for _ in range(max_new_tokens):
             past_len = past_kv["past_key_values.0.key"].shape[2]
             cur_len = current_ids.shape[1]
@@ -263,8 +279,15 @@ class TestOLMo2(ExtTestCase):
                 feed[f"past_key_values.{i}.value"] = past_kv[f"past_key_values.{i}.value"]
             feed = {k: v for k, v in feed.items() if k in input_names}
 
-            outputs = sess.run(None, feed)
-            results = dict(zip(output_names, outputs))
+            results, _ = run_session_or_io_binding(
+                use_iobinding=precision == "bf16",
+                precision=precision,
+                provider=provider,
+                feed=feed,
+                sess=sess,
+                vocab_size=config.vocab_size,
+                results=results,
+            )
 
             next_token = int(np.argmax(results["logits"][0, -1, :]))
             onnx_tokens.append(next_token)
@@ -291,7 +314,7 @@ class TestOLMo2(ExtTestCase):
             )
         )
         self.log_results(diff)
-        if precision == "fp16":
+        if precision in ("fp16", "bf16"):
             pt_tokens = pt_tokens[:-5]
             onnx_tokens = onnx_tokens[:-5]
         self.assertEqual(pt_tokens, onnx_tokens)
@@ -314,7 +337,6 @@ class TestOLMo2(ExtTestCase):
     def test_olmo2_fp16_cuda_greedy_generation(self):
         self.common_olmo2_greedy_generation("fp16", "cuda")
 
-    @unittest.skip("onnxruntime python binding does not support bf16 easily")
     @hide_stdout()
     @requires_cuda()
     def test_olmo2_bf16_cuda_greedy_generation(self):
