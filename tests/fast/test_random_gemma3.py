@@ -18,6 +18,11 @@ from modelbuilder.ext_test_case import (
 
 GEMMA3_MODEL_NAME = "google/gemma-3-4b-it"
 
+# Minimal vocabulary used for the test tokenizer.  The exact contents are not
+# important; we only need a valid tokenizer artifact so that ``create_model``
+# can save the processing files alongside the ONNX model.
+_VOCAB = {"<unk>": 0, "<s>": 1, "</s>": 2}
+
 
 def _make_gemma3_config():
     """Return a minimal ``Gemma3Config`` for ``Gemma3ForConditionalGeneration``.
@@ -76,7 +81,7 @@ class TestRandomGemma3(ExtTestCase):
         model.eval()
         model.save_pretrained(model_dir)
 
-        vocab = {"<unk>": 0, "<s>": 1, "</s>": 2}
+        vocab = _VOCAB
         tokenizer = PreTrainedTokenizerFast(
             tokenizer_object=Tokenizer(WordLevel(vocab=vocab, unk_token="<unk>")),
             bos_token="<s>",
@@ -120,6 +125,9 @@ class TestRandomGemma3(ExtTestCase):
 
         # Derive inputs_embeds from the saved model's embedding table so we
         # can also run the PyTorch reference and compare logits.
+        # Seed 0 governs the random input token IDs; seed 42 in
+        # _build_and_save_model governs the model weights.  Keeping them
+        # separate makes each concern independently reproducible.
         torch.manual_seed(0)
         input_ids = torch.randint(0, text_cfg.vocab_size, (batch_size, seq_len))
         with torch.no_grad():
