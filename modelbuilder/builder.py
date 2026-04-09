@@ -206,7 +206,7 @@ def create_model(
             config, io_dtype, onnx_dtype, execution_provider, cache_dir, extra_options
         )
     elif config.architectures[0] == "GemmaForCausalLM":
-        from .gemma import GemmaModel
+        from .builders.gemma import GemmaModel
 
         onnx_model = GemmaModel(
             config, io_dtype, onnx_dtype, execution_provider, cache_dir, extra_options
@@ -215,7 +215,7 @@ def create_model(
         print(
             "WARNING: This model loses accuracy with float16 precision. It is recommended to set `--precision bf16` or `--precision int4 --extra_options use_cuda_bf16=true` by default."
         )
-        from .gemma import Gemma2Model
+        from .builders.gemma import Gemma2Model
 
         onnx_model = Gemma2Model(
             config, io_dtype, onnx_dtype, execution_provider, cache_dir, extra_options
@@ -224,7 +224,7 @@ def create_model(
         print(
             "WARNING: This model loses accuracy with float16 precision. It is recommended to set `--precision bf16` or `--precision int4 --extra_options use_cuda_bf16=true` by default."
         )
-        from .gemma import Gemma3Model
+        from .builders.gemma import Gemma3Model
 
         onnx_model = Gemma3Model(
             config, io_dtype, onnx_dtype, execution_provider, cache_dir, extra_options
