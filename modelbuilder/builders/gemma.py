@@ -124,6 +124,19 @@ class Gemma2Model(GemmaModel):
 
 class Gemma3Model(Gemma2Model):
     def __init__(self, config, io_dtype, onnx_dtype, ep, cache_dir, extra_options):
+        # New transformers versions (>=5.x) store per-attention-type RoPE parameters in
+        # rope_parameters (a dict keyed by attention type) rather than the flat attributes
+        # rope_theta / rope_local_base_freq used by older versions.  Patch the config so
+        # that the base class and the rest of this constructor can always use the flat API.
+        if hasattr(config, "rope_parameters") and isinstance(config.rope_parameters, dict):
+            rope_params = config.rope_parameters
+            if not hasattr(config, "rope_theta") and "full_attention" in rope_params:
+                config.rope_theta = rope_params["full_attention"].get("rope_theta", 1000000.0)
+            if not hasattr(config, "rope_local_base_freq") and "sliding_attention" in rope_params:
+                config.rope_local_base_freq = rope_params["sliding_attention"].get(
+                    "rope_theta", 10000.0
+                )
+
         super().__init__(config, io_dtype, onnx_dtype, ep, cache_dir, extra_options)
 
         self.rope_local_theta = config.rope_local_base_freq
