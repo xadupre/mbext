@@ -187,6 +187,7 @@ class TestGptOss20b(ExtTestCase):
             rms_norm_eps=1e-5,
             sliding_window=32,
             vocab_size=256,
+            max_position_embeddings=4096,
         )
 
         basename = f"test_generation_gpt_oss_20b_{precision}_{provider}"
