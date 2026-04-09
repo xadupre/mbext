@@ -254,6 +254,8 @@ class ChatGLMForConditionalGeneration(GenerationMixin, PreTrainedModel):
         cos_cache, sin_cache = _build_rope_cache(config.seq_length, head_dim)
         self.register_buffer("cos_cache", cos_cache, persistent=False)
         self.register_buffer("sin_cache", sin_cache, persistent=False)
+        # Required by transformers ≥ 5.x (post_init sets all_tied_weights_keys, etc.)
+        self.post_init()
 
     def forward(
         self,
@@ -321,9 +323,11 @@ def _save_mini_chatglm(model_dir, num_layers=1):
     # 2. Instantiate config + model by importing the file we just wrote
     # ------------------------------------------------------------------
     import importlib.util
+    import sys
 
     spec = importlib.util.spec_from_file_location("_chatglm_mini", modeling_path)
     mod = importlib.util.module_from_spec(spec)
+    sys.modules["_chatglm_mini"] = mod
     spec.loader.exec_module(mod)
     ChatGLMConfig = mod.ChatGLMConfig
     ChatGLMForConditionalGeneration = mod.ChatGLMForConditionalGeneration
