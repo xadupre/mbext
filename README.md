@@ -35,6 +35,7 @@ token generation via ``onnxruntime-genai``.
 | [allenai/OLMo-3-7B-Instruct](https://huggingface.co/allenai/OLMo-3-7B-Instruct) | `Olmo3ForCausalLM` | ✓ | | |
 | [HuggingFaceTB/SmolLM3-3B](https://huggingface.co/HuggingFaceTB/SmolLM3-3B) | `SmolLM3ForCausalLM` | ✓ | | |
 | [Qwen/Qwen2.5-VL-7B-Instruct](https://huggingface.co/Qwen/Qwen2.5-VL-7B-Instruct) | `Qwen2_5_VLForConditionalGeneration` | ✓ | | |
+| [zai-org/chatglm3-6b](https://huggingface.co/zai-org/chatglm3-6b) | `ChatGLMModel` | ✓ | | |
 
 ## Fast Unit tests
 
