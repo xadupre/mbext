@@ -752,8 +752,9 @@ def run_session_or_io_binding(
     # Build torch input tensors on the CUDA device.
     inputs_without_cache = [k for k in feed if not k.startswith("past_key_value")]
     num_hidden_layers = (len(feed) - len(inputs_without_cache)) // 2
-    batch_size = feed["input_ids"].shape[0]
-    seq_len = feed["input_ids"].shape[1]
+    first_input = "input_ids" if "input_ids" in feed else "inputs_embeds"
+    batch_size = feed[first_input].shape[0]
+    seq_len = feed[first_input].shape[1]
     num_key_value_heads = feed["past_key_values.0.key"].shape[1]
     head_size = feed["past_key_values.0.key"].shape[-1]
     onnx_input_names = [i.name for i in sess.get_inputs()]

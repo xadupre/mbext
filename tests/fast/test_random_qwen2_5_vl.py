@@ -116,7 +116,7 @@ class TestRandomQwen25VL(ExtTestCase):
         head_size = text_config.hidden_size // text_config.num_attention_heads
 
         torch.manual_seed(0)
-        input_ids = torch.randint(0, text_config.vocab_size, (batch_size, seq_len))
+        input_ids = torch.randint(0, text_config.vocab_size, (batch_size, seq_len)).to(provider)
         onnx_input_names = [i.name for i in sess.get_inputs()]
 
         # Compute inputs_embeds using the model's embed_tokens since the ONNX
@@ -183,7 +183,7 @@ class TestRandomQwen25VL(ExtTestCase):
             next_token = int(np.argmax(prefill_results["logits"][0, -1, :]))
 
             # Compute embedding for the next token
-            next_token_tensor = torch.tensor([[next_token]], dtype=torch.long)
+            next_token_tensor = torch.tensor([[next_token]], dtype=torch.long).to(provider)
             with torch.no_grad():
                 next_embeds = model.get_input_embeddings()(next_token_tensor)
             next_embeds_np = next_embeds.cpu().numpy().astype(self.get_input_np_dtype(precision))
@@ -255,6 +255,9 @@ class TestRandomQwen25VL(ExtTestCase):
     def test_fast_discrepancy_qwen25vl_fp16_cuda(self):
         self.common_fast_qwen25vl_random_weights("fp16", "cuda")
 
+    @unittest.skip(
+        "Could not find an implementation for MatMul(13) node with name '/model/layers.0/attn/q_proj/MatMul'"
+    )
     @hide_stdout()
     @requires_cuda()
     def test_fast_discrepancy_qwen25vl_bf16_cuda(self):
