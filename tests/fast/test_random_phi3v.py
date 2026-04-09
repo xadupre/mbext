@@ -51,7 +51,6 @@ class TestRandomPhi3V(ExtTestCase):
                 "type": "longrope",
                 "short_factor": [1.0] * (head_size // 2),
                 "long_factor": [1.0] * (head_size // 2),
-                "original_max_position_embeddings": 4096,
             },
             vocab_size=32064,
         )
@@ -256,7 +255,6 @@ class TestRandomPhi3V(ExtTestCase):
                 "type": "longrope",
                 "short_factor": [1.0] * (head_size // 2),
                 "long_factor": [1.0] * (head_size // 2),
-                "original_max_position_embeddings": 4096,
             },
             vocab_size=32064,
         )
