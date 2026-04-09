@@ -9,13 +9,7 @@ import numpy as np
 import onnx_ir as ir
 import torch
 from onnxruntime.quantization.matmul_nbits_quantizer import RTNWeightOnlyQuantConfig
-from transformers import (
-    AutoConfig,
-    Qwen2_5_VLForConditionalGeneration,
-    Qwen3VLForConditionalGeneration,
-    Qwen3_5ForConditionalGeneration,
-)
-
+from transformers import AutoConfig
 from .base import Model
 
 
@@ -720,6 +714,8 @@ class Qwen25VLTextModel(Model):
 
         # For non-quantized models, load the Hugging Face model
         print("Loading Qwen2_5_VLForConditionalGeneration model...")
+        from transformers import Qwen2_5_VLForConditionalGeneration
+
         return Qwen2_5_VLForConditionalGeneration.from_pretrained(
             self.model_name_or_path,
             cache_dir=self.cache_dir,
@@ -955,6 +951,8 @@ class Qwen3VLTextModel(Qwen25VLTextModel):
     def load_weights(self, input_path):
         # Load the Hugging Face model
         print("Loading Qwen3VLForConditionalGeneration model...")
+        from transformers import Qwen3VLForConditionalGeneration
+
         return Qwen3VLForConditionalGeneration.from_pretrained(
             self.model_name_or_path,
             cache_dir=self.cache_dir,
@@ -2174,6 +2172,8 @@ class Qwen35TextModel(Model):
         # Load the full multimodal model directly; make_model will find the
         # embedded language-model sub-modules (embed_tokens, Qwen3_5TextModel
         # decoder layers, norm, lm_head) via standard module iteration.
+        from transformers import Qwen3_5ForConditionalGeneration
+
         print("Loading Qwen3_5ForConditionalGeneration model...")
         return Qwen3_5ForConditionalGeneration.from_pretrained(
             self.model_name_or_path,
