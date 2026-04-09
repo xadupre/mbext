@@ -318,12 +318,15 @@ def _save_mini_chatglm(model_dir, num_layers=1):
         f.write(_MODELING_CODE)
 
     # ------------------------------------------------------------------
-    # 2. Instantiate config + model from the source string
+    # 2. Instantiate config + model by importing the file we just wrote
     # ------------------------------------------------------------------
-    ns: dict = {}
-    exec(compile(_MODELING_CODE, "<string>", "exec"), ns)  # noqa: S102
-    ChatGLMConfig = ns["ChatGLMConfig"]
-    ChatGLMForConditionalGeneration = ns["ChatGLMForConditionalGeneration"]
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("_chatglm_mini", modeling_path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    ChatGLMConfig = mod.ChatGLMConfig
+    ChatGLMForConditionalGeneration = mod.ChatGLMForConditionalGeneration
 
     config = ChatGLMConfig(
         architectures=["ChatGLMForConditionalGeneration"],
@@ -527,7 +530,7 @@ class TestChatGLM(ExtTestCase):
 
         onnx_path = os.path.join(output_dir, "model.onnx")
         self.assertExists(onnx_path)
-        sess = self._check_with_ort(onnx_path, cpu=provider == "cpu")
+        sess = self.check_ort(onnx_path)
 
         input_names = {inp.name for inp in sess.get_inputs()}
 
