@@ -5,16 +5,13 @@
 # --------------------------------------------------------------------------
 import os
 import unittest
-
-import numpy as np
-
 from modelbuilder.ext_test_case import ExtTestCase, long_test, requires_cuda, hide_stdout
 
 SMOLLM3_MODEL_NAME = "HuggingFaceTB/SmolLM3-3B"
 
 
 class TestTrainedSmolLM3(ExtTestCase):
-    def _common_part(self, precision, dtype, provider="cuda", int4=False):
+    def _common_part(self, precision, dtype, provider="cuda"):
         from transformers import AutoModelForCausalLM, AutoTokenizer
         from modelbuilder.builder import create_model
 
@@ -23,14 +20,14 @@ class TestTrainedSmolLM3(ExtTestCase):
         inputs = tokenizer(text, return_tensors="pt")
 
         output_dir, cache_dir = self.get_dirs(
-            f"test_trained_smollm3_3b_{'int4' if int4 else precision}_{provider}", clean=False
+            f"test_trained_smollm3_3b_{precision}_{provider}", clean=False
         )
         onnx_path = os.path.join(output_dir, "model.onnx")
         if not os.path.exists(onnx_path):
             create_model(
                 model_name=SMOLLM3_MODEL_NAME,
                 input_path="",
-                precision="int4" if int4 else precision,
+                precision=precision,
                 execution_provider=provider,
                 output_dir=output_dir,
                 cache_dir=cache_dir,

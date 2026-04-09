@@ -11,7 +11,7 @@ MODEL_NAME_OLMO3 = "allenai/Olmo-3-7B-Instruct"
 
 
 class TestTrainedOLMo3Instruct(ExtTestCase):
-    def _common_part(self, precision, dtype, provider="cuda", int4=False):
+    def _common_part(self, precision, dtype, provider="cuda"):
         from transformers import AutoModelForCausalLM, AutoTokenizer
         from modelbuilder.builder import create_model
 
@@ -20,7 +20,7 @@ class TestTrainedOLMo3Instruct(ExtTestCase):
         inputs = tokenizer(text, return_tensors="pt")
 
         output_dir, cache_dir = self.get_dirs(
-            f"test_trained_olmo3_7b_instruct_{'int4' if int4 else precision}_{provider}",
+            f"test_trained_olmo3_7b_instruct_{precision}_{provider}",
             clean=False,
         )
         onnx_path = os.path.join(output_dir, "model.onnx")
@@ -28,7 +28,7 @@ class TestTrainedOLMo3Instruct(ExtTestCase):
             create_model(
                 model_name=MODEL_NAME_OLMO3,
                 input_path="",
-                precision="int4" if int4 else precision,
+                precision=precision,
                 execution_provider=provider,
                 output_dir=output_dir,
                 cache_dir=cache_dir,

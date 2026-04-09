@@ -9,14 +9,14 @@ from modelbuilder.ext_test_case import ExtTestCase, long_test, requires_cuda, hi
 
 QWEN3_MODEL_NAMES = [
     "Qwen/Qwen3-0.6B",
-    # "Qwen/Qwen3-1.7B",
-    # "Qwen/Qwen3-4B",
+    "Qwen/Qwen3-1.7B",
+    "Qwen/Qwen3-4B",
     # "Qwen/Qwen3-8B",
 ]
 
 
 class TestTrainedQwen3(ExtTestCase):
-    def _common_part(self, model_id, precision, dtype, provider="cuda", int4=False):
+    def _common_part(self, model_id, precision, dtype, provider="cuda"):
         from transformers import AutoModelForCausalLM, AutoTokenizer
         from modelbuilder.builder import create_model
 
@@ -24,15 +24,16 @@ class TestTrainedQwen3(ExtTestCase):
         text = "What is machine learning?"
         inputs = tokenizer(text, return_tensors="pt")
 
+        smodel_id = model_id.lower().replace("/", "_").replace(".", "_").replace("-", "_")
         output_dir, cache_dir = self.get_dirs(
-            f"test_trained_qwen3_06_{'int4' if int4 else precision}_{provider}", clean=False
+            f"test_trained_{smodel_id}_{precision}_{provider}", clean=False
         )
         onnx_path = os.path.join(output_dir, "model.onnx")
         if not os.path.exists(onnx_path):
             create_model(
                 model_name=model_id,
                 input_path="",
-                precision="int4" if int4 else precision,
+                precision=precision,
                 execution_provider=provider,
                 output_dir=output_dir,
                 cache_dir=cache_dir,
@@ -78,7 +79,7 @@ class TestTrainedQwen3(ExtTestCase):
         onnx_outputs = sess.run(None, onnx_feed)
         onnx_logits = onnx_outputs[0]
 
-        smodel_id = model_id.lower().replace("/", "_").replace(".", "_")
+        smodel_id = model_id.lower().replace("/", "_").replace(".", "_").replace("-", "_")
         disc = self.get_numpy_discrepancy(pt_logits, onnx_logits)
         disc.update(
             dict(
@@ -162,11 +163,11 @@ class TestTrainedQwen3(ExtTestCase):
         pt_tokens = pt_tokens[:min_length]
         og_tokens = og_tokens[:min_length]
         disc = self.first_token_diff(pt_tokens, og_tokens)
-        smodel_id = model_id.lower().replace("/", "_").replace(".", "_")
+        smodel_id = model_id.lower().replace("/", "_").replace(".", "_").replace("-", "_")
         disc.update(
             dict(
                 precision=precision,
-                model_id=QWEN3_MODEL_NAME,
+                model_id=model_id,
                 experiment="generate",
                 provider="cuda",
                 test=f"test_trained_{smodel_id}_genai_generate_{precision}_{provider}",
@@ -191,7 +192,7 @@ class TestTrainedQwen3(ExtTestCase):
     def test_trained_qwen3_generate_int4_cpu(self):
         for model_id in QWEN3_MODEL_NAMES:
             with self.subTest(model_id=model_id):
-                self._common_trained_generate(modle_id, "int4", "cpu")
+                self._common_trained_generate(model_id, "int4", "cpu")
 
     @long_test()
     @requires_cuda()
@@ -199,7 +200,7 @@ class TestTrainedQwen3(ExtTestCase):
     def test_trained_qwen3_generate_fp16_cuda(self):
         for model_id in QWEN3_MODEL_NAMES:
             with self.subTest(model_id=model_id):
-                self._common_trained_generate(modle_id, "fp16", "cuda")
+                self._common_trained_generate(model_id, "fp16", "cuda")
 
     @long_test()
     @requires_cuda()
