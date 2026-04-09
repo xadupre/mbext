@@ -323,6 +323,7 @@ class TestRandomTinyLLM(ExtTestCase):
             )
 
         onnx_tokens = current_ids[0].tolist()
+        results = None
         for _ in range(max_new_tokens):
             past_len = past_kv["past_key_values.0.key"].shape[2]
             cur_len = current_ids.shape[1]
@@ -347,6 +348,7 @@ class TestRandomTinyLLM(ExtTestCase):
                 feed=feed,
                 sess=sess,
                 vocab_size=config.vocab_size,
+                results=results,
             )
 
             # Greedy: pick the token with the highest logit at the last position.
