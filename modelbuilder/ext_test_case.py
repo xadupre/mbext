@@ -348,9 +348,11 @@ class ExtTestCase(unittest.TestCase):
         with open(json_path, "a") as f:
             f.write(json.dumps(serializable) + "\n")
         results = _read_results(json_path)
-        md = results_to_markdown(results)
+        df = results_to_dataframe(results)
+        md = df.to_markdown()
         with open(os.path.join(stat_folder, "end2end_results.md"), "w") as f:
             f.write(md + "\n")
+        df.to_excel(os.path.join(stat_folder, "end2end_results.xlsx"))
 
     def make_dummy_text_inputs(
         self,
@@ -728,7 +730,7 @@ def _ort_io_binding_helper(sess, input_tensors, output_tensors, device="cuda:0")
     sess.run_with_iobinding(bind)
 
 
-def results_to_markdown(results: List[Dict[str, Any]]) -> str:
+def results_to_dataframe(results: List[Dict[str, Any]]) -> str:
     """Convert a list of result dictionaries to a Markdown table.
 
     Each dictionary produces one row in the table.  Columns are derived from
@@ -781,7 +783,7 @@ def results_to_markdown(results: List[Dict[str, Any]]) -> str:
         if c in df.columns
     ]
     df = df.set_index(index).reset_index(drop=False).fillna("")
-    return df.to_markdown()
+    return df
 
 
 def run_session_or_io_binding(

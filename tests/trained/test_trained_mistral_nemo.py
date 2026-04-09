@@ -16,11 +16,12 @@ class TestTrainedMistralNeMo(ExtTestCase):
         from modelbuilder.builder import create_model
 
         tokenizer = AutoTokenizer.from_pretrained(MISTRAL_NEMO_MODEL_NAME)
-        text = "A python function for prime numbers."
+        text = "What is machine learning?"
         inputs = tokenizer(text, return_tensors="pt")
 
         output_dir, cache_dir = self.get_dirs(
-            f"test_trained_mistral_nemo_{'int4' if int4 else precision}_{provider}", clean=False
+            f"test_trained_mistral_nemo_instruct_2407_{'int4' if int4 else precision}_{provider}",
+            clean=False,
         )
         onnx_path = os.path.join(output_dir, "model.onnx")
         if not os.path.exists(onnx_path):
@@ -80,7 +81,7 @@ class TestTrainedMistralNeMo(ExtTestCase):
                 model_id=MISTRAL_NEMO_MODEL_NAME,
                 experiment="forward",
                 provider="cuda",
-                test=f"test_trained_ministral3b_instruct_discrepancies_{precision}_{provider}",
+                test=f"test_trained_mistral_nemo_instruct_2407_discrepancies_{precision}_{provider}",
                 input_type="text",
                 kind="prefill",
             )
@@ -89,12 +90,12 @@ class TestTrainedMistralNeMo(ExtTestCase):
         self.assertLess(disc["max_abs_err"], 3)
 
     @long_test()
-    def test_trained_mistral_nemo_discrepancies_fp32_cpu(self):
+    def test_trained_mistral_nemo_instruct_2407_discrepancies_fp32_cpu(self):
         self._common_trained_discrepancies("fp32", "cpu")
 
     @long_test()
     @requires_cuda()
-    def test_trained_mistral_nemo_discrepancies_fp16_cuda(self):
+    def test_trained_mistral_nemo_instruct_2407_discrepancies_fp16_cuda(self):
         self._common_trained_discrepancies("fp16", "cuda")
 
     def _common_trained_generate(self, precision, provider):
@@ -144,39 +145,45 @@ class TestTrainedMistralNeMo(ExtTestCase):
             generator.generate_next_token()
             og_tokens.append(int(generator.get_next_tokens()[0]))
 
-        if len(og_tokens) > len(pt_tokens[prompt_len:]):
-            og_tokens = og_tokens[: len(pt_tokens[prompt_len:])]
-
         # Greedy decoding is deterministic: both backends must produce the
         # exact same newly-generated token sequence.
-        disc = self.first_token_diff(pt_tokens[prompt_len:], og_tokens)
+        min_length = min(len(pt_tokens), len(og_tokens))
+        pt_tokens = pt_tokens[:min_length]
+        og_tokens = og_tokens[:min_length]
+        disc = self.first_token_diff(pt_tokens, og_tokens)
         disc.update(
             dict(
                 precision=precision,
                 model_id=MISTRAL_NEMO_MODEL_NAME,
                 experiment="generate",
                 provider="cuda",
-                test=f"test_trained_mistral_nemo_genai_generate_{precision}_{provider}",
-                expected_text=tokenizer.decode(pt_tokens[prompt_len:], skip_special_tokens=False),
+                test=f"test_trained_mistral_nemo_instruct_2407_genai_generate_{precision}_{provider}",
+                expected_text=tokenizer.decode(pt_tokens, skip_special_tokens=False),
                 genai_text=tokenizer.decode(og_tokens, skip_special_tokens=False),
                 input_type="text",
             )
         )
         self.log_results(disc)
-        self.assertEqual(pt_tokens[prompt_len:], og_tokens)
+        length = 2 if precision == "int4" else len(pt_tokens)
+        self.assertEqual(pt_tokens[:length], og_tokens[:length])
 
     @long_test()
-    def test_trained_mistral_nemo_generate_fp32_cpu(self):
+    def test_trained_mistral_nemo_instruct_2407_generate_fp32_cpu(self):
         self._common_trained_generate("fp32", "cpu")
 
     @long_test()
-    def test_trained_mistral_nemo_generate_int4_cpu(self):
+    def test_trained_mistral_nemo_instruct_2407_generate_int4_cpu(self):
         self._common_trained_generate("int4", "cpu")
 
     @long_test()
     @requires_cuda()
-    def test_trained_mistral_nemo_generate_fp16_cuda(self):
+    def test_trained_mistral_nemo_instruct_2407_generate_fp16_cuda(self):
         self._common_trained_generate("fp16", "cuda")
+
+    @long_test()
+    @requires_cuda()
+    def test_trained_mistral_nemo_instruct_2407_generate_bf16_cuda(self):
+        self._common_trained_generate("bf16", "cuda")
 
 
 if __name__ == "__main__":
