@@ -325,6 +325,9 @@ class TestRandomPhi3(ExtTestCase):
             )
         )
         self.log_results(diff)
+        # Numerical drift can accumulate in fp16/bf16 over many steps, causing the
+        # last few tokens to diverge.  Trim the final 5 tokens so the comparison
+        # only covers the region where both backends remain in agreement.
         if precision in ("fp16", "bf16"):
             pt_tokens = pt_tokens[:-5]
             onnx_tokens = onnx_tokens[:-5]
