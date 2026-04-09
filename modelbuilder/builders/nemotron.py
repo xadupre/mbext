@@ -11,6 +11,8 @@ class NemotronModel(LlamaModel):
         super().__init__(config, io_dtype, onnx_dtype, ep, cache_dir, extra_options)
         self.layernorm_attrs["simple"] = False
         self.layernorm_attrs["add_offset"] = 1
+        if hasattr(config, "norm_eps"):
+            self.layernorm_attrs["epsilon"] = config.norm_eps
 
     def make_mlp_proj(self, layer_id, mlp, root_input):
         # Make nodes for the MLP subgraph
