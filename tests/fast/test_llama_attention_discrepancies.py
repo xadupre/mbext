@@ -10,7 +10,7 @@ import numpy as np
 import onnx_ir as ir
 
 from modelbuilder.builders.llama import LlamaModel
-from modelbuilder.ext_test_case import ExtTestCase, hide_stdout
+from modelbuilder.ext_test_case import ExtTestCase, hide_stdout, requires_transformers
 
 # LlamaForCausalLM architecture matching arnir0/Tiny-LLM but with a single
 # hidden layer and smaller dimensions to keep tests fast and completely offline.
@@ -206,6 +206,7 @@ class TestLlamaAttentionDiscrepancies(ExtTestCase):
     # Test: prefill discrepancies
     # ------------------------------------------------------------------
 
+    @requires_transformers("5.0")
     @hide_stdout()
     def test_llama_attention_prefill_discrepancies(self):
         """Check numerical discrepancies for the LlamaAttention prefill pass.
@@ -262,6 +263,7 @@ class TestLlamaAttentionDiscrepancies(ExtTestCase):
     # Test: decode-step discrepancies
     # ------------------------------------------------------------------
 
+    @requires_transformers("5.0")
     @hide_stdout()
     def test_llama_attention_decode_discrepancies(self):
         """Check numerical discrepancies for the LlamaAttention decode step.

@@ -650,6 +650,7 @@ class Model:
     def is_gqa_supported(self) -> bool:
         valid_gqa_configurations = {
             ("cpu", ir.DataType.FLOAT),
+            ("cpu", ir.DataType.FLOAT16),
             ("cuda", ir.DataType.FLOAT16),
             ("cuda", ir.DataType.BFLOAT16),
             ("dml", ir.DataType.FLOAT16),
@@ -1018,7 +1019,7 @@ class Model:
             )
 
         # Delete temporary cache dir if empty
-        if not os.listdir(self.cache_dir):
+        if os.path.exists(self.cache_dir) and not os.listdir(self.cache_dir):
             os.rmdir(self.cache_dir)
 
     def make_initializer(
@@ -4591,7 +4592,6 @@ class Model:
                 inputs=[root_input],
                 outputs=[output],
                 name=gelu_name,
-                approximate="none",
             )
         elif activation == "FastGelu":
             self.make_node(

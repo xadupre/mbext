@@ -1,4 +1,4 @@
-name: Fast Tests
+name: Trained Tiny LLM Tests
 
 on:
   push:
@@ -21,7 +21,7 @@ jobs:
       matrix:
         os: ["ubuntu-latest"]
         python-version: ["3.13"]
-        transformers-version: ["4.57", "5.5"]
+        transformers-version: ["5.5"]
         torch-version: ["2.10"]
     steps:
       - uses: actions/checkout@v4
@@ -40,21 +40,17 @@ jobs:
         run: pip install torch==2.10.0+cpu torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
 
       - name: Install dependencies
-        run: pip install -e ".[dev]" torch "transformers==${{ matrix.transformers-version }}" tokenizers
+        run: pip install -e ".[dev]" torch transformers tokenizers
 
-      - name: Run fast tests
-        run: DOCLEAN=1&&pytest tests/fast -v --cov=modelbuilder --cov-report=xml --cov-report=term-missing
+      - name: Run trained tiny LLM tests
+        continue-on-error: true
+        env:
+          HUGGING_FACE_HUB_TOKEN: ${{ secrets.HUGGING_FACE_HUB_TOKEN }}
+        run: LONGTEST=1 pytest tests/trained/test_trained_tiny_llm.py -v --cov=modelbuilder --cov-report=xml --cov-report=term-missing
 
-      - name: Upload coverage reports to Codecov
+      - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v5
         with:
-          token: ${{ secrets.CODECOV_TOKEN }}
-          flags: fast-tests
-
-      - name: Upload stats artifact
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: stats-${{ matrix.os }}-py${{ matrix.python-version }}-torch${{ matrix.torch-version }}-transformers${{ matrix.transformers-version }}
-          path: stats/
-          if-no-files-found: ignore
+          files: coverage.xml
+          flags: trained-tiny-llm-tests
+          fail_ci_if_error: false

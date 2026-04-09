@@ -47,6 +47,10 @@ class WhisperEncoder(Model):
         # GQA is not supported in Whisper since there is no attention mask input
         return False
 
+    def is_packed_attn_supported(self):
+        # Packed Attention is not supported in the encoder
+        return False
+
     def make_inputs_and_outputs(self):
         # Set input dicts
         self.input_names = {"audio_features": "audio_features"}
@@ -125,7 +129,6 @@ class WhisperEncoder(Model):
             inputs=[f"{conv_1_name}/output_0"],
             outputs=[gelu_1_output],
             name=gelu_1_name,
-            approximate="none",
         )
         self.make_value(
             gelu_1_output,
@@ -163,7 +166,6 @@ class WhisperEncoder(Model):
             inputs=[f"{conv_2_name}/output_0"],
             outputs=[gelu_2_output],
             name=gelu_2_name,
-            approximate="none",
         )
         self.make_value(
             gelu_2_output,
