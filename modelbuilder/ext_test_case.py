@@ -348,9 +348,11 @@ class ExtTestCase(unittest.TestCase):
         with open(json_path, "a") as f:
             f.write(json.dumps(serializable) + "\n")
         results = _read_results(json_path)
-        md = results_to_markdown(results)
+        df = results_to_dataframe(results)
+        md = df.to_markdown()
         with open(os.path.join(stat_folder, "end2end_results.md"), "w") as f:
             f.write(md + "\n")
+        df.to_excel(os.path.join(stat_folder, "end2end_results.xlsx"))
 
     def make_dummy_text_inputs(
         self,
@@ -411,6 +413,12 @@ class ExtTestCase(unittest.TestCase):
     def get_input_np_dtype(self, precision):
         return get_input_np_dtype(precision)
 
+    def get_input_torch_dtype(self, precision):
+        return get_input_torch_dtype(precision)
+
+    def fill_with_empty_cache(self, onnx_feed, session, provider, batch_size=1):
+        return fill_with_empty_cache(onnx_feed, session, provider=provider, batch_size=batch_size)
+
 
 def get_input_np_dtype(precision):
     if precision == "bf16":
@@ -455,6 +463,17 @@ def ort_dtype_to_torch_dtype(stype: str):
     }[stype]
 
 
+def ort_dtype_to_np_dtype(stype: str):
+    import ml_dtypes
+
+    return {
+        "tensor(bfloat16)": ml_dtypes.bfloat16,
+        "tensor(float)": np.float32,
+        "tensor(float16)": np.float16,
+        "tensor(int64)": np.int64,
+    }[stype]
+
+
 def onnx_dtype_to_torch_dtype(stype: str):
     import torch
 
@@ -466,15 +485,44 @@ def onnx_dtype_to_torch_dtype(stype: str):
     }[stype]
 
 
+def edit_distance(str1, str2) -> int:
+    m, n = len(str1), len(str2)
+
+    # Create a DP table
+    dp = [[0] * (n + 1) for _ in range(m + 1)]
+
+    # Initialize base cases
+    for i in range(m + 1):
+        dp[i][0] = i  # Deletions
+    for j in range(n + 1):
+        dp[0][j] = j  # Insertions
+
+    # Fill the table
+    for i in range(1, m + 1):
+        for j in range(1, n + 1):
+            if str1[i - 1] == str2[j - 1]:
+                cost = 0
+            else:
+                cost = 1
+
+            dp[i][j] = min(
+                dp[i - 1][j] + 1,  # Deletion
+                dp[i][j - 1] + 1,  # Insertion
+                dp[i - 1][j - 1] + cost,  # Substitution
+            )
+
+    return dp[m][n]
+
+
 def first_token_diff(expected: List[int], values: List[int]) -> Dict[str, Any]:
     delta_length = len(values) - len(expected)
     first_diff = None
-    total_diff = 0
     for i, (a, b) in enumerate(zip(expected, values)):
         if a != b:
             if first_diff is None:
                 first_diff = i
-            total_diff += 1
+                break
+    total_diff = edit_distance(expected, values)
     return dict(
         first_diff=first_diff,
         delta_length=delta_length,
@@ -523,6 +571,8 @@ def get_numpy_discrepancy(array_a, array_b):
         a_token = int(np.argmax(array_a[0, -1, :]))
         b_token = int(np.argmax(array_b[0, -1, :]))
         data["next_token"] = "OK" if a_token == b_token else "FAIL"
+        data["next_token_id_tch"] = a_token
+        data["next_token_id_ort"] = b_token
     return data
 
 
@@ -680,36 +730,14 @@ def _ort_io_binding_helper(sess, input_tensors, output_tensors, device="cuda:0")
     sess.run_with_iobinding(bind)
 
 
-def results_to_markdown(results: List[Dict[str, Any]]) -> str:
-    """Convert a list of result dictionaries to a Markdown table.
-
-    Each dictionary produces one row in the table.  Columns are derived from
-    the union of all keys found across every row, preserving insertion order.
-
-    :param results: list of result dicts (e.g. as produced by
-        :meth:`ExtTestCase.log_results`).
-    :return: a Markdown-formatted table string, or an empty string when
-        *results* is empty.
-
-    Example::
-
-        >>> from modelbuilder.ext_test_case import results_to_markdown
-        >>> rows = [
-        ...     {"model_id": "my-model", "experiment": "prefill", "max_abs_err": 1e-4},
-        ...     {"model_id": "my-model", "experiment": "decode",  "max_abs_err": 2e-4},
-        ... ]
-        >>> print(results_to_markdown(rows))
-        | model_id | experiment | max_abs_err |
-        | --- | --- | --- |
-        | my-model | prefill | 0.0001 |
-        | my-model | decode | 0.0002 |
-    """
-    if not results:
-        return ""
-
-    # Collect all keys in insertion order (across all rows).
+def results_to_dataframe(results: List[Dict[str, Any]]) -> str:
+    """Convert a list of result dictionaries to a DataFrame."""
     import pandas
 
+    if not results:
+        return pandas.DataFrame()
+
+    # Collect all keys in insertion order (across all rows).
     df = pandas.DataFrame(results)
     if "%_gt_0.1" in df.columns:
         df["%>0.1"] = df["%_gt_0.1"]
@@ -733,7 +761,7 @@ def results_to_markdown(results: List[Dict[str, Any]]) -> str:
         if c in df.columns
     ]
     df = df.set_index(index).reset_index(drop=False).fillna("")
-    return df.to_markdown()
+    return df
 
 
 def run_session_or_io_binding(
@@ -883,3 +911,17 @@ def run_session_or_io_binding(
         ort_logits_np = outputs[0]
 
     return results, ort_logits_np
+
+
+def fill_with_empty_cache(onnx_feed, session, provider, batch_size=1):
+    for inp in session.get_inputs():
+        if inp.name in onnx_feed:
+            continue
+        shape = list(inp.shape)
+        assert (
+            len(shape) == 4
+        ), f"issue with shape={shape}, name={inp.name!r}, type={inp.type}, available={list(onnx_feed)}"
+        shape[2] = 0
+        shape[0] = batch_size
+        dtype = ort_dtype_to_np_dtype(inp.type)
+        onnx_feed[inp.name] = np.empty(tuple(shape), dtype=dtype)

@@ -5,9 +5,6 @@
 # --------------------------------------------------------------------------
 import os
 import unittest
-
-import numpy as np
-
 from modelbuilder.ext_test_case import ExtTestCase, long_test, requires_cuda
 
 MINISTRAL3B_MODEL_NAME = "mistralai/Ministral-3-3B-Instruct-2512"
@@ -15,8 +12,12 @@ MINISTRAL3B_MODEL_NAME = "mistralai/Ministral-3-3B-Instruct-2512"
 
 class TestTrainedMinistral3BInstruct(ExtTestCase):
     def _common_part(self, precision, dtype, provider="cuda"):
-        from transformers import Mistral3ForConditionalGeneration
+        from transformers import Mistral3ForConditionalGeneration, AutoTokenizer
         from modelbuilder.builder import create_model
+
+        tokenizer = AutoTokenizer.from_pretrained(MINISTRAL3B_MODEL_NAME)
+        text = "Explain tokenization in simple terms."
+        inputs = tokenizer(text, return_tensors="pt")
 
         output_dir, cache_dir = self.get_dirs(
             f"test_trained_ministral3b_instruct_{precision}_{provider}", clean=False
@@ -39,43 +40,31 @@ class TestTrainedMinistral3BInstruct(ExtTestCase):
         #     MINISTRAL3B_MODEL_NAME, ignore_mismatched_sizes=True, dtype=dtype
         model = Mistral3ForConditionalGeneration.from_pretrained(MINISTRAL3B_MODEL_NAME)
         model.eval().to(provider).to(dtype)
-        return onnx_path, model
 
-    @long_test()
-    def test_trained_ministral3b_instruct_discrepancies_cpu(self):
-        """
-        Convert mistralai/Ministral-3B-Instruct-2512 to an fp32 ONNX model
-        targeting the CUDA execution provider.
+        embedding_layer = model.get_input_embeddings()
+        inputs_embeds = embedding_layer(inputs["input_ids"].to(provider))
+        attention_mask = inputs["attention_mask"].to(provider)
 
-        The test verifies that:
-        * ``create_model`` completes without error.
-        * The expected ``model.onnx`` file is written to the output directory.
-        * The produced ONNX file can be loaded by ``onnxruntime``.
-        * The ONNX logits closely match those of the original PyTorch model.
-        """
+        return (
+            onnx_path,
+            model,
+            dict(inputs_embeds=inputs_embeds, attention_mask=attention_mask),
+            dict(
+                inputs_embeds=inputs_embeds.detach().cpu().numpy(),
+                attention_mask=attention_mask.detach().cpu().numpy(),
+            ),
+        )
+
+    def _common_trained_discrepancies(self, precision, provider):
         import torch
 
-        precision, dtype, np_dtype = "fp32", torch.float32, np.float32
+        dtype = self.get_input_torch_dtype(precision)
 
-        onnx_path, model = self._common_part(precision, dtype, provider="cpu")
-        sess = self._check_with_ort(onnx_path, cpu=True)
-        config = model.config
-
-        batch_size = 1
-        seq_len = 5
-
-        head_size = 128
-        onnx_feed, torch_feed = self.make_dummy_text_inputs(
-            batch_size=batch_size,
-            seq_len=seq_len,
-            np_dtype=np_dtype,
-            provider="cpu",
-            head_size=head_size,
-            num_hidden_layers=config.text_config.num_hidden_layers,
-            num_key_value_heads=config.text_config.num_key_value_heads,
-            vocab_size=config.text_config.vocab_size,
-            inputs_embeds_dim=3072,
+        onnx_path, model, torch_feed, onnx_feed = self._common_part(
+            precision, dtype, provider=provider
         )
+        sess = self._check_with_ort(onnx_path, cpu=provider == "cpu")
+        self.fill_with_empty_cache(onnx_feed, sess, provider)
 
         with torch.no_grad():
             pt_logits = model(**torch_feed).logits
@@ -91,12 +80,21 @@ class TestTrainedMinistral3BInstruct(ExtTestCase):
                 model_id=MINISTRAL3B_MODEL_NAME,
                 experiment="forward",
                 provider="cuda",
-                test="test_trained_ministral3b_instruct_discrepancies_cpu",
+                test=f"test_trained_ministral3b_instruct_discrepancies_{precision}_{provider}",
                 input_type="text",
+                kind="prefill",
             )
         )
         self.log_results(disc)
         self.assertLess(disc["max_abs_err"], 2)
+
+    @long_test()
+    def test_trained_ministral3b_instruct_discrepancies_fp32_cpu(self):
+        self._common_trained_discrepancies("fp32", "cpu")
+
+    @long_test()
+    def test_trained_ministral3b_instruct_discrepancies_fp16_cuda(self):
+        self._common_trained_discrepancies("fp16", "cuda")
 
     @long_test()
     @requires_cuda()

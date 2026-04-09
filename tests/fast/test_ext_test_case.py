@@ -14,17 +14,17 @@ from modelbuilder.ext_test_case import (
     ExtTestCase,
     _make_json_serializable,
     _read_results,
-    results_to_markdown,
+    results_to_dataframe,
 )
 
 
 class TestResultsToMarkdown(unittest.TestCase):
     def test_empty_returns_empty_string(self):
-        self.assertEqual(results_to_markdown([]), "")
+        self.assertEqual(results_to_dataframe([]).to_markdown(), "")
 
     def test_single_row(self):
         rows = [{"model_id": "m", "experiment": "e", "max_abs_err": 0.001}]
-        md = results_to_markdown(rows)
+        md = results_to_dataframe(rows).to_markdown()
         lines = md.splitlines()
         self.assertEqual(len(lines), 3)
         self.assertIn("model_id", lines[0])
@@ -42,7 +42,7 @@ class TestResultsToMarkdown(unittest.TestCase):
             {"model_id": "model-a", "experiment": "prefill", "max_abs_err": 1e-4},
             {"model_id": "model-a", "experiment": "decode", "max_abs_err": 2e-4},
         ]
-        md = results_to_markdown(rows)
+        md = results_to_dataframe(rows).to_markdown()
         lines = md.splitlines()
         # header + separator + 2 data rows
         self.assertEqual(len(lines), 4)
@@ -57,7 +57,7 @@ class TestResultsToMarkdown(unittest.TestCase):
             {"a": 1, "b": 2, "provider": "cpu"},
             {"b": 3, "c": 4, "provider": "cpu"},
         ]
-        md = results_to_markdown(rows)
+        md = results_to_dataframe(rows).to_markdown()
         header = md.splitlines()[0]
         self.assertIn("a", header)
         self.assertIn("b", header)
@@ -68,7 +68,7 @@ class TestResultsToMarkdown(unittest.TestCase):
             {"a": 1, "b": 2, "provider": "cpu"},
             {"a": 3, "provider": "cpu"},
         ]
-        md = results_to_markdown(rows)
+        md = results_to_dataframe(rows).to_markdown()
         last_row = md.splitlines()[-1]
         # The second row has no 'b' key – its cell should be empty.
         self.assertIn("| cpu", last_row)
@@ -76,13 +76,13 @@ class TestResultsToMarkdown(unittest.TestCase):
     def test_float_formatting(self):
         """Floats must be formatted with %g (no trailing zeros)."""
         rows = [{"v": 0.00100, "provider": "cpu"}]
-        md = results_to_markdown(rows)
+        md = results_to_dataframe(rows).to_markdown()
         self.assertIn("0.001", md)
         self.assertNotIn("0.00100", md)
 
     def test_pipe_separated_columns(self):
         rows = [{"x": 1, "y": 2, "provider": "cpu"}]
-        md = results_to_markdown(rows)
+        md = results_to_dataframe(rows).to_markdown()
         for line in md.splitlines():
             self.assertTrue(line.startswith("|"))
             self.assertTrue(line.endswith("|"))

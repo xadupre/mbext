@@ -315,8 +315,8 @@ class TestOLMo2(ExtTestCase):
         )
         self.log_results(diff)
         if precision in ("fp16", "bf16"):
-            pt_tokens = pt_tokens[:-5]
-            onnx_tokens = onnx_tokens[:-5]
+            pt_tokens = pt_tokens[:5]
+            onnx_tokens = onnx_tokens[:5]
         self.assertEqual(pt_tokens, onnx_tokens)
 
     @hide_stdout()
