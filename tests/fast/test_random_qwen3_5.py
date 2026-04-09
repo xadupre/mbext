@@ -203,7 +203,7 @@ class TestRandomQwen3_5(ExtTestCase):
     # Tests: full_attention only (standard ORT, no custom ops needed)     #
     # ------------------------------------------------------------------ #
 
-    @requires_transformers("5.5")
+    @requires_transformers("5")
     @hide_stdout()
     def test_qwen3_5_fp32_cpu_full_attention(self):
         """Build and run a Qwen3.5 text decoder with only full_attention layers.
@@ -226,7 +226,7 @@ class TestRandomQwen3_5(ExtTestCase):
         # logits: [batch_size, seq_len, vocab_size]
         self.assertEqual(outputs[0].shape, (1, 5, 32000))
 
-    @requires_transformers("5.5")
+    @requires_transformers("5")
     @hide_stdout()
     def test_qwen3_5_fp16_cpu_full_attention(self):
         """fp16 variant of :meth:`test_qwen3_5_fp32_cpu_full_attention`."""
@@ -239,7 +239,7 @@ class TestRandomQwen3_5(ExtTestCase):
         self.assertIsNotNone(outputs[0])
         self.assertEqual(outputs[0].shape, (1, 5, 32000))
 
-    @requires_transformers("5.5")
+    @requires_transformers("5")
     @hide_stdout()
     @requires_cuda()
     def test_qwen3_5_fp16_cuda_full_attention(self):
@@ -261,7 +261,7 @@ class TestRandomQwen3_5(ExtTestCase):
     # is produced without error; inference is left to the ORT-GenAI CI.   #
     # ------------------------------------------------------------------ #
 
-    @requires_transformers("5.5")
+    @requires_transformers("5")
     @hide_stdout()
     def test_qwen3_5_fp32_cpu_hybrid_build(self):
         """Verify that ``create_model`` successfully builds a hybrid Qwen3.5 model.
@@ -290,7 +290,7 @@ class TestRandomQwen3_5(ExtTestCase):
         self.assertIn("CausalConvWithState", op_types)
         self.assertIn("LinearAttention", op_types)
 
-    @requires_transformers("5.5")
+    @requires_transformers("5")
     @hide_stdout()
     def test_qwen3_5_fp16_cpu_hybrid_build(self):
         """fp16 variant of :meth:`test_qwen3_5_fp32_cpu_hybrid_build`."""
