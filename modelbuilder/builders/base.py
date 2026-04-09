@@ -1004,7 +1004,7 @@ class Model:
             )
 
         # Delete temporary cache dir if empty
-        if not os.listdir(self.cache_dir):
+        if os.path.exists(self.cache_dir) and not os.listdir(self.cache_dir):
             os.rmdir(self.cache_dir)
 
     def make_initializer(
@@ -4566,7 +4566,6 @@ class Model:
                 inputs=[root_input],
                 outputs=[output],
                 name=gelu_name,
-                approximate="none",
             )
         elif activation == "FastGelu":
             self.make_node(
