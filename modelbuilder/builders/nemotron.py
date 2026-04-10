@@ -47,9 +47,7 @@ class NemotronHModel(LlamaModel):
             simple=True,
             location="input",
         )
-        self.make_attention(
-            layer_id, layer.mixer, root_input=self.layernorm_attrs["output_0"]
-        )
+        self.make_attention(layer_id, layer.mixer, root_input=self.layernorm_attrs["output_0"])
 
         self.layernorm_attrs["first_layernorm"] = False
         if layer_id == self.num_layers - 1:
