@@ -9,12 +9,7 @@ import unittest
 
 import numpy as np
 
-from modelbuilder.ext_test_case import (
-    ExtTestCase,
-    run_session_or_io_binding,
-    hide_stdout,
-    requires_cuda,
-)
+from modelbuilder.ext_test_case import ExtTestCase, run_session_or_io_binding, hide_stdout, requires_cuda
 
 PHI3V_MODEL_NAME = "microsoft/Phi-3-vision-128k-instruct"
 
@@ -24,11 +19,7 @@ class TestRandomPhi3V(ExtTestCase):
         import torch
         from tokenizers import Tokenizer
         from tokenizers.models import WordLevel
-        from transformers import (
-            Phi3Config,
-            Phi3ForCausalLM,
-            PreTrainedTokenizerFast,
-        )
+        from transformers import Phi3Config, Phi3ForCausalLM, PreTrainedTokenizerFast
 
         from modelbuilder.builder import create_model
 
@@ -52,11 +43,7 @@ class TestRandomPhi3V(ExtTestCase):
             num_hidden_layers=num_hidden_layers,
             num_key_value_heads=4,
             rms_norm_eps=1e-05,
-            rope_scaling={
-                "type": "longrope",
-                "short_factor": [1.0] * (head_size // 2),
-                "long_factor": [1.0] * (head_size // 2),
-            },
+            rope_scaling={"type": "longrope", "short_factor": [1.0] * (head_size // 2), "long_factor": [1.0] * (head_size // 2)},
             vocab_size=32064,
         )
 
@@ -80,10 +67,7 @@ class TestRandomPhi3V(ExtTestCase):
 
         vocab = {"<unk>": 0, "<s>": 1, "</s>": 2}
         tokenizer = PreTrainedTokenizerFast(
-            tokenizer_object=Tokenizer(WordLevel(vocab=vocab, unk_token="<unk>")),
-            bos_token="<s>",
-            eos_token="</s>",
-            unk_token="<unk>",
+            tokenizer_object=Tokenizer(WordLevel(vocab=vocab, unk_token="<unk>")), bos_token="<s>", eos_token="</s>", unk_token="<unk>"
         )
         tokenizer.save_pretrained(model_dir)
 
@@ -128,9 +112,7 @@ class TestRandomPhi3V(ExtTestCase):
             with torch.no_grad():
                 inputs_embeds = model.model.embed_tokens(input_ids)
 
-            inputs_embeds_np = (
-                inputs_embeds.cpu().numpy().astype(self.get_input_np_dtype(precision))
-            )
+            inputs_embeds_np = inputs_embeds.cpu().numpy().astype(self.get_input_np_dtype(precision))
 
             prefill_feed = {
                 "inputs_embeds": inputs_embeds_np,
@@ -139,12 +121,10 @@ class TestRandomPhi3V(ExtTestCase):
             }
             for i in range(num_hidden_layers):
                 prefill_feed[f"past_key_values.{i}.key"] = np.zeros(
-                    (batch_size, config.num_key_value_heads, 0, head_size),
-                    dtype=self.get_input_np_dtype(precision),
+                    (batch_size, config.num_key_value_heads, 0, head_size), dtype=self.get_input_np_dtype(precision)
                 )
                 prefill_feed[f"past_key_values.{i}.value"] = np.zeros(
-                    (batch_size, config.num_key_value_heads, 0, head_size),
-                    dtype=self.get_input_np_dtype(precision),
+                    (batch_size, config.num_key_value_heads, 0, head_size), dtype=self.get_input_np_dtype(precision)
                 )
             prefill_feed = {k: v for k, v in prefill_feed.items() if k in onnx_input_names}
 
@@ -163,12 +143,7 @@ class TestRandomPhi3V(ExtTestCase):
             np_prefill = pt_prefill.logits.detach().cpu().numpy()
             disc = self.get_numpy_discrepancy(np_prefill, ort_logits_np)
             self.log_results({"step": "prefill", **disc, **log_data})
-            atol = {
-                "fp16": 1e-2,
-                "bf16": 1e-2,
-                "fp32": 2e-3 if provider == "cuda" else 2e-4,
-                "int4": 0.5,
-            }
+            atol = {"fp16": 1e-2, "bf16": 1e-2, "fp32": 2e-3 if provider == "cuda" else 2e-4, "int4": 0.5}
             np.testing.assert_allclose(np_prefill, ort_logits_np, atol=atol[precision], rtol=1e-3)
 
         with self.subTest(step="decode"):
@@ -178,9 +153,7 @@ class TestRandomPhi3V(ExtTestCase):
             next_token = int(np.argmax(prefill_results["logits"][0, -1, :]))
 
             with torch.no_grad():
-                next_embed = model.model.embed_tokens(
-                    torch.tensor([[next_token]], dtype=torch.long).to(provider)
-                )
+                next_embed = model.model.embed_tokens(torch.tensor([[next_token]], dtype=torch.long).to(provider))
 
             next_embed_np = next_embed.cpu().numpy().astype(self.get_input_np_dtype(precision))
 
@@ -213,9 +186,7 @@ class TestRandomPhi3V(ExtTestCase):
             self.log_results({"step": "decode", **disc, **log_data})
             atol = {"fp16": 1e-2, "bf16": 1e-2, "fp32": 1e-4, "int4": 0.5}
             rtol = {"fp16": 10, "bf16": 1e-2, "fp32": 1e-4, "int4": 10000}
-            np.testing.assert_allclose(
-                pt_decode_logits, onnx_decode_logits, atol=atol[precision], rtol=rtol[precision]
-            )
+            np.testing.assert_allclose(pt_decode_logits, onnx_decode_logits, atol=atol[precision], rtol=rtol[precision])
 
     @hide_stdout()
     def test_fast_discrepancy_phi3v_fp32_cpu(self):
@@ -243,11 +214,7 @@ class TestRandomPhi3V(ExtTestCase):
         import torch
         from tokenizers import Tokenizer
         from tokenizers.models import WordLevel
-        from transformers import (
-            Phi3Config,
-            Phi3ForCausalLM,
-            PreTrainedTokenizerFast,
-        )
+        from transformers import Phi3Config, Phi3ForCausalLM, PreTrainedTokenizerFast
 
         from modelbuilder.builder import create_model
 
@@ -266,11 +233,7 @@ class TestRandomPhi3V(ExtTestCase):
             num_hidden_layers=num_hidden_layers,
             num_key_value_heads=4,
             rms_norm_eps=1e-05,
-            rope_scaling={
-                "type": "longrope",
-                "short_factor": [1.0] * (head_size // 2),
-                "long_factor": [1.0] * (head_size // 2),
-            },
+            rope_scaling={"type": "longrope", "short_factor": [1.0] * (head_size // 2), "long_factor": [1.0] * (head_size // 2)},
             vocab_size=32064,
         )
 
@@ -291,10 +254,7 @@ class TestRandomPhi3V(ExtTestCase):
 
         vocab = {"<unk>": 0, "<s>": 1, "</s>": 2}
         tokenizer = PreTrainedTokenizerFast(
-            tokenizer_object=Tokenizer(WordLevel(vocab=vocab, unk_token="<unk>")),
-            bos_token="<s>",
-            eos_token="</s>",
-            unk_token="<unk>",
+            tokenizer_object=Tokenizer(WordLevel(vocab=vocab, unk_token="<unk>")), bos_token="<s>", eos_token="</s>", unk_token="<unk>"
         )
         tokenizer.save_pretrained(model_dir)
 
@@ -327,12 +287,7 @@ class TestRandomPhi3V(ExtTestCase):
         # The Phi3ForCausalLM model accepts inputs_embeds directly.
         # ------------------------------------------------------------------
         with torch.no_grad():
-            pt_output = model.generate(
-                prompt_ids,
-                max_new_tokens=max_new_tokens,
-                do_sample=False,
-                pad_token_id=config.eos_token_id,
-            )
+            pt_output = model.generate(prompt_ids, max_new_tokens=max_new_tokens, do_sample=False, pad_token_id=config.eos_token_id)
         pt_tokens = pt_output[0].tolist()
 
         # ------------------------------------------------------------------
@@ -342,20 +297,16 @@ class TestRandomPhi3V(ExtTestCase):
         # ------------------------------------------------------------------
         with torch.no_grad():
             current_embeds = model.model.embed_tokens(prompt_ids)
-        current_embeds_np = (
-            current_embeds.cpu().numpy().astype(self.get_input_np_dtype(precision))
-        )
+        current_embeds_np = current_embeds.cpu().numpy().astype(self.get_input_np_dtype(precision))
 
         # Initialise empty KV-cache for every layer.
         past_kv = {}
         for i in range(num_hidden_layers):
             past_kv[f"past_key_values.{i}.key"] = np.zeros(
-                (batch_size, config.num_key_value_heads, 0, head_size),
-                dtype=self.get_input_np_dtype(precision),
+                (batch_size, config.num_key_value_heads, 0, head_size), dtype=self.get_input_np_dtype(precision)
             )
             past_kv[f"past_key_values.{i}.value"] = np.zeros(
-                (batch_size, config.num_key_value_heads, 0, head_size),
-                dtype=self.get_input_np_dtype(precision),
+                (batch_size, config.num_key_value_heads, 0, head_size), dtype=self.get_input_np_dtype(precision)
             )
 
         onnx_tokens = prompt_ids[0].tolist()
@@ -367,9 +318,7 @@ class TestRandomPhi3V(ExtTestCase):
             feed = {
                 "inputs_embeds": current_embeds_np,
                 "attention_mask": np.ones((batch_size, past_len + cur_len), dtype=np.int64),
-                "position_ids": np.arange(past_len, past_len + cur_len, dtype=np.int64).reshape(
-                    batch_size, cur_len
-                ),
+                "position_ids": np.arange(past_len, past_len + cur_len, dtype=np.int64).reshape(batch_size, cur_len),
             }
             for i in range(num_hidden_layers):
                 feed[f"past_key_values.{i}.key"] = past_kv[f"past_key_values.{i}.key"]
@@ -398,12 +347,8 @@ class TestRandomPhi3V(ExtTestCase):
 
             # Embed the single next token for the following decode step.
             with torch.no_grad():
-                next_embed = model.model.embed_tokens(
-                    torch.tensor([[next_token]], dtype=torch.long).to(provider)
-                )
-            current_embeds_np = (
-                next_embed.cpu().numpy().astype(self.get_input_np_dtype(precision))
-            )
+                next_embed = model.model.embed_tokens(torch.tensor([[next_token]], dtype=torch.long).to(provider))
+            current_embeds_np = next_embed.cpu().numpy().astype(self.get_input_np_dtype(precision))
 
             if next_token == config.eos_token_id:
                 break

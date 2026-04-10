@@ -8,12 +8,7 @@ import unittest
 
 import numpy as np
 
-from modelbuilder.ext_test_case import (
-    ExtTestCase,
-    run_session_or_io_binding,
-    hide_stdout,
-    requires_cuda,
-)
+from modelbuilder.ext_test_case import ExtTestCase, run_session_or_io_binding, hide_stdout, requires_cuda
 
 MODEL_NAME = "openai/gpt-oss-20b"
 
@@ -58,10 +53,7 @@ class TestGptOss20b(ExtTestCase):
 
         vocab = {"<unk>": 0, "<s>": 1, "</s>": 2}
         tokenizer = PreTrainedTokenizerFast(
-            tokenizer_object=Tokenizer(WordLevel(vocab=vocab, unk_token="<unk>")),
-            bos_token="<s>",
-            eos_token="</s>",
-            unk_token="<unk>",
+            tokenizer_object=Tokenizer(WordLevel(vocab=vocab, unk_token="<unk>")), bos_token="<s>", eos_token="</s>", unk_token="<unk>"
         )
         tokenizer.save_pretrained(model_dir)
 
@@ -104,12 +96,10 @@ class TestGptOss20b(ExtTestCase):
             }
             for i in range(num_hidden_layers):
                 prefill_feed[f"past_key_values.{i}.key"] = np.zeros(
-                    (batch_size, config.num_key_value_heads, 0, head_size),
-                    dtype=self.get_input_np_dtype(precision),
+                    (batch_size, config.num_key_value_heads, 0, head_size), dtype=self.get_input_np_dtype(precision)
                 )
                 prefill_feed[f"past_key_values.{i}.value"] = np.zeros(
-                    (batch_size, config.num_key_value_heads, 0, head_size),
-                    dtype=self.get_input_np_dtype(precision),
+                    (batch_size, config.num_key_value_heads, 0, head_size), dtype=self.get_input_np_dtype(precision)
                 )
             prefill_feed = {k: v for k, v in prefill_feed.items() if k in onnx_input_names}
 
@@ -132,12 +122,7 @@ class TestGptOss20b(ExtTestCase):
             self.assertEqual(np_prefill.shape, ort_logits_np.shape)
             # Verify first-token logits are numerically close; subsequent positions
             # can diverge slightly in FP32 due to GQA kernel differences.
-            np.testing.assert_allclose(
-                np_prefill[:, :1, :],
-                ort_logits_np[:, :1, :],
-                atol=atol[precision],
-                rtol=1e-3,
-            )
+            np.testing.assert_allclose(np_prefill[:, :1, :], ort_logits_np[:, :1, :], atol=atol[precision], rtol=1e-3)
 
         with self.subTest(step="decode"):
             next_token = int(np.argmax(prefill_results["logits"][0, -1, :]))
@@ -172,9 +157,7 @@ class TestGptOss20b(ExtTestCase):
             self.log_results({"step": "decode", **disc, **log_data})
             atol = {"fp16": 1e-2, "bf16": 1e-2, "fp32": 1e-3, "int4": 0.5}
             rtol = {"fp16": 10, "bf16": 1e-2, "fp32": 1e-3, "int4": 10000}
-            np.testing.assert_allclose(
-                pt_decode_logits, onnx_decode_logits, atol=atol[precision], rtol=rtol[precision]
-            )
+            np.testing.assert_allclose(pt_decode_logits, onnx_decode_logits, atol=atol[precision], rtol=rtol[precision])
 
     def common_gpt_oss_20b_greedy_generation(self, precision, provider):
         import torch
@@ -219,10 +202,7 @@ class TestGptOss20b(ExtTestCase):
 
         vocab = {"<unk>": 0, "<s>": 1, "</s>": 2}
         tokenizer = PreTrainedTokenizerFast(
-            tokenizer_object=Tokenizer(WordLevel(vocab=vocab, unk_token="<unk>")),
-            bos_token="<s>",
-            eos_token="</s>",
-            unk_token="<unk>",
+            tokenizer_object=Tokenizer(WordLevel(vocab=vocab, unk_token="<unk>")), bos_token="<s>", eos_token="</s>", unk_token="<unk>"
         )
         tokenizer.save_pretrained(model_dir)
 
@@ -249,12 +229,7 @@ class TestGptOss20b(ExtTestCase):
         prompt_ids = torch.randint(3, config.vocab_size, (batch_size, 5)).to(provider)
 
         with torch.no_grad():
-            pt_output = model.generate(
-                prompt_ids,
-                max_new_tokens=max_new_tokens,
-                do_sample=False,
-                pad_token_id=config.eos_token_id,
-            )
+            pt_output = model.generate(prompt_ids, max_new_tokens=max_new_tokens, do_sample=False, pad_token_id=config.eos_token_id)
         pt_tokens = pt_output[0].tolist()
 
         current_ids = prompt_ids.detach().cpu().numpy().astype(np.int64)
@@ -262,12 +237,10 @@ class TestGptOss20b(ExtTestCase):
         past_kv = {}
         for i in range(num_hidden_layers):
             past_kv[f"past_key_values.{i}.key"] = np.zeros(
-                (batch_size, config.num_key_value_heads, 0, head_size),
-                dtype=self.get_input_np_dtype(precision),
+                (batch_size, config.num_key_value_heads, 0, head_size), dtype=self.get_input_np_dtype(precision)
             )
             past_kv[f"past_key_values.{i}.value"] = np.zeros(
-                (batch_size, config.num_key_value_heads, 0, head_size),
-                dtype=self.get_input_np_dtype(precision),
+                (batch_size, config.num_key_value_heads, 0, head_size), dtype=self.get_input_np_dtype(precision)
             )
 
         onnx_tokens = current_ids[0].tolist()
@@ -279,9 +252,7 @@ class TestGptOss20b(ExtTestCase):
             feed = {
                 "input_ids": current_ids,
                 "attention_mask": np.ones((batch_size, past_len + cur_len), dtype=np.int64),
-                "position_ids": np.arange(past_len, past_len + cur_len, dtype=np.int64).reshape(
-                    batch_size, cur_len
-                ),
+                "position_ids": np.arange(past_len, past_len + cur_len, dtype=np.int64).reshape(batch_size, cur_len),
             }
             for i in range(num_hidden_layers):
                 feed[f"past_key_values.{i}.key"] = past_kv[f"past_key_values.{i}.key"]
@@ -384,9 +355,7 @@ class TestGptOss20b(ExtTestCase):
         try:
             import onnxruntime_genai as og
         except ImportError:
-            raise unittest.SkipTest(
-                "onnxruntime-genai is not installed; skipping genai comparison test."
-            )
+            raise unittest.SkipTest("onnxruntime-genai is not installed; skipping genai comparison test.")
 
         import torch
         from tokenizers import Tokenizer
@@ -424,10 +393,7 @@ class TestGptOss20b(ExtTestCase):
 
         vocab = {"<unk>": 0, "<s>": 1, "</s>": 2}
         tokenizer = PreTrainedTokenizerFast(
-            tokenizer_object=Tokenizer(WordLevel(vocab=vocab, unk_token="<unk>")),
-            bos_token="<s>",
-            eos_token="</s>",
-            unk_token="<unk>",
+            tokenizer_object=Tokenizer(WordLevel(vocab=vocab, unk_token="<unk>")), bos_token="<s>", eos_token="</s>", unk_token="<unk>"
         )
         tokenizer.save_pretrained(model_dir)
 
@@ -459,12 +425,7 @@ class TestGptOss20b(ExtTestCase):
         # transformers greedy generation (reference)
         # ------------------------------------------------------------------
         with torch.no_grad():
-            pt_output = model.generate(
-                prompt_ids,
-                max_new_tokens=max_new_tokens,
-                do_sample=False,
-                pad_token_id=config.eos_token_id,
-            )
+            pt_output = model.generate(prompt_ids, max_new_tokens=max_new_tokens, do_sample=False, pad_token_id=config.eos_token_id)
         pt_tokens = pt_output[0].tolist()
 
         # ------------------------------------------------------------------
@@ -473,12 +434,7 @@ class TestGptOss20b(ExtTestCase):
         og_model = og.Model(output_dir)
 
         params = og.GeneratorParams(og_model)
-        params.set_search_options(
-            do_sample=False,
-            max_length=prompt_len + max_new_tokens,
-            temperature=1.0,
-            top_k=1,
-        )
+        params.set_search_options(do_sample=False, max_length=prompt_len + max_new_tokens, temperature=1.0, top_k=1)
 
         generator = og.Generator(og_model, params)
         generator.append_tokens(prompt_ids.numpy().astype(np.int64))

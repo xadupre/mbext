@@ -27,10 +27,7 @@ class TestFixGenaiConfig(ExtTestCase):
                     "num_hidden_layers": 1,
                     "num_key_value_heads": 4,
                     "outputs": {"logits": "logits"},
-                    "session_options": {
-                        "log_id": "onnxruntime-genai",
-                        "provider_options": [],
-                    },
+                    "session_options": {"log_id": "onnxruntime-genai", "provider_options": []},
                 },
                 "eos_token_id": 2,
                 "pad_token_id": 2,

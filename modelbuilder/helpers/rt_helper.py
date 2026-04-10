@@ -51,10 +51,7 @@ def _ort_type_to_numpy_dtype(ort_type: str) -> type:
                 return ml_dtypes.bfloat16
             except ImportError:
                 pass
-        raise ValueError(
-            f"Unknown OnnxRuntime type string {ort_type!r}. "
-            f"Known types: {sorted(_ORT_TYPE_TO_NUMPY)}"
-        ) from None
+        raise ValueError(f"Unknown OnnxRuntime type string {ort_type!r}. " f"Known types: {sorted(_ORT_TYPE_TO_NUMPY)}") from None
 
 
 def _get_dim(i: int, s: Optional[Union[str, int]], batch: int = 1) -> int:
@@ -75,17 +72,10 @@ def _get_dim(i: int, s: Optional[Union[str, int]], batch: int = 1) -> int:
 
 
 # Inputs that are never treated as KV-cache slots.
-_KNOWN_NON_CACHE: FrozenSet[str] = frozenset(
-    {"input_ids", "attention_mask", "position_ids", "token_type_ids", "cache_position"}
-)
+_KNOWN_NON_CACHE: FrozenSet[str] = frozenset({"input_ids", "attention_mask", "position_ids", "token_type_ids", "cache_position"})
 
 
-def _make_empty_cache(
-    batch: int,
-    cache_names: List[str],
-    cache_shapes: List[Tuple],
-    cache_types: List[str],
-) -> Dict[str, np.ndarray]:
+def _make_empty_cache(batch: int, cache_names: List[str], cache_shapes: List[Tuple], cache_types: List[str]) -> Dict[str, np.ndarray]:
     """Creates zero-filled KV-cache arrays for the first generation step.
 
     :param batch: batch size
@@ -98,10 +88,7 @@ def _make_empty_cache(
     for name, shape, ort_type in zip(cache_names, cache_shapes, cache_types):
         new_shape = tuple(_get_dim(i, s, batch=batch) for i, s in enumerate(shape))
         if not new_shape or new_shape[0] <= 0:
-            raise ValueError(
-                f"new_shape={new_shape} cannot have a null batch size, "
-                f"name={name!r}, shape={shape}"
-            )
+            raise ValueError(f"new_shape={new_shape} cannot have a null batch size, " f"name={name!r}, shape={shape}")
         dtype = _ort_type_to_numpy_dtype(ort_type)
         feeds[name] = np.zeros(new_shape, dtype=dtype)
     return feeds
@@ -205,9 +192,7 @@ def onnx_generate(
     from onnxruntime import InferenceSession
 
     if input_ids.ndim != 2:
-        raise ValueError(
-            f"input_ids must be a 2-D array [batch, seq_len], got shape {input_ids.shape}"
-        )
+        raise ValueError(f"input_ids must be a 2-D array [batch, seq_len], got shape {input_ids.shape}")
     input_ids = np.asarray(input_ids, dtype=np.int64)
 
     if not isinstance(model_or_session, InferenceSession):
@@ -261,14 +246,8 @@ def onnx_generate(
         feeds["position_ids"] = np.tile(np.arange(seq_len, dtype=np.int64), (batch_size, 1))
 
     if has_cache_position:
-        past_len = (
-            next(iter(empty_cache.values())).shape[2]
-            if empty_cache and next(iter(empty_cache.values())).ndim > 2
-            else 0
-        )
-        feeds["cache_position"] = np.arange(
-            past_len, input_ids.shape[1] + past_len, dtype=np.int64
-        )
+        past_len = next(iter(empty_cache.values())).shape[2] if empty_cache and next(iter(empty_cache.values())).ndim > 2 else 0
+        feeds["cache_position"] = np.arange(past_len, input_ids.shape[1] + past_len, dtype=np.int64)
 
     if verbose:
         print(f"[onnx_generate] prefill feeds: {list(feeds)}")
@@ -293,15 +272,12 @@ def onnx_generate(
                 return e / e.sum(axis=-1, keepdims=True)
 
             probs = _softmax(next_token_logits)
-            next_token_id = np.array(
-                [np.random.choice(probs.shape[-1], p=probs[b]) for b in range(batch_size)],
-                dtype=np.int64,
-            ).reshape(batch_size, 1)
+            next_token_id = np.array([np.random.choice(probs.shape[-1], p=probs[b]) for b in range(batch_size)], dtype=np.int64).reshape(
+                batch_size, 1
+            )
         else:
             # Greedy decoding: take the argmax token.
-            next_token_id = np.argmax(next_token_logits, axis=-1, keepdims=True).astype(
-                np.int64
-            )  # [batch, 1]
+            next_token_id = np.argmax(next_token_logits, axis=-1, keepdims=True).astype(np.int64)  # [batch, 1]
 
         # Update per-batch EOS flags.
         if eos_token_id is not None:
@@ -317,10 +293,7 @@ def onnx_generate(
             break
 
         # Extend the attention mask by one column of ones for the new token.
-        attention_mask = np.concatenate(
-            [attention_mask, np.ones((batch_size, 1), dtype=attention_mask.dtype)],
-            axis=-1,
-        )
+        attention_mask = np.concatenate([attention_mask, np.ones((batch_size, 1), dtype=attention_mask.dtype)], axis=-1)
 
         # Build feeds for the next decode step.
         if not cache_names:

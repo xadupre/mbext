@@ -19,9 +19,7 @@ class TestTrainedMinistral3BInstruct(ExtTestCase):
         text = "Explain tokenization in simple terms."
         inputs = tokenizer(text, return_tensors="pt")
 
-        output_dir, cache_dir = self.get_dirs(
-            f"test_trained_ministral3b_instruct_{precision}_{provider}", clean=False
-        )
+        output_dir, cache_dir = self.get_dirs(f"test_trained_ministral3b_instruct_{precision}_{provider}", clean=False)
         onnx_path = os.path.join(output_dir, "model.onnx")
         if not os.path.exists(onnx_path):
             create_model(
@@ -49,10 +47,7 @@ class TestTrainedMinistral3BInstruct(ExtTestCase):
             onnx_path,
             model,
             dict(inputs_embeds=inputs_embeds, attention_mask=attention_mask),
-            dict(
-                inputs_embeds=inputs_embeds.detach().cpu().numpy(),
-                attention_mask=attention_mask.detach().cpu().numpy(),
-            ),
+            dict(inputs_embeds=inputs_embeds.detach().cpu().numpy(), attention_mask=attention_mask.detach().cpu().numpy()),
         )
 
     def _common_trained_discrepancies(self, precision, provider):
@@ -60,9 +55,7 @@ class TestTrainedMinistral3BInstruct(ExtTestCase):
 
         dtype = self.get_input_torch_dtype(precision)
 
-        onnx_path, model, torch_feed, onnx_feed = self._common_part(
-            precision, dtype, provider=provider
-        )
+        onnx_path, model, torch_feed, onnx_feed = self._common_part(precision, dtype, provider=provider)
         sess = self._check_with_ort(onnx_path, cpu=provider == "cpu")
         self.fill_with_empty_cache(onnx_feed, sess, provider)
 
@@ -113,9 +106,7 @@ class TestTrainedMinistral3BInstruct(ExtTestCase):
         try:
             import onnxruntime_genai as og
         except ImportError:
-            raise unittest.SkipTest(
-                "onnxruntime-genai is not installed; skipping genai comparison test."
-            )
+            raise unittest.SkipTest("onnxruntime-genai is not installed; skipping genai comparison test.")
 
         import torch
         from transformers import AutoTokenizer
@@ -139,12 +130,7 @@ class TestTrainedMinistral3BInstruct(ExtTestCase):
         inputs = inputs.to("cuda")
         prompt_len = inputs["input_ids"].shape[1]
         with torch.no_grad():
-            pt_output = model.generate(
-                **inputs,
-                max_new_tokens=max_new_tokens,
-                do_sample=False,
-                pad_token_id=tokenizer.eos_token_id,
-            )
+            pt_output = model.generate(**inputs, max_new_tokens=max_new_tokens, do_sample=False, pad_token_id=tokenizer.eos_token_id)
         # Keep only the newly generated tokens (exclude the prompt).
         pt_tokens = pt_output[0][prompt_len:].tolist()
 
@@ -154,12 +140,7 @@ class TestTrainedMinistral3BInstruct(ExtTestCase):
         og_model = og.Model(os.path.dirname(onnx_path))
 
         params = og.GeneratorParams(og_model)
-        params.set_search_options(
-            do_sample=False,
-            max_length=prompt_len + max_new_tokens,
-            temperature=1.0,
-            top_k=1,
-        )
+        params.set_search_options(do_sample=False, max_length=prompt_len + max_new_tokens, temperature=1.0, top_k=1)
 
         generator = og.Generator(og_model, params)
         generator.append_tokens(inputs["input_ids"])
@@ -179,9 +160,7 @@ class TestTrainedMinistral3BInstruct(ExtTestCase):
                 experiment="generate",
                 provider="cuda",
                 test="test_trained_ministral3b_instruct_genai_generate_cuda",
-                expected_text=tokenizer.decode(
-                    pt_tokens[start_sequence:], skip_special_tokens=False
-                ),
+                expected_text=tokenizer.decode(pt_tokens[start_sequence:], skip_special_tokens=False),
                 genai_text=tokenizer.decode(og_tokens, skip_special_tokens=False),
                 input_type="text",
             )
@@ -205,9 +184,7 @@ class TestTrainedMinistral3BInstruct(ExtTestCase):
         try:
             import onnxruntime_genai as og
         except ImportError:
-            raise unittest.SkipTest(
-                "onnxruntime-genai is not installed; skipping genai comparison test."
-            )
+            raise unittest.SkipTest("onnxruntime-genai is not installed; skipping genai comparison test.")
 
         import torch
         from transformers import AutoTokenizer
@@ -231,12 +208,7 @@ class TestTrainedMinistral3BInstruct(ExtTestCase):
         inputs = inputs.to("cuda")
         prompt_len = inputs["input_ids"].shape[1]
         with torch.no_grad():
-            pt_output = model.generate(
-                **inputs,
-                max_new_tokens=max_new_tokens,
-                do_sample=False,
-                pad_token_id=tokenizer.eos_token_id,
-            )
+            pt_output = model.generate(**inputs, max_new_tokens=max_new_tokens, do_sample=False, pad_token_id=tokenizer.eos_token_id)
         # Keep only the newly generated tokens (exclude the prompt).
         pt_tokens = pt_output[0][prompt_len:].tolist()
 
@@ -246,12 +218,7 @@ class TestTrainedMinistral3BInstruct(ExtTestCase):
         og_model = og.Model(os.path.dirname(onnx_path))
 
         params = og.GeneratorParams(og_model)
-        params.set_search_options(
-            do_sample=False,
-            max_length=prompt_len + max_new_tokens,
-            temperature=1.0,
-            top_k=1,
-        )
+        params.set_search_options(do_sample=False, max_length=prompt_len + max_new_tokens, temperature=1.0, top_k=1)
 
         generator = og.Generator(og_model, params)
         generator.append_tokens(inputs["input_ids"])
@@ -271,9 +238,7 @@ class TestTrainedMinistral3BInstruct(ExtTestCase):
                 experiment="generate",
                 provider="cpu",
                 test="test_trained_ministral3b_instruct_genai_generate_cpu",
-                expected_text=tokenizer.decode(
-                    pt_tokens[start_sequence:], skip_special_tokens=False
-                ),
+                expected_text=tokenizer.decode(pt_tokens[start_sequence:], skip_special_tokens=False),
                 genai_text=tokenizer.decode(og_tokens, skip_special_tokens=False),
                 input_type="text",
             )

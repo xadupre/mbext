@@ -55,11 +55,7 @@ def _make_phi4mm_config():
     )
     # Set rope_scaling directly to bypass version-specific constructor
     # validation.  Both transformers 4.x and 5.x accept attribute assignment.
-    config.rope_scaling = {
-        "type": "longrope",
-        "short_factor": [1.0] * _ROTARY_DIM_HALF,
-        "long_factor": [1.0] * _ROTARY_DIM_HALF,
-    }
+    config.rope_scaling = {"type": "longrope", "short_factor": [1.0] * _ROTARY_DIM_HALF, "long_factor": [1.0] * _ROTARY_DIM_HALF}
     # Override architectures so the builder dispatches to Phi4MMModel.
     config.architectures = ["Phi4MMForCausalLM"]
     return config
@@ -99,10 +95,7 @@ def _make_peft_model(config):
     )
     base_model = AutoModelForCausalLM.from_config(base_cfg)
 
-    lora_cfg = LoraConfig(
-        r=4,
-        target_modules=["qkv_proj", "o_proj", "gate_up_proj", "down_proj"],
-    )
+    lora_cfg = LoraConfig(r=4, target_modules=["qkv_proj", "o_proj", "gate_up_proj", "down_proj"])
     peft_model = get_peft_model(base_model, lora_cfg, adapter_name="default")
     peft_model.add_adapter("vision", lora_cfg)
     return peft_model
@@ -161,9 +154,7 @@ class TestPhi4MM(ExtTestCase):
             inputs_embeds = base_model.model.embed_tokens(input_ids)
             pt_prefill = peft_model(inputs_embeds=inputs_embeds)
 
-        np_embeds = (
-            inputs_embeds.detach().cpu().numpy().astype(self.get_input_np_dtype(precision))
-        )
+        np_embeds = inputs_embeds.detach().cpu().numpy().astype(self.get_input_np_dtype(precision))
         np_pt_logits = pt_prefill.logits.detach().cpu().numpy()
 
         # --- Build ONNX --------------------------------------------------------
@@ -179,13 +170,7 @@ class TestPhi4MM(ExtTestCase):
         peft_model_for_onnx.eval()
 
         onnx_builder = _Phi4MMModelWithSyntheticWeights(
-            config,
-            io_dtype,
-            onnx_dtype,
-            provider,
-            cache_dir,
-            extra_options,
-            synthetic_weights=peft_model_for_onnx,
+            config, io_dtype, onnx_dtype, provider, cache_dir, extra_options, synthetic_weights=peft_model_for_onnx
         )
         onnx_builder.make_model(cache_dir)
         onnx_builder.save_model(output_dir)
@@ -216,12 +201,10 @@ class TestPhi4MM(ExtTestCase):
             }
             for i in range(num_hidden_layers):
                 prefill_feed[f"past_key_values.{i}.key"] = np.zeros(
-                    (batch_size, config.num_key_value_heads, 0, head_size),
-                    dtype=self.get_input_np_dtype(precision),
+                    (batch_size, config.num_key_value_heads, 0, head_size), dtype=self.get_input_np_dtype(precision)
                 )
                 prefill_feed[f"past_key_values.{i}.value"] = np.zeros(
-                    (batch_size, config.num_key_value_heads, 0, head_size),
-                    dtype=self.get_input_np_dtype(precision),
+                    (batch_size, config.num_key_value_heads, 0, head_size), dtype=self.get_input_np_dtype(precision)
                 )
             prefill_feed = {k: v for k, v in prefill_feed.items() if k in onnx_input_names}
             prefill_outputs = sess.run(None, prefill_feed)
@@ -230,9 +213,7 @@ class TestPhi4MM(ExtTestCase):
             disc = self.get_numpy_discrepancy(np_pt_logits, prefill_outputs[0])
             self.log_results({"step": "prefill", **disc, **log_data})
             atol = {"fp16": 1e-2, "bf16": 1e-2, "fp32": 1e-3, "int4": 0.5}
-            np.testing.assert_allclose(
-                np_pt_logits, prefill_outputs[0], atol=atol[precision], rtol=1e-3
-            )
+            np.testing.assert_allclose(np_pt_logits, prefill_outputs[0], atol=atol[precision], rtol=1e-3)
 
         with self.subTest(step="decode"):
             if prefill_results is None:
@@ -243,9 +224,7 @@ class TestPhi4MM(ExtTestCase):
             next_token_ids = torch.tensor([[next_token]], dtype=torch.long)
             with torch.no_grad():
                 next_embeds = base_model.model.embed_tokens(next_token_ids)
-            np_next_embeds = (
-                next_embeds.detach().cpu().numpy().astype(self.get_input_np_dtype(precision))
-            )
+            np_next_embeds = next_embeds.detach().cpu().numpy().astype(self.get_input_np_dtype(precision))
 
             decode_feed = {
                 "inputs_embeds": np_next_embeds,
@@ -269,12 +248,7 @@ class TestPhi4MM(ExtTestCase):
             self.log_results({"step": "decode", **disc, **log_data})
             atol = {"fp16": 1e-2, "bf16": 1e-2, "fp32": 1e-3, "int4": 0.5}
             rtol = {"fp16": 10, "bf16": 1e-2, "fp32": 1e-3, "int4": 10000}
-            np.testing.assert_allclose(
-                pt_decode_logits,
-                onnx_decode_logits,
-                atol=atol[precision],
-                rtol=rtol[precision],
-            )
+            np.testing.assert_allclose(pt_decode_logits, onnx_decode_logits, atol=atol[precision], rtol=rtol[precision])
 
     @hide_stdout()
     def test_fast_phi4mm_fp32_cpu(self):

@@ -8,12 +8,7 @@ import unittest
 
 import numpy as np
 
-from modelbuilder.ext_test_case import (
-    ExtTestCase,
-    hide_stdout,
-    requires_cuda,
-    run_session_or_io_binding,
-)
+from modelbuilder.ext_test_case import ExtTestCase, hide_stdout, requires_cuda, run_session_or_io_binding
 
 _MODEL_NAME = "microsoft/Phi-3.5-MoE-instruct"
 
@@ -70,11 +65,7 @@ def _make_phimoe_config():
     )
     # Set rope_scaling directly to bypass version-specific constructor
     # validation.  Both transformers 4.x and 5.x accept attribute assignment.
-    config.rope_scaling = {
-        "type": "longrope",
-        "short_factor": [1.0] * _ROTARY_DIM_HALF,
-        "long_factor": [1.0] * _ROTARY_DIM_HALF,
-    }
+    config.rope_scaling = {"type": "longrope", "short_factor": [1.0] * _ROTARY_DIM_HALF, "long_factor": [1.0] * _ROTARY_DIM_HALF}
     # Override architectures so the builder dispatches to Phi3MoELongRoPEModel.
     # Done after rope_scaling is set to avoid version-specific validation.
     config.architectures = ["PhiMoEForCausalLM"]
@@ -196,9 +187,7 @@ def _make_phimoe_torch_model(config):
         def __init__(self):
             super().__init__()
             self.embed_tokens = nn.Embedding(config.vocab_size, hidden_size)
-            self.layers = nn.ModuleList(
-                [_PhiMoEDecoderLayer() for _ in range(config.num_hidden_layers)]
-            )
+            self.layers = nn.ModuleList([_PhiMoEDecoderLayer() for _ in range(config.num_hidden_layers)])
             # nn.LayerNorm is used here for the same reason as in the decoder
             # layers: simple=False means the builder reads both .weight and
             # .bias from the normalisation module.
@@ -225,10 +214,7 @@ def _make_phimoe_torch_model(config):
                 new_pkv.append(pkv)
             x = self.model.norm(x)
             logits = self.lm_head(x)
-            return CausalLMOutputWithPast(
-                logits=logits,
-                past_key_values=tuple(new_pkv),
-            )
+            return CausalLMOutputWithPast(logits=logits, past_key_values=tuple(new_pkv))
 
     return PhiMoEForCausalLM(config)
 
@@ -256,9 +242,7 @@ def _make_phimoe_builder(config, io_dtype, onnx_dtype, ep, cache_dir, extra_opti
             model.eval()
             return model
 
-    return _PhiMoEBuilderWithSyntheticWeights(
-        config, io_dtype, onnx_dtype, ep, cache_dir, extra_options
-    )
+    return _PhiMoEBuilderWithSyntheticWeights(config, io_dtype, onnx_dtype, ep, cache_dir, extra_options)
 
 
 class TestPhiMoE(ExtTestCase):
@@ -276,9 +260,7 @@ class TestPhiMoE(ExtTestCase):
         io_dtype = set_io_dtype("fp16", "cuda", extra_options)
         onnx_dtype = set_onnx_dtype("int4", extra_options)
 
-        builder = _make_phimoe_builder(
-            config, io_dtype, onnx_dtype, "cuda", cache_dir, extra_options
-        )
+        builder = _make_phimoe_builder(config, io_dtype, onnx_dtype, "cuda", cache_dir, extra_options)
         builder.make_model(cache_dir)
         builder.save_model(output_dir)
         return config
@@ -356,30 +338,21 @@ class TestPhiMoE(ExtTestCase):
         prefill_results = None
         with self.subTest(step="prefill"):
             prefill_feed = {
-                "input_ids": np.random.randint(
-                    0, config.vocab_size, (batch_size, seq_len), dtype=np.int64
-                ),
+                "input_ids": np.random.randint(0, config.vocab_size, (batch_size, seq_len), dtype=np.int64),
                 "attention_mask": np.ones((batch_size, seq_len), dtype=np.int64),
                 "position_ids": np.arange(seq_len, dtype=np.int64).reshape(batch_size, seq_len),
             }
             for i in range(num_hidden_layers):
                 prefill_feed[f"past_key_values.{i}.key"] = np.zeros(
-                    (batch_size, _NUM_KV_HEADS, 0, head_size),
-                    dtype=self.get_input_np_dtype(precision),
+                    (batch_size, _NUM_KV_HEADS, 0, head_size), dtype=self.get_input_np_dtype(precision)
                 )
                 prefill_feed[f"past_key_values.{i}.value"] = np.zeros(
-                    (batch_size, _NUM_KV_HEADS, 0, head_size),
-                    dtype=self.get_input_np_dtype(precision),
+                    (batch_size, _NUM_KV_HEADS, 0, head_size), dtype=self.get_input_np_dtype(precision)
                 )
             prefill_feed = {k: v for k, v in prefill_feed.items() if k in onnx_input_names}
 
             prefill_results, prefill_logits = run_session_or_io_binding(
-                use_iobinding=False,
-                precision=precision,
-                provider="cuda",
-                feed=prefill_feed,
-                sess=sess,
-                vocab_size=config.vocab_size,
+                use_iobinding=False, precision=precision, provider="cuda", feed=prefill_feed, sess=sess, vocab_size=config.vocab_size
             )
             self.assertEqual(prefill_logits.shape, (batch_size, seq_len, config.vocab_size))
 

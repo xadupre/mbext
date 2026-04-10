@@ -8,12 +8,7 @@ import unittest
 
 import numpy as np
 
-from modelbuilder.ext_test_case import (
-    ExtTestCase,
-    run_session_or_io_binding,
-    hide_stdout,
-    requires_cuda,
-)
+from modelbuilder.ext_test_case import ExtTestCase, run_session_or_io_binding, hide_stdout, requires_cuda
 
 MODEL_NAME = "arnir0/Tiny-LLM"
 
@@ -23,11 +18,7 @@ class TestRandomTinyLLM(ExtTestCase):
         import torch
         from tokenizers import Tokenizer
         from tokenizers.models import WordLevel
-        from transformers import (
-            AutoModelForCausalLM,
-            LlamaConfig,
-            PreTrainedTokenizerFast,
-        )
+        from transformers import AutoModelForCausalLM, LlamaConfig, PreTrainedTokenizerFast
         from modelbuilder.builder import create_model
 
         # Config matching the arnir0/Tiny-LLM architecture (LlamaForCausalLM)
@@ -63,10 +54,7 @@ class TestRandomTinyLLM(ExtTestCase):
 
         vocab = {"<unk>": 0, "<s>": 1, "</s>": 2}
         tokenizer = PreTrainedTokenizerFast(
-            tokenizer_object=Tokenizer(WordLevel(vocab=vocab, unk_token="<unk>")),
-            bos_token="<s>",
-            eos_token="</s>",
-            unk_token="<unk>",
+            tokenizer_object=Tokenizer(WordLevel(vocab=vocab, unk_token="<unk>")), bos_token="<s>", eos_token="</s>", unk_token="<unk>"
         )
         tokenizer.save_pretrained(model_dir)
 
@@ -81,13 +69,7 @@ class TestRandomTinyLLM(ExtTestCase):
         )
 
         log_data = dict(
-            precision=precision,
-            model_id=MODEL_NAME,
-            experiment="forward",
-            provider=provider,
-            test=basename,
-            input_type="text",
-            kind="fast",
+            precision=precision, model_id=MODEL_NAME, experiment="forward", provider=provider, test=basename, input_type="text", kind="fast"
         )
 
         onnx_path = os.path.join(output_dir, "model.onnx")
@@ -114,12 +96,10 @@ class TestRandomTinyLLM(ExtTestCase):
             }
             for i in range(num_hidden_layers):
                 prefill_feed[f"past_key_values.{i}.key"] = np.zeros(
-                    (batch_size, config.num_key_value_heads, 0, head_size),
-                    dtype=self.get_input_np_dtype(precision),
+                    (batch_size, config.num_key_value_heads, 0, head_size), dtype=self.get_input_np_dtype(precision)
                 )
                 prefill_feed[f"past_key_values.{i}.value"] = np.zeros(
-                    (batch_size, config.num_key_value_heads, 0, head_size),
-                    dtype=self.get_input_np_dtype(precision),
+                    (batch_size, config.num_key_value_heads, 0, head_size), dtype=self.get_input_np_dtype(precision)
                 )
             prefill_feed = {k: v for k, v in prefill_feed.items() if k in onnx_input_names}
 
@@ -138,12 +118,7 @@ class TestRandomTinyLLM(ExtTestCase):
             np_prefill = pt_prefill.logits.detach().cpu().numpy()
             disc = self.get_numpy_discrepancy(np_prefill, ort_logits_np)
             self.log_results({"step": "prefill", **disc, **log_data})
-            atol = {
-                "fp16": 3e-2,
-                "bf16": 2e-2,
-                "fp32": 2e-3 if provider == "cuda" else 2e-4,
-                "int4": 0.5,
-            }
+            atol = {"fp16": 3e-2, "bf16": 2e-2, "fp32": 2e-3 if provider == "cuda" else 2e-4, "int4": 0.5}
             np.testing.assert_allclose(np_prefill, ort_logits_np, atol=atol[precision], rtol=1e-3)
 
         with self.subTest(step="decode"):
@@ -188,9 +163,7 @@ class TestRandomTinyLLM(ExtTestCase):
             self.log_results({"step": "decode", **disc, **log_data})
             atol = {"fp16": 1e-2, "bf16": 2e-2, "fp32": 1e-4, "int4": 0.5}
             rtol = {"fp16": 10, "bf16": 10, "fp32": 1e-4, "int4": 10000}
-            np.testing.assert_allclose(
-                pt_decode_logits, onnx_decode_logits, atol=atol[precision], rtol=rtol[precision]
-            )
+            np.testing.assert_allclose(pt_decode_logits, onnx_decode_logits, atol=atol[precision], rtol=rtol[precision])
 
     @hide_stdout()
     def test_fast_discrepancy_tiny_llm_fp32_cpu(self):
@@ -224,11 +197,7 @@ class TestRandomTinyLLM(ExtTestCase):
         import torch
         from tokenizers import Tokenizer
         from tokenizers.models import WordLevel
-        from transformers import (
-            AutoModelForCausalLM,
-            LlamaConfig,
-            PreTrainedTokenizerFast,
-        )
+        from transformers import AutoModelForCausalLM, LlamaConfig, PreTrainedTokenizerFast
 
         from modelbuilder.builder import create_model
 
@@ -261,10 +230,7 @@ class TestRandomTinyLLM(ExtTestCase):
 
         vocab = {"<unk>": 0, "<s>": 1, "</s>": 2}
         tokenizer = PreTrainedTokenizerFast(
-            tokenizer_object=Tokenizer(WordLevel(vocab=vocab, unk_token="<unk>")),
-            bos_token="<s>",
-            eos_token="</s>",
-            unk_token="<unk>",
+            tokenizer_object=Tokenizer(WordLevel(vocab=vocab, unk_token="<unk>")), bos_token="<s>", eos_token="</s>", unk_token="<unk>"
         )
         tokenizer.save_pretrained(model_dir)
 
@@ -297,12 +263,7 @@ class TestRandomTinyLLM(ExtTestCase):
         # transformers greedy generation (reference)
         # ------------------------------------------------------------------
         with torch.no_grad():
-            pt_output = model.generate(
-                prompt_ids,
-                max_new_tokens=max_new_tokens,
-                do_sample=False,
-                pad_token_id=config.eos_token_id,
-            )
+            pt_output = model.generate(prompt_ids, max_new_tokens=max_new_tokens, do_sample=False, pad_token_id=config.eos_token_id)
         pt_tokens = pt_output[0].tolist()
 
         # ------------------------------------------------------------------
@@ -314,12 +275,10 @@ class TestRandomTinyLLM(ExtTestCase):
         past_kv = {}
         for i in range(num_hidden_layers):
             past_kv[f"past_key_values.{i}.key"] = np.zeros(
-                (batch_size, config.num_key_value_heads, 0, head_size),
-                dtype=self.get_input_np_dtype(precision),
+                (batch_size, config.num_key_value_heads, 0, head_size), dtype=self.get_input_np_dtype(precision)
             )
             past_kv[f"past_key_values.{i}.value"] = np.zeros(
-                (batch_size, config.num_key_value_heads, 0, head_size),
-                dtype=self.get_input_np_dtype(precision),
+                (batch_size, config.num_key_value_heads, 0, head_size), dtype=self.get_input_np_dtype(precision)
             )
 
         onnx_tokens = current_ids[0].tolist()
@@ -331,9 +290,7 @@ class TestRandomTinyLLM(ExtTestCase):
             feed = {
                 "input_ids": current_ids,
                 "attention_mask": np.ones((batch_size, past_len + cur_len), dtype=np.int64),
-                "position_ids": np.arange(past_len, past_len + cur_len, dtype=np.int64).reshape(
-                    batch_size, cur_len
-                ),
+                "position_ids": np.arange(past_len, past_len + cur_len, dtype=np.int64).reshape(batch_size, cur_len),
             }
             for i in range(num_hidden_layers):
                 feed[f"past_key_values.{i}.key"] = past_kv[f"past_key_values.{i}.key"]

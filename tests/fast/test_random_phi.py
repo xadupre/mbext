@@ -8,12 +8,7 @@ import unittest
 
 import numpy as np
 
-from modelbuilder.ext_test_case import (
-    ExtTestCase,
-    run_session_or_io_binding,
-    hide_stdout,
-    requires_cuda,
-)
+from modelbuilder.ext_test_case import ExtTestCase, run_session_or_io_binding, hide_stdout, requires_cuda
 
 MODEL_NAME = "microsoft/phi-2"
 
@@ -57,10 +52,7 @@ class TestPhi(ExtTestCase):
 
         vocab = {"<unk>": 0, "<s>": 1, "</s>": 2}
         tokenizer = PreTrainedTokenizerFast(
-            tokenizer_object=Tokenizer(WordLevel(vocab=vocab, unk_token="<unk>")),
-            bos_token="<s>",
-            eos_token="</s>",
-            unk_token="<unk>",
+            tokenizer_object=Tokenizer(WordLevel(vocab=vocab, unk_token="<unk>")), bos_token="<s>", eos_token="</s>", unk_token="<unk>"
         )
         tokenizer.save_pretrained(model_dir)
 
@@ -74,13 +66,7 @@ class TestPhi(ExtTestCase):
         )
 
         log_data = dict(
-            precision=precision,
-            model_id=MODEL_NAME,
-            experiment="forward",
-            provider=provider,
-            test=basename,
-            input_type="text",
-            kind="fast",
+            precision=precision, model_id=MODEL_NAME, experiment="forward", provider=provider, test=basename, input_type="text", kind="fast"
         )
 
         onnx_path = os.path.join(output_dir, "model.onnx")
@@ -104,12 +90,10 @@ class TestPhi(ExtTestCase):
             }
             for i in range(num_hidden_layers):
                 prefill_feed[f"past_key_values.{i}.key"] = np.zeros(
-                    (batch_size, config.num_key_value_heads, 0, head_size),
-                    dtype=self.get_input_np_dtype(precision),
+                    (batch_size, config.num_key_value_heads, 0, head_size), dtype=self.get_input_np_dtype(precision)
                 )
                 prefill_feed[f"past_key_values.{i}.value"] = np.zeros(
-                    (batch_size, config.num_key_value_heads, 0, head_size),
-                    dtype=self.get_input_np_dtype(precision),
+                    (batch_size, config.num_key_value_heads, 0, head_size), dtype=self.get_input_np_dtype(precision)
                 )
             prefill_feed = {k: v for k, v in prefill_feed.items() if k in onnx_input_names}
 
@@ -130,12 +114,7 @@ class TestPhi(ExtTestCase):
             self.log_results({"step": "prefill", **disc, **log_data})
             # gelu_new maps to FastGelu (tanh approximation) in ONNX, which
             # introduces a larger numerical gap than exact activation functions.
-            atol = {
-                "fp16": 3e-2,
-                "bf16": 2e-2,
-                "fp32": 1e-2,
-                "int4": 0.5,
-            }
+            atol = {"fp16": 3e-2, "bf16": 2e-2, "fp32": 1e-2, "int4": 0.5}
             np.testing.assert_allclose(np_prefill, ort_logits_np, atol=atol[precision], rtol=1e-3)
 
         with self.subTest(step="decode"):
@@ -173,9 +152,7 @@ class TestPhi(ExtTestCase):
             self.log_results({"step": "decode", **disc, **log_data})
             atol = {"fp16": 1e-2, "bf16": 2e-2, "fp32": 1e-2, "int4": 0.5}
             rtol = {"fp16": 10, "bf16": 10, "fp32": 1e-2, "int4": 10000}
-            np.testing.assert_allclose(
-                pt_decode_logits, onnx_decode_logits, atol=atol[precision], rtol=rtol[precision]
-            )
+            np.testing.assert_allclose(pt_decode_logits, onnx_decode_logits, atol=atol[precision], rtol=rtol[precision])
 
     def common_phi_greedy_generation(self, precision, provider):
         import torch
@@ -213,10 +190,7 @@ class TestPhi(ExtTestCase):
 
         vocab = {"<unk>": 0, "<s>": 1, "</s>": 2}
         tokenizer = PreTrainedTokenizerFast(
-            tokenizer_object=Tokenizer(WordLevel(vocab=vocab, unk_token="<unk>")),
-            bos_token="<s>",
-            eos_token="</s>",
-            unk_token="<unk>",
+            tokenizer_object=Tokenizer(WordLevel(vocab=vocab, unk_token="<unk>")), bos_token="<s>", eos_token="</s>", unk_token="<unk>"
         )
         tokenizer.save_pretrained(model_dir)
 
@@ -243,12 +217,7 @@ class TestPhi(ExtTestCase):
         prompt_ids = torch.randint(3, config.vocab_size, (batch_size, 5)).to(provider)
 
         with torch.no_grad():
-            pt_output = model.generate(
-                prompt_ids,
-                max_new_tokens=max_new_tokens,
-                do_sample=False,
-                pad_token_id=config.eos_token_id,
-            )
+            pt_output = model.generate(prompt_ids, max_new_tokens=max_new_tokens, do_sample=False, pad_token_id=config.eos_token_id)
         pt_tokens = pt_output[0].tolist()
 
         current_ids = prompt_ids.detach().cpu().numpy().astype(np.int64)
@@ -256,12 +225,10 @@ class TestPhi(ExtTestCase):
         past_kv = {}
         for i in range(num_hidden_layers):
             past_kv[f"past_key_values.{i}.key"] = np.zeros(
-                (batch_size, config.num_key_value_heads, 0, head_size),
-                dtype=self.get_input_np_dtype(precision),
+                (batch_size, config.num_key_value_heads, 0, head_size), dtype=self.get_input_np_dtype(precision)
             )
             past_kv[f"past_key_values.{i}.value"] = np.zeros(
-                (batch_size, config.num_key_value_heads, 0, head_size),
-                dtype=self.get_input_np_dtype(precision),
+                (batch_size, config.num_key_value_heads, 0, head_size), dtype=self.get_input_np_dtype(precision)
             )
 
         onnx_tokens = current_ids[0].tolist()
@@ -273,9 +240,7 @@ class TestPhi(ExtTestCase):
             feed = {
                 "input_ids": current_ids,
                 "attention_mask": np.ones((batch_size, past_len + cur_len), dtype=np.int64),
-                "position_ids": np.arange(past_len, past_len + cur_len, dtype=np.int64).reshape(
-                    batch_size, cur_len
-                ),
+                "position_ids": np.arange(past_len, past_len + cur_len, dtype=np.int64).reshape(batch_size, cur_len),
             }
             for i in range(num_hidden_layers):
                 feed[f"past_key_values.{i}.key"] = past_kv[f"past_key_values.{i}.key"]

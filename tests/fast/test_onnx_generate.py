@@ -33,14 +33,7 @@ def _make_tiny_lm_no_cache(fixed_token: int = 3) -> onnx.ModelProto:
 
     return oh.make_model(
         oh.make_graph(
-            [
-                oh.make_node(
-                    "Constant",
-                    [],
-                    ["logits"],
-                    value=onh.from_array(fixed_logits),
-                ),
-            ],
+            [oh.make_node("Constant", [], ["logits"], value=onh.from_array(fixed_logits))],
             "tiny_lm_no_cache",
             [oh.make_tensor_value_info("input_ids", TINT64, [1, None])],
             [oh.make_tensor_value_info("logits", TFLOAT, [1, 1, VOCAB])],
@@ -111,9 +104,7 @@ class TestOnnxGenerate(ExtTestCase):
         model = _make_tiny_lm_no_cache(fixed_token=3)
         prompt = np.array([[1, 2]], dtype=np.int64)
 
-        result = onnx_generate(
-            model, prompt, max_new_tokens=3, eos_token_id=3, return_session=True
-        )
+        result = onnx_generate(model, prompt, max_new_tokens=3, eos_token_id=3, return_session=True)
 
         self.assertIsInstance(result, tuple)
         self.assertEqual(len(result), 3)
@@ -167,11 +158,7 @@ class TestOnnxGenerate(ExtTestCase):
         import torch
         from tokenizers import Tokenizer
         from tokenizers.models import WordLevel
-        from transformers import (
-            AutoModelForCausalLM,
-            LlamaConfig,
-            PreTrainedTokenizerFast,
-        )
+        from transformers import AutoModelForCausalLM, LlamaConfig, PreTrainedTokenizerFast
 
         from modelbuilder.builder import create_model
 
@@ -203,10 +190,7 @@ class TestOnnxGenerate(ExtTestCase):
 
         vocab = {"<unk>": 0, "<s>": 1, "</s>": 2}
         tokenizer = PreTrainedTokenizerFast(
-            tokenizer_object=Tokenizer(WordLevel(vocab=vocab, unk_token="<unk>")),
-            bos_token="<s>",
-            eos_token="</s>",
-            unk_token="<unk>",
+            tokenizer_object=Tokenizer(WordLevel(vocab=vocab, unk_token="<unk>")), bos_token="<s>", eos_token="</s>", unk_token="<unk>"
         )
         tokenizer.save_pretrained(model_dir)
 
@@ -232,22 +216,11 @@ class TestOnnxGenerate(ExtTestCase):
 
         # --- transformers greedy reference ---
         with torch.no_grad():
-            pt_output = pt_model.generate(
-                prompt_ids,
-                max_new_tokens=max_new_tokens,
-                do_sample=False,
-                pad_token_id=config.eos_token_id,
-            )
+            pt_output = pt_model.generate(prompt_ids, max_new_tokens=max_new_tokens, do_sample=False, pad_token_id=config.eos_token_id)
         pt_tokens = pt_output[0].tolist()
 
         # --- onnx_generate helper ---
-        tokens = onnx_generate(
-            onnx_path,
-            prompt_np,
-            max_new_tokens=max_new_tokens,
-            eos_token_id=config.eos_token_id,
-            do_sample=False,
-        )
+        tokens = onnx_generate(onnx_path, prompt_np, max_new_tokens=max_new_tokens, eos_token_id=config.eos_token_id, do_sample=False)
 
         self.assertEqual(pt_tokens, tokens[0].tolist())
 

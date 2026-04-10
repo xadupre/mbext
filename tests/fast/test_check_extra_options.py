@@ -44,11 +44,7 @@ class TestCheckExtraOptions(ExtTestCase):
             for key in self._ALL_BOOL_KEYS:
                 kv = {key: false_str}
                 self._check(kv)
-                self.assertIs(
-                    kv[key],
-                    False,
-                    f"Expected False for key={key!r}, value={false_str!r}",
-                )
+                self.assertIs(kv[key], False, f"Expected False for key={key!r}, value={false_str!r}")
 
     def test_bool_true_variants_set_to_true(self):
         """All truthy string representations are converted to True.
@@ -62,11 +58,7 @@ class TestCheckExtraOptions(ExtTestCase):
             for key in keys_without_webgpu_guard:
                 kv = {key: true_str}
                 self._check(kv)
-                self.assertIs(
-                    kv[key],
-                    True,
-                    f"Expected True for key={key!r}, value={true_str!r}",
-                )
+                self.assertIs(kv[key], True, f"Expected True for key={key!r}, value={true_str!r}")
 
     def test_invalid_bool_value_raises(self):
         """An unrecognised value for a bool key must raise ValueError."""
@@ -153,11 +145,7 @@ class TestCheckExtraOptions(ExtTestCase):
         for ep in ("cpu", "cuda", "dml"):
             kv = {"enable_webgpu_graph": "true"}
             self._check(kv, execution_provider=ep)
-            self.assertIs(
-                kv["enable_webgpu_graph"],
-                False,
-                f"Expected False for ep={ep!r}",
-            )
+            self.assertIs(kv["enable_webgpu_graph"], False, f"Expected False for ep={ep!r}")
 
     def test_enable_webgpu_graph_false_with_non_webgpu_ep_unchanged(self):
         """enable_webgpu_graph=false is never forced to True."""
@@ -208,10 +196,7 @@ class TestParseExtraOptions(ExtTestCase):
         """Multiple 'key=value' strings are all parsed."""
         from modelbuilder.builder import parse_extra_options
 
-        result = parse_extra_options(
-            ["exclude_embeds=false", "int4_nodes_to_exclude=node_a,node_b"],
-            "cpu",
-        )
+        result = parse_extra_options(["exclude_embeds=false", "int4_nodes_to_exclude=node_a,node_b"], "cpu")
         self.assertIs(result["exclude_embeds"], False)
         self.assertEqual(result["int4_nodes_to_exclude"], ["node_a", "node_b"])
 

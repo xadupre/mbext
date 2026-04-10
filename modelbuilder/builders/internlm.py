@@ -1,10 +1,10 @@
 # -------------------------------------------------------------------------
-# Copyright (c) Microsoft Corporation.  All rights reserved.
-# Licensed under the MIT License.  See License.txt in the project root for
+# Copyright (C) [2026] Advanced Micro Devices, Inc. All rights reserved.
+# Portions of this file consist of AI generated content.
+# Licensed under the MIT License. See License.txt in the project root for
 # license information.
 # --------------------------------------------------------------------------
 import torch
-
 from .base import Model
 
 
@@ -61,14 +61,8 @@ class InternLM2Model(Model):
             # Layout: [batch, seq, num_kv_heads, (num_q_heads_per_kv_group + 2), head_dim]
             if hasattr(layer, "self_attn") and hasattr(layer.self_attn, "wqkv"):
                 attn = layer.self_attn
-                wqkv_weight = (
-                    attn.wqkv.weight
-                )  # Shape: [(num_heads + 2*num_kv_heads) * head_dim, hidden_size]
-                wqkv_bias = (
-                    attn.wqkv.bias
-                    if hasattr(attn.wqkv, "bias") and attn.wqkv.bias is not None
-                    else None
-                )
+                wqkv_weight = attn.wqkv.weight  # Shape: [(num_heads + 2*num_kv_heads) * head_dim, hidden_size]
+                wqkv_bias = attn.wqkv.bias if hasattr(attn.wqkv, "bias") and attn.wqkv.bias is not None else None
 
                 # Calculate dimensions
                 num_q_heads = config.num_attention_heads
@@ -85,15 +79,11 @@ class InternLM2Model(Model):
 
                 # Reshape to grouped format: [num_kv_heads, (num_kv_groups + 2), head_dim, hidden_size]
                 group_size = num_kv_groups + 2
-                wqkv_grouped = wqkv_weight.reshape(
-                    num_kv_heads, group_size, head_dim, config.hidden_size
-                )
+                wqkv_grouped = wqkv_weight.reshape(num_kv_heads, group_size, head_dim, config.hidden_size)
 
                 # Extract Q, K, V from grouped layout
                 # Q heads: first num_kv_groups entries in each group
-                q_weight = wqkv_grouped[:, :num_kv_groups, :, :].reshape(
-                    num_q_heads, head_dim, config.hidden_size
-                )
+                q_weight = wqkv_grouped[:, :num_kv_groups, :, :].reshape(num_q_heads, head_dim, config.hidden_size)
                 q_weight = q_weight.reshape(q_size, config.hidden_size)
 
                 # K heads: second to last entry in each group
