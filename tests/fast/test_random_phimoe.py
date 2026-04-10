@@ -49,6 +49,10 @@ def _make_phimoe_config():
     """
     from transformers import Phi3Config
 
+    # Construct with "Phi3ForCausalLM" first so that transformers 5.x
+    # rope_parameters validation accepts the config; the architectures value is
+    # overridden below *after* rope_scaling is patched in.  Both steps follow
+    # the same two-step pattern used in test_random_phi4mm.py.
     config = Phi3Config(
         architectures=["Phi3ForCausalLM"],
         hidden_size=_HIDDEN_SIZE,
@@ -72,6 +76,7 @@ def _make_phimoe_config():
         "long_factor": [1.0] * _ROTARY_DIM_HALF,
     }
     # Override architectures so the builder dispatches to Phi3MoELongRoPEModel.
+    # Done after rope_scaling is set to avoid version-specific validation.
     config.architectures = ["PhiMoEForCausalLM"]
     # MoE-specific attributes read by the base Model.__init__.
     config.num_local_experts = _NUM_EXPERTS
@@ -168,6 +173,11 @@ def _make_phimoe_torch_model(config):
 
         def __init__(self):
             super().__init__()
+            # nn.LayerNorm (with both weight and bias) is used intentionally:
+            # Phi3MoELongRoPEModel sets layernorm_attrs["simple"] = False,
+            # which maps to SkipLayerNorm / LayerNorm ops that require a bias.
+            # The epsilon is taken from config.rms_norm_eps, the only eps field
+            # provided by Phi3Config.
             self.input_layernorm = nn.LayerNorm(hidden_size, eps=config.rms_norm_eps)
             self.self_attn = _PhiMoEAttention()
             self.post_attention_layernorm = nn.LayerNorm(hidden_size, eps=config.rms_norm_eps)
@@ -189,6 +199,9 @@ def _make_phimoe_torch_model(config):
             self.layers = nn.ModuleList(
                 [_PhiMoEDecoderLayer() for _ in range(config.num_hidden_layers)]
             )
+            # nn.LayerNorm is used here for the same reason as in the decoder
+            # layers: simple=False means the builder reads both .weight and
+            # .bias from the normalisation module.
             self.norm = nn.LayerNorm(hidden_size, eps=config.rms_norm_eps)
 
     class PhiMoEForCausalLM(PreTrainedModel):
