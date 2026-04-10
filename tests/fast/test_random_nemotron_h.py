@@ -12,12 +12,14 @@ from modelbuilder.ext_test_case import (
     ExtTestCase,
     hide_stdout,
     requires_cuda,
+    requires_transformers,
     run_session_or_io_binding,
 )
 
 MODEL_NAME = "nvidia/NVIDIA-Nemotron-3-Nano-4B-BF16"
 
 
+@requires_transformers("5")
 class TestNemotronH(ExtTestCase):
     def common_fast_nemotron_h_random_weights(self, precision, provider):
         import torch
