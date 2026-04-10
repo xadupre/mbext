@@ -735,6 +735,215 @@ class TestPhi3Small(ExtTestCase):
     def test_phi3_small_bf16_cuda_greedy_generation(self):
         self.common_phi3_small_greedy_generation("bf16", "cuda")
 
+    # ------------------------------------------------------------------
+    # LongRoPE variant (Phi3SmallLongRoPEModel)
+    # ------------------------------------------------------------------
+
+    def common_fast_phi3_small_longrope_random_weights(self, precision, provider):
+        """Build Phi3SmallLongRoPEModel ONNX and compare against PyTorch.
+
+        Uses the direct builder instantiation approach (like the Phi4MM test)
+        to bypass AutoConfig.from_pretrained LongRoPE-validation in newer
+        transformers versions, which would fail because Phi3SmallConfig sets
+        attributes after super().__init__().
+
+        Identity rope_scaling factors ([1.0]*N, mscale=1.0) are used so that
+        the ONNX LongRoPE rotary-embedding caches match the PyTorch standard
+        RoPE exactly, enabling a numerical comparison of logits.
+        """
+        import torch
+
+        from modelbuilder.builder import set_io_dtype, set_onnx_dtype
+        from modelbuilder.builders.phi import Phi3SmallLongRoPEModel
+
+        num_hidden_layers = 1
+        basename = f"test_discrepancies_phi3_small_longrope_{precision}_{provider}"
+        output_dir, cache_dir = self.get_dirs(basename)
+        model_dir = self.get_model_dir(basename)
+
+        # Write and load the custom modeling code so that Phi3SmallForCausalLM
+        # and Phi3SmallConfig are available without network access.
+        modeling_path = _write_modeling_file(model_dir)
+        Phi3SmallForCausalLM, Phi3SmallConfig = _load_phi3_small_class(modeling_path)
+
+        cfg_kwargs = self._make_config(num_hidden_layers=num_hidden_layers)
+        config_obj = Phi3SmallConfig(**cfg_kwargs)
+
+        # head_size = hidden_size // num_attention_heads = 128 // 8 = 16
+        # factors_len = rotary_dim // 2 = head_size * partial_rotary_factor // 2 = 8
+        head_size = config_obj.hidden_size // config_obj.num_attention_heads
+        factors_len = head_size // 2
+
+        # Set LongRoPE attributes directly to bypass transformers v5 validation
+        # (validation runs inside PretrainedConfig.__init__ before subclass
+        # attributes are set, so we set them as post-construction attributes).
+        config_obj.architectures = ["Phi3SmallForCausalLM"]
+        config_obj.max_position_embeddings = 512
+        config_obj.rope_scaling = {
+            "type": "longrope",
+            "short_factor": [1.0] * factors_len,
+            "long_factor": [1.0] * factors_len,
+            "short_mscale": 1.0,
+            "long_mscale": 1.0,
+        }
+
+        # Create PyTorch reference model (weights are not mutated by the builder).
+        torch.manual_seed(0)
+        pt_model = Phi3SmallForCausalLM(config_obj)
+        pt_model.eval().to(provider)
+
+        batch_size = 1
+        seq_len = 5
+
+        torch.manual_seed(1)
+        input_ids = torch.randint(0, config_obj.vocab_size, (batch_size, seq_len)).to(provider)
+        with torch.no_grad():
+            pt_prefill = pt_model(input_ids)
+        np_pt_prefill = pt_prefill.logits.detach().cpu().numpy()
+
+        # Build ONNX using a fresh model instance (builder mutates model during
+        # weight extraction in make_attention / make_mlp_proj).
+        extra_options = {}
+        io_dtype = set_io_dtype(precision, provider, extra_options)
+        onnx_dtype = set_onnx_dtype(precision, extra_options)
+
+        torch.manual_seed(0)
+        model_for_onnx = Phi3SmallForCausalLM(config_obj)
+        model_for_onnx.eval()
+
+        class _Phi3SmallLongRoPEWithSyntheticWeights(Phi3SmallLongRoPEModel):
+            def __init__(self, *args, synthetic_weights=None, **kwargs):
+                super().__init__(*args, **kwargs)
+                self._synthetic_weights = synthetic_weights
+
+            def load_weights(self, _input_path):
+                return self._synthetic_weights
+
+        onnx_builder = _Phi3SmallLongRoPEWithSyntheticWeights(
+            config_obj,
+            io_dtype,
+            onnx_dtype,
+            provider,
+            cache_dir,
+            extra_options,
+            synthetic_weights=model_for_onnx,
+        )
+        onnx_builder.make_model(cache_dir)
+        onnx_builder.save_model(output_dir)
+
+        log_data = dict(
+            precision=precision,
+            model_id=PHI3_SMALL_MODEL_NAME,
+            experiment="forward",
+            provider=provider,
+            test=basename,
+            input_type="text",
+            kind="fast",
+        )
+
+        onnx_path = os.path.join(output_dir, "model.onnx")
+        self.assertExists(onnx_path)
+        sess = self._check_with_ort(onnx_path, cpu=provider == "cpu")
+        onnx_input_names = [i.name for i in sess.get_inputs()]
+
+        prefill_results = None
+        with self.subTest(step="prefill"):
+            prefill_feed = {
+                "input_ids": input_ids.cpu().numpy().astype(np.int64),
+                "attention_mask": np.ones((batch_size, seq_len), dtype=np.int64),
+                "position_ids": np.arange(seq_len, dtype=np.int64).reshape(batch_size, seq_len),
+            }
+            for i in range(num_hidden_layers):
+                prefill_feed[f"past_key_values.{i}.key"] = np.zeros(
+                    (batch_size, config_obj.num_key_value_heads, 0, head_size),
+                    dtype=self.get_input_np_dtype(precision),
+                )
+                prefill_feed[f"past_key_values.{i}.value"] = np.zeros(
+                    (batch_size, config_obj.num_key_value_heads, 0, head_size),
+                    dtype=self.get_input_np_dtype(precision),
+                )
+            prefill_feed = {k: v for k, v in prefill_feed.items() if k in onnx_input_names}
+
+            prefill_results, ort_logits_np = run_session_or_io_binding(
+                use_iobinding=precision == "bf16",
+                precision=precision,
+                provider=provider,
+                feed=prefill_feed,
+                sess=sess,
+                vocab_size=config_obj.vocab_size,
+            )
+
+            disc = self.get_numpy_discrepancy(np_pt_prefill, ort_logits_np)
+            self.log_results({"step": "prefill", **disc, **log_data})
+            atol = {"fp16": 5e-2, "bf16": 5e-2, "fp32": 1e-2, "int4": 0.5}
+            np.testing.assert_allclose(
+                np_pt_prefill, ort_logits_np, atol=atol[precision], rtol=1e-3
+            )
+
+        with self.subTest(step="decode"):
+            if prefill_results is None:
+                raise unittest.SkipTest("prefill failed")
+            next_token = int(np.argmax(prefill_results["logits"][0, -1, :]))
+
+            decode_feed = {
+                "input_ids": np.array([[next_token]], dtype=np.int64),
+                "attention_mask": np.ones((batch_size, seq_len + 1), dtype=np.int64),
+                "position_ids": np.array([[seq_len]], dtype=np.int64),
+            }
+            for i in range(num_hidden_layers):
+                decode_feed[f"past_key_values.{i}.key"] = prefill_results[f"present.{i}.key"]
+                decode_feed[f"past_key_values.{i}.value"] = prefill_results[f"present.{i}.value"]
+            decode_feed = {k: v for k, v in decode_feed.items() if k in onnx_input_names}
+
+            prefill_results, onnx_decode_logits = run_session_or_io_binding(
+                use_iobinding=precision == "bf16",
+                precision=precision,
+                provider=provider,
+                feed=decode_feed,
+                sess=sess,
+                vocab_size=config_obj.vocab_size,
+                results=prefill_results,
+            )
+
+            next_token_tensor = torch.tensor([[next_token]], dtype=torch.long).to(provider)
+            with torch.no_grad():
+                pt_past_kv = pt_prefill.past_key_values
+                pt_decode = pt_model(next_token_tensor, past_key_values=pt_past_kv)
+                pt_decode_logits = pt_decode.logits.detach().cpu().numpy()
+
+            disc = self.get_numpy_discrepancy(pt_decode_logits, onnx_decode_logits)
+            self.log_results({"step": "decode", **disc, **log_data})
+            atol = {"fp16": 5e-2, "bf16": 5e-2, "fp32": 1e-2, "int4": 0.5}
+            rtol = {"fp16": 10, "bf16": 10, "fp32": 1e-2, "int4": 10000}
+            np.testing.assert_allclose(
+                pt_decode_logits,
+                onnx_decode_logits,
+                atol=atol[precision],
+                rtol=rtol[precision],
+            )
+
+    @hide_stdout()
+    def test_fast_discrepancy_phi3_small_longrope_fp32_cpu(self):
+        self.common_fast_phi3_small_longrope_random_weights("fp32", "cpu")
+
+    @hide_stdout()
+    def test_fast_discrepancy_phi3_small_longrope_fp16_cpu(self):
+        self.common_fast_phi3_small_longrope_random_weights("fp16", "cpu")
+
+    @hide_stdout()
+    def test_fast_discrepancy_phi3_small_longrope_int4_cpu(self):
+        self.common_fast_phi3_small_longrope_random_weights("int4", "cpu")
+
+    @hide_stdout()
+    @requires_cuda()
+    def test_fast_discrepancy_phi3_small_longrope_fp16_cuda(self):
+        self.common_fast_phi3_small_longrope_random_weights("fp16", "cuda")
+
+    @hide_stdout()
+    @requires_cuda()
+    def test_fast_discrepancy_phi3_small_longrope_bf16_cuda(self):
+        self.common_fast_phi3_small_longrope_random_weights("bf16", "cuda")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
