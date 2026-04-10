@@ -816,7 +816,7 @@ class TestPhi3Small(ExtTestCase):
                 super().__init__(*args, **kwargs)
                 self._synthetic_weights = synthetic_weights
 
-            def load_weights(self, input_path):  # noqa: ARG002
+            def load_weights(self, _input_path):
                 return self._synthetic_weights
 
         onnx_builder = _Phi3SmallLongRoPEWithSyntheticWeights(
