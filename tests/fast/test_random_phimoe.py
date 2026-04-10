@@ -196,9 +196,7 @@ def _make_phimoe_torch_model(config):
         def __init__(self):
             super().__init__()
             self.embed_tokens = nn.Embedding(config.vocab_size, hidden_size)
-            self.layers = nn.ModuleList(
-                [_PhiMoEDecoderLayer() for _ in range(config.num_hidden_layers)]
-            )
+            self.layers = nn.ModuleList([_PhiMoEDecoderLayer() for _ in range(config.num_hidden_layers)])
             # nn.LayerNorm is used here for the same reason as in the decoder
             # layers: simple=False means the builder reads both .weight and
             # .bias from the normalisation module.
@@ -256,9 +254,7 @@ def _make_phimoe_builder(config, io_dtype, onnx_dtype, ep, cache_dir, extra_opti
             model.eval()
             return model
 
-    return _PhiMoEBuilderWithSyntheticWeights(
-        config, io_dtype, onnx_dtype, ep, cache_dir, extra_options
-    )
+    return _PhiMoEBuilderWithSyntheticWeights(config, io_dtype, onnx_dtype, ep, cache_dir, extra_options)
 
 
 class TestPhiMoE(ExtTestCase):
@@ -276,9 +272,7 @@ class TestPhiMoE(ExtTestCase):
         io_dtype = set_io_dtype("fp16", "cuda", extra_options)
         onnx_dtype = set_onnx_dtype("int4", extra_options)
 
-        builder = _make_phimoe_builder(
-            config, io_dtype, onnx_dtype, "cuda", cache_dir, extra_options
-        )
+        builder = _make_phimoe_builder(config, io_dtype, onnx_dtype, "cuda", cache_dir, extra_options)
         builder.make_model(cache_dir)
         builder.save_model(output_dir)
         return config
@@ -356,9 +350,7 @@ class TestPhiMoE(ExtTestCase):
         prefill_results = None
         with self.subTest(step="prefill"):
             prefill_feed = {
-                "input_ids": np.random.randint(
-                    0, config.vocab_size, (batch_size, seq_len), dtype=np.int64
-                ),
+                "input_ids": np.random.randint(0, config.vocab_size, (batch_size, seq_len), dtype=np.int64),
                 "attention_mask": np.ones((batch_size, seq_len), dtype=np.int64),
                 "position_ids": np.arange(seq_len, dtype=np.int64).reshape(batch_size, seq_len),
             }

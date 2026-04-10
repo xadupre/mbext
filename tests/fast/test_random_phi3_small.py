@@ -646,9 +646,7 @@ class TestPhi3Small(ExtTestCase):
             feed = {
                 "input_ids": current_ids,
                 "attention_mask": np.ones((batch_size, past_len + cur_len), dtype=np.int64),
-                "position_ids": np.arange(past_len, past_len + cur_len, dtype=np.int64).reshape(
-                    batch_size, cur_len
-                ),
+                "position_ids": np.arange(past_len, past_len + cur_len, dtype=np.int64).reshape(batch_size, cur_len),
             }
             for i in range(num_hidden_layers):
                 feed[f"past_key_values.{i}.key"] = past_kv[f"past_key_values.{i}.key"]
@@ -876,9 +874,7 @@ class TestPhi3Small(ExtTestCase):
             disc = self.get_numpy_discrepancy(np_pt_prefill, ort_logits_np)
             self.log_results({"step": "prefill", **disc, **log_data})
             atol = {"fp16": 5e-2, "bf16": 5e-2, "fp32": 1e-2, "int4": 0.5}
-            np.testing.assert_allclose(
-                np_pt_prefill, ort_logits_np, atol=atol[precision], rtol=1e-3
-            )
+            np.testing.assert_allclose(np_pt_prefill, ort_logits_np, atol=atol[precision], rtol=1e-3)
 
         with self.subTest(step="decode"):
             if prefill_results is None:

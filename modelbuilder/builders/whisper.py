@@ -32,9 +32,7 @@ class WhisperEncoder(Model):
         self.max_source_positions = config.max_source_positions
 
         extra_options["include_hidden_states"] = True  # Include hidden states as output
-        extra_options["exclude_lm_head"] = (
-            True  # Exclude LM head since it's not used in the encoder
-        )
+        extra_options["exclude_lm_head"] = True  # Exclude LM head since it's not used in the encoder
         extra_options["filename"] = "encoder.onnx"  # Label encoder ONNX model
 
         super().__init__(config, io_dtype, onnx_dtype, ep, cache_dir, extra_options)
@@ -101,12 +99,8 @@ class WhisperEncoder(Model):
 
         conv_1_weight = "encoder.conv1.weight"
         conv_1_bias = "encoder.conv1.bias"
-        self.make_initializer(
-            self.weights.model.encoder.conv1.weight, conv_1_weight, to=self.io_dtype
-        )
-        self.make_initializer(
-            self.weights.model.encoder.conv1.bias, conv_1_bias, to=self.io_dtype
-        )
+        self.make_initializer(self.weights.model.encoder.conv1.weight, conv_1_weight, to=self.io_dtype)
+        self.make_initializer(self.weights.model.encoder.conv1.bias, conv_1_bias, to=self.io_dtype)
 
         conv_1_name = f"{basename}/Conv_1"
         conv_1_inputs = ["audio_features", conv_1_weight, conv_1_bias]
@@ -138,12 +132,8 @@ class WhisperEncoder(Model):
 
         conv_2_weight = "encoder.conv2.weight"
         conv_2_bias = "encoder.conv2.bias"
-        self.make_initializer(
-            self.weights.model.encoder.conv2.weight, conv_2_weight, to=self.io_dtype
-        )
-        self.make_initializer(
-            self.weights.model.encoder.conv2.bias, conv_2_bias, to=self.io_dtype
-        )
+        self.make_initializer(self.weights.model.encoder.conv2.weight, conv_2_weight, to=self.io_dtype)
+        self.make_initializer(self.weights.model.encoder.conv2.bias, conv_2_bias, to=self.io_dtype)
 
         conv_2_name = f"{basename}/Conv_2"
         conv_2_inputs = [f"{gelu_1_name}/output_0", conv_2_weight, conv_2_bias]
@@ -545,9 +535,7 @@ class WhisperDecoder(Model):
         layer.self_attn.k_proj.bias = torch.nn.Parameter(
             torch.zeros_like(layer.self_attn.q_proj.bias), requires_grad=False
         )
-        self.make_attention(
-            layer_id, layer.self_attn, root_input=self.layernorm_attrs["output_0"]
-        )
+        self.make_attention(layer_id, layer.self_attn, root_input=self.layernorm_attrs["output_0"])
 
         # Encoder layernorm
         self.make_layernorm(
@@ -560,9 +548,7 @@ class WhisperDecoder(Model):
 
         # Cross-attention (unidirectional = False)
         self.attention_attrs["unidirectional"] = False
-        self.make_cross_attention(
-            layer_id, layer.encoder_attn, root_input=self.layernorm_attrs["output_0"]
-        )
+        self.make_cross_attention(layer_id, layer.encoder_attn, root_input=self.layernorm_attrs["output_0"])
         self.attention_attrs["unidirectional"] = True
 
         # Output layernorm
@@ -612,9 +598,7 @@ class WhisperDecoder(Model):
         self.attention_attrs["q_path"] = f"{q_matmul_name}/output_0"
 
         q_add_name = f"/model/layers.{layer_id}/cross_attn/q_proj/Add"
-        self.make_add_bias(
-            attention.q_proj.bias, q_add_name, root_input=self.attention_attrs["q_path"]
-        )
+        self.make_add_bias(attention.q_proj.bias, q_add_name, root_input=self.attention_attrs["q_path"])
         self.attention_attrs["q_path"] = f"{q_add_name}/output_0"
 
         self.attention_attrs["k_path"] = self.input_names["past_key_cross"][layer_id]
@@ -642,9 +626,7 @@ class WhisperDecoder(Model):
 
         # Make Add node
         o_add_name = f"/model/layers.{layer_id}/cross_attn/o_proj/Add"
-        self.make_add_bias(
-            attention.out_proj.bias, o_add_name, root_input=f"{o_matmul_name}/output_0"
-        )
+        self.make_add_bias(attention.out_proj.bias, o_add_name, root_input=f"{o_matmul_name}/output_0")
 
         # Assign output 0 of previous output node as skip input to next SkipLayerNorm
         self.layernorm_attrs["skip_input"] = f"{o_add_name}/output_0"
@@ -671,9 +653,7 @@ class WhisperDecoder(Model):
 
 class WhisperModel(Model):
     def __init__(self, config, io_dtype, onnx_dtype, ep, cache_dir, extra_options):
-        config.rms_norm_eps = (
-            0.000009999999747378752  # default value is insufficient for accuracy
-        )
+        config.rms_norm_eps = 0.000009999999747378752  # default value is insufficient for accuracy
         self.encoder = WhisperEncoder(
             copy.deepcopy(config),
             io_dtype,

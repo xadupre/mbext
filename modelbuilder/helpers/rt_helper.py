@@ -52,8 +52,7 @@ def _ort_type_to_numpy_dtype(ort_type: str) -> type:
             except ImportError:
                 pass
         raise ValueError(
-            f"Unknown OnnxRuntime type string {ort_type!r}. "
-            f"Known types: {sorted(_ORT_TYPE_TO_NUMPY)}"
+            f"Unknown OnnxRuntime type string {ort_type!r}. " f"Known types: {sorted(_ORT_TYPE_TO_NUMPY)}"
         ) from None
 
 
@@ -98,10 +97,7 @@ def _make_empty_cache(
     for name, shape, ort_type in zip(cache_names, cache_shapes, cache_types):
         new_shape = tuple(_get_dim(i, s, batch=batch) for i, s in enumerate(shape))
         if not new_shape or new_shape[0] <= 0:
-            raise ValueError(
-                f"new_shape={new_shape} cannot have a null batch size, "
-                f"name={name!r}, shape={shape}"
-            )
+            raise ValueError(f"new_shape={new_shape} cannot have a null batch size, " f"name={name!r}, shape={shape}")
         dtype = _ort_type_to_numpy_dtype(ort_type)
         feeds[name] = np.zeros(new_shape, dtype=dtype)
     return feeds
@@ -205,9 +201,7 @@ def onnx_generate(
     from onnxruntime import InferenceSession
 
     if input_ids.ndim != 2:
-        raise ValueError(
-            f"input_ids must be a 2-D array [batch, seq_len], got shape {input_ids.shape}"
-        )
+        raise ValueError(f"input_ids must be a 2-D array [batch, seq_len], got shape {input_ids.shape}")
     input_ids = np.asarray(input_ids, dtype=np.int64)
 
     if not isinstance(model_or_session, InferenceSession):
@@ -266,9 +260,7 @@ def onnx_generate(
             if empty_cache and next(iter(empty_cache.values())).ndim > 2
             else 0
         )
-        feeds["cache_position"] = np.arange(
-            past_len, input_ids.shape[1] + past_len, dtype=np.int64
-        )
+        feeds["cache_position"] = np.arange(past_len, input_ids.shape[1] + past_len, dtype=np.int64)
 
     if verbose:
         print(f"[onnx_generate] prefill feeds: {list(feeds)}")
@@ -299,9 +291,7 @@ def onnx_generate(
             ).reshape(batch_size, 1)
         else:
             # Greedy decoding: take the argmax token.
-            next_token_id = np.argmax(next_token_logits, axis=-1, keepdims=True).astype(
-                np.int64
-            )  # [batch, 1]
+            next_token_id = np.argmax(next_token_logits, axis=-1, keepdims=True).astype(np.int64)  # [batch, 1]
 
         # Update per-batch EOS flags.
         if eos_token_id is not None:

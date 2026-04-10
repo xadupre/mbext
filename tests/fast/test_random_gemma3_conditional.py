@@ -280,9 +280,7 @@ class TestRandomGemma3Conditional(ExtTestCase):
         embed_tokens = model.model.language_model.embed_tokens
         with torch.no_grad():
             current_embeds = embed_tokens(prompt_ids)
-        current_embeds_np = (
-            current_embeds.cpu().numpy().astype(self.get_input_np_dtype(precision))
-        )
+        current_embeds_np = current_embeds.cpu().numpy().astype(self.get_input_np_dtype(precision))
 
         past_kv = {}
         for i in range(num_hidden_layers):
@@ -304,9 +302,7 @@ class TestRandomGemma3Conditional(ExtTestCase):
             feed = {
                 "inputs_embeds": current_embeds_np,
                 "attention_mask": np.ones((batch_size, past_len + cur_len), dtype=np.int64),
-                "position_ids": np.arange(past_len, past_len + cur_len, dtype=np.int64).reshape(
-                    batch_size, cur_len
-                ),
+                "position_ids": np.arange(past_len, past_len + cur_len, dtype=np.int64).reshape(batch_size, cur_len),
             }
             for i in range(num_hidden_layers):
                 feed[f"past_key_values.{i}.key"] = past_kv[f"past_key_values.{i}.key"]
@@ -333,9 +329,7 @@ class TestRandomGemma3Conditional(ExtTestCase):
             with torch.no_grad():
                 next_ids = torch.tensor([[next_token]], dtype=torch.long).to(provider)
                 current_embeds = embed_tokens(next_ids)
-            current_embeds_np = (
-                current_embeds.cpu().numpy().astype(self.get_input_np_dtype(precision))
-            )
+            current_embeds_np = current_embeds.cpu().numpy().astype(self.get_input_np_dtype(precision))
 
             if next_token == eos_token_id:
                 break

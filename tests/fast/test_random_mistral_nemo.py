@@ -177,9 +177,7 @@ class TestMistralNeMo(ExtTestCase):
             self.log_results({"step": "decode", **disc, **log_data})
             atol = {"fp16": 1e-2, "bf16": 1e-2, "fp32": 1e-3, "int4": 0.5}
             rtol = {"fp16": 10, "bf16": 1e-2, "fp32": 1e-3, "int4": 10000}
-            np.testing.assert_allclose(
-                pt_decode_logits, onnx_decode_logits, atol=atol[precision], rtol=rtol[precision]
-            )
+            np.testing.assert_allclose(pt_decode_logits, onnx_decode_logits, atol=atol[precision], rtol=rtol[precision])
 
     def common_mistral_nemo_greedy_generation(self, precision, provider):
         import torch
@@ -284,9 +282,7 @@ class TestMistralNeMo(ExtTestCase):
             feed = {
                 "input_ids": current_ids,
                 "attention_mask": np.ones((batch_size, past_len + cur_len), dtype=np.int64),
-                "position_ids": np.arange(past_len, past_len + cur_len, dtype=np.int64).reshape(
-                    batch_size, cur_len
-                ),
+                "position_ids": np.arange(past_len, past_len + cur_len, dtype=np.int64).reshape(batch_size, cur_len),
             }
             for i in range(num_hidden_layers):
                 feed[f"past_key_values.{i}.key"] = past_kv[f"past_key_values.{i}.key"]
@@ -465,9 +461,7 @@ class TestMistralNeMo(ExtTestCase):
 
         # Capture PyTorch reference outputs for the prefill step.
         with torch.no_grad():
-            pt_logits, pt_present_key, pt_present_value = wrapper(
-                input_ids, attention_mask, past_key, past_value
-            )
+            pt_logits, pt_present_key, pt_present_value = wrapper(input_ids, attention_mask, past_key, past_value)
 
         # Export to ONNX using torch.onnx.export.
         with torch.no_grad():
@@ -519,9 +513,7 @@ class TestMistralNeMo(ExtTestCase):
         decode_mask = torch.ones(batch_size, seq_len + 1, dtype=torch.long)
 
         with torch.no_grad():
-            pt_dec_logits, _, _ = wrapper(
-                decode_ids, decode_mask, pt_present_key, pt_present_value
-            )
+            pt_dec_logits, _, _ = wrapper(decode_ids, decode_mask, pt_present_key, pt_present_value)
 
         dec_out = sess.run(
             None,
@@ -605,9 +597,7 @@ class TestMistralNeMo(ExtTestCase):
         num_heads = config.num_key_value_heads
         inputs = dict(
             input_ids=torch.randint(0, 1000, (batch_size, seq_len), dtype=torch.int64).to(device),
-            attention_mask=torch.randint(
-                0, 1, (batch_size, seq_len + past_len), dtype=torch.int64
-            ).to(device),
+            attention_mask=torch.randint(0, 1, (batch_size, seq_len + past_len), dtype=torch.int64).to(device),
             past_key_values=make_dynamic_cache(
                 [
                     (
@@ -659,9 +649,7 @@ class TestMistralNeMo(ExtTestCase):
         prefill_out = sess.run(None, feeds)
         onnx_logits, onnx_present_key, onnx_present_value = prefill_out
 
-        np.testing.assert_allclose(
-            expected.last_hidden_state.numpy(), onnx_logits, atol=1e-4, rtol=1e-4
-        )
+        np.testing.assert_allclose(expected.last_hidden_state.numpy(), onnx_logits, atol=1e-4, rtol=1e-4)
 
         # ------------------------------------------------------------------
         # Step 2: decode — use KV-cache produced by the prefill step
@@ -691,9 +679,7 @@ class TestMistralNeMo(ExtTestCase):
         )
 
         dec_out = sess.run(None, feeds)
-        np.testing.assert_allclose(
-            expected.last_hidden_state.numpy(), dec_out[0], atol=1e-4, rtol=1e-4
-        )
+        np.testing.assert_allclose(expected.last_hidden_state.numpy(), dec_out[0], atol=1e-4, rtol=1e-4)
 
     @hide_stdout()
     @unittest.skip("https://github.com/pytorch/pytorch/issues/179555")
@@ -769,9 +755,7 @@ class TestMistralNeMo(ExtTestCase):
         )
         inputs = dict(
             input_ids=torch.randint(0, 1000, (batch_size, seq_len), dtype=torch.int64).to(device),
-            attention_mask=torch.randint(
-                0, 1, (batch_size, seq_len + past_len), dtype=torch.int64
-            ).to(device),
+            attention_mask=torch.randint(0, 1, (batch_size, seq_len + past_len), dtype=torch.int64).to(device),
             past_key_values=dc,
         )
         dynamic_shapes = {
@@ -816,9 +800,7 @@ class TestMistralNeMo(ExtTestCase):
         prefill_out = sess.run(None, feeds)
         onnx_logits, onnx_present_key, onnx_present_value = prefill_out
 
-        np.testing.assert_allclose(
-            expected.last_hidden_state.numpy(), onnx_logits, atol=1e-4, rtol=1e-4
-        )
+        np.testing.assert_allclose(expected.last_hidden_state.numpy(), onnx_logits, atol=1e-4, rtol=1e-4)
 
         # ------------------------------------------------------------------
         # Step 2: decode — use KV-cache produced by the prefill step
@@ -826,9 +808,7 @@ class TestMistralNeMo(ExtTestCase):
         decode_ids = torch.randint(0, config.vocab_size, (batch_size, 1))
         decode_mask = torch.ones(batch_size, seq_len + 1, dtype=torch.long)
         dc = transformers.cache_utils.DynamicCache()
-        dc.update(
-            torch.from_numpy(onnx_present_key), torch.from_numpy(onnx_present_value), layer_idx=0
-        )
+        dc.update(torch.from_numpy(onnx_present_key), torch.from_numpy(onnx_present_value), layer_idx=0)
 
         with torch.no_grad():
             expected = model(input_ids=decode_ids, attention_mask=decode_mask, past_key_values=dc)
@@ -846,9 +826,7 @@ class TestMistralNeMo(ExtTestCase):
         )
 
         dec_out = sess.run(None, feeds)
-        np.testing.assert_allclose(
-            expected.last_hidden_state.numpy(), dec_out[0], atol=1e-4, rtol=1e-4
-        )
+        np.testing.assert_allclose(expected.last_hidden_state.numpy(), dec_out[0], atol=1e-4, rtol=1e-4)
 
     @hide_stdout()
     @unittest.skip("https://github.com/pytorch/pytorch/issues/179555")
@@ -898,9 +876,7 @@ class TestMistralNeMo(ExtTestCase):
         )
         inputs = dict(
             input_ids=torch.randint(0, 1000, (batch_size, seq_len), dtype=torch.int64).to(device),
-            attention_mask=torch.randint(
-                0, 1, (batch_size, seq_len + past_len), dtype=torch.int64
-            ).to(device),
+            attention_mask=torch.randint(0, 1, (batch_size, seq_len + past_len), dtype=torch.int64).to(device),
             past_key_values=dc,
         )
 
@@ -958,35 +934,21 @@ class TestMistralNeMo(ExtTestCase):
             values = [lay.values for lay in cache.layers]
             flat = list(itertools.chain.from_iterable(zip(keys, values)))
             unique = set(type(lay) for lay in cache.layers)
-            assert unique == {
-                transformers.cache_utils.DynamicLayer
-            }, f"Not implemented for layers type {unique}"
-            keys = list(
-                itertools.chain.from_iterable(
-                    (f"key_{i}", f"value_{i}") for i in range(len(cache.layers))
-                )
-            )
+            assert unique == {transformers.cache_utils.DynamicLayer}, f"Not implemented for layers type {unique}"
+            keys = list(itertools.chain.from_iterable((f"key_{i}", f"value_{i}") for i in range(len(cache.layers))))
             return flat, keys
 
         def _flatten_with_keys_cache(cache):
             values, context = _flatten_key_value_cache(cache)
-            return [
-                (torch.utils._pytree.MappingKey(k), v) for k, v in zip(context, values)
-            ], context
+            return [(torch.utils._pytree.MappingKey(k), v) for k, v in zip(context, values)], context
 
         def _unflatten_cache(
             values,
             context,
             output_type=None,
         ):
-            expected = list(
-                itertools.chain.from_iterable(
-                    (f"key_{i}", f"value_{i}") for i in range(len(values) // 2)
-                )
-            )
-            assert (
-                expected == context
-            ), f"Does not seem to be a dynamic cache {expected} != {context}"
+            expected = list(itertools.chain.from_iterable((f"key_{i}", f"value_{i}") for i in range(len(values) // 2)))
+            assert expected == context, f"Does not seem to be a dynamic cache {expected} != {context}"
             res = transformers.cache_utils.DynamicCache()
             for i in range(len(values) // 2):
                 res.update(values[i * 2], values[i * 2 + 1], layer_idx=i)
@@ -1013,12 +975,8 @@ class TestMistralNeMo(ExtTestCase):
         assert len(flat_dc) == 2
         restored = torch.utils._pytree.tree_unflatten(flat_dc, spec)
         assert len(restored.layers) == 1
-        torch.testing.assert_close(
-            inputs["past_key_values"].layers[0].keys, restored.layers[0].keys
-        )
-        torch.testing.assert_close(
-            inputs["past_key_values"].layers[0].values, restored.layers[0].values
-        )
+        torch.testing.assert_close(inputs["past_key_values"].layers[0].keys, restored.layers[0].keys)
+        torch.testing.assert_close(inputs["past_key_values"].layers[0].values, restored.layers[0].values)
 
         ep = torch.export.export(
             model,
@@ -1126,11 +1084,7 @@ class TestMistralNeMo(ExtTestCase):
         sess = self.check_ort(onnx_path)
 
         # Verify that the ONNX KV-cache tensors use head_dim=48, not 64.
-        kv_shapes = {
-            inp.name: inp.shape
-            for inp in sess.get_inputs()
-            if inp.name.startswith("past_key_values")
-        }
+        kv_shapes = {inp.name: inp.shape for inp in sess.get_inputs() if inp.name.startswith("past_key_values")}
         for name, shape in kv_shapes.items():
             self.assertEqual(
                 shape[3],

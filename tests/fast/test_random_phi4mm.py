@@ -161,9 +161,7 @@ class TestPhi4MM(ExtTestCase):
             inputs_embeds = base_model.model.embed_tokens(input_ids)
             pt_prefill = peft_model(inputs_embeds=inputs_embeds)
 
-        np_embeds = (
-            inputs_embeds.detach().cpu().numpy().astype(self.get_input_np_dtype(precision))
-        )
+        np_embeds = inputs_embeds.detach().cpu().numpy().astype(self.get_input_np_dtype(precision))
         np_pt_logits = pt_prefill.logits.detach().cpu().numpy()
 
         # --- Build ONNX --------------------------------------------------------
@@ -230,9 +228,7 @@ class TestPhi4MM(ExtTestCase):
             disc = self.get_numpy_discrepancy(np_pt_logits, prefill_outputs[0])
             self.log_results({"step": "prefill", **disc, **log_data})
             atol = {"fp16": 1e-2, "bf16": 1e-2, "fp32": 1e-3, "int4": 0.5}
-            np.testing.assert_allclose(
-                np_pt_logits, prefill_outputs[0], atol=atol[precision], rtol=1e-3
-            )
+            np.testing.assert_allclose(np_pt_logits, prefill_outputs[0], atol=atol[precision], rtol=1e-3)
 
         with self.subTest(step="decode"):
             if prefill_results is None:
@@ -243,9 +239,7 @@ class TestPhi4MM(ExtTestCase):
             next_token_ids = torch.tensor([[next_token]], dtype=torch.long)
             with torch.no_grad():
                 next_embeds = base_model.model.embed_tokens(next_token_ids)
-            np_next_embeds = (
-                next_embeds.detach().cpu().numpy().astype(self.get_input_np_dtype(precision))
-            )
+            np_next_embeds = next_embeds.detach().cpu().numpy().astype(self.get_input_np_dtype(precision))
 
             decode_feed = {
                 "inputs_embeds": np_next_embeds,

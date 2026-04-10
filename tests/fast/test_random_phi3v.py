@@ -128,9 +128,7 @@ class TestRandomPhi3V(ExtTestCase):
             with torch.no_grad():
                 inputs_embeds = model.model.embed_tokens(input_ids)
 
-            inputs_embeds_np = (
-                inputs_embeds.cpu().numpy().astype(self.get_input_np_dtype(precision))
-            )
+            inputs_embeds_np = inputs_embeds.cpu().numpy().astype(self.get_input_np_dtype(precision))
 
             prefill_feed = {
                 "inputs_embeds": inputs_embeds_np,
@@ -178,9 +176,7 @@ class TestRandomPhi3V(ExtTestCase):
             next_token = int(np.argmax(prefill_results["logits"][0, -1, :]))
 
             with torch.no_grad():
-                next_embed = model.model.embed_tokens(
-                    torch.tensor([[next_token]], dtype=torch.long).to(provider)
-                )
+                next_embed = model.model.embed_tokens(torch.tensor([[next_token]], dtype=torch.long).to(provider))
 
             next_embed_np = next_embed.cpu().numpy().astype(self.get_input_np_dtype(precision))
 
@@ -213,9 +209,7 @@ class TestRandomPhi3V(ExtTestCase):
             self.log_results({"step": "decode", **disc, **log_data})
             atol = {"fp16": 1e-2, "bf16": 1e-2, "fp32": 1e-4, "int4": 0.5}
             rtol = {"fp16": 10, "bf16": 1e-2, "fp32": 1e-4, "int4": 10000}
-            np.testing.assert_allclose(
-                pt_decode_logits, onnx_decode_logits, atol=atol[precision], rtol=rtol[precision]
-            )
+            np.testing.assert_allclose(pt_decode_logits, onnx_decode_logits, atol=atol[precision], rtol=rtol[precision])
 
     @hide_stdout()
     def test_fast_discrepancy_phi3v_fp32_cpu(self):
@@ -342,9 +336,7 @@ class TestRandomPhi3V(ExtTestCase):
         # ------------------------------------------------------------------
         with torch.no_grad():
             current_embeds = model.model.embed_tokens(prompt_ids)
-        current_embeds_np = (
-            current_embeds.cpu().numpy().astype(self.get_input_np_dtype(precision))
-        )
+        current_embeds_np = current_embeds.cpu().numpy().astype(self.get_input_np_dtype(precision))
 
         # Initialise empty KV-cache for every layer.
         past_kv = {}
@@ -367,9 +359,7 @@ class TestRandomPhi3V(ExtTestCase):
             feed = {
                 "inputs_embeds": current_embeds_np,
                 "attention_mask": np.ones((batch_size, past_len + cur_len), dtype=np.int64),
-                "position_ids": np.arange(past_len, past_len + cur_len, dtype=np.int64).reshape(
-                    batch_size, cur_len
-                ),
+                "position_ids": np.arange(past_len, past_len + cur_len, dtype=np.int64).reshape(batch_size, cur_len),
             }
             for i in range(num_hidden_layers):
                 feed[f"past_key_values.{i}.key"] = past_kv[f"past_key_values.{i}.key"]
@@ -398,12 +388,8 @@ class TestRandomPhi3V(ExtTestCase):
 
             # Embed the single next token for the following decode step.
             with torch.no_grad():
-                next_embed = model.model.embed_tokens(
-                    torch.tensor([[next_token]], dtype=torch.long).to(provider)
-                )
-            current_embeds_np = (
-                next_embed.cpu().numpy().astype(self.get_input_np_dtype(precision))
-            )
+                next_embed = model.model.embed_tokens(torch.tensor([[next_token]], dtype=torch.long).to(provider))
+            current_embeds_np = next_embed.cpu().numpy().astype(self.get_input_np_dtype(precision))
 
             if next_token == config.eos_token_id:
                 break

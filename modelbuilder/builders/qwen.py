@@ -40,9 +40,7 @@ class Qwen25VLTextModel(Model):
         # builder to cast bf16 inputs -> fp32, compute LN, and cast fp32
         # outputs -> bf16, matching the HF model and fixing both errors.
         #
-        print(
-            "Forcing LayerNorm computation to float32 (and enabling all casts) for Qwen2.5-VL parity."
-        )
+        print("Forcing LayerNorm computation to float32 (and enabling all casts) for Qwen2.5-VL parity.")
         self.layernorm_attrs["cast"]["use_fp32"] = True
         self.layernorm_attrs["cast"]["root_input"] = True
         self.layernorm_attrs["cast"]["skip_input"] = True
@@ -70,9 +68,7 @@ class Qwen25VLTextModel(Model):
 
         self.mrope_sections = self.rope_attrs.get("mrope", {}).get("sections", [])
         if not self.mrope_sections:
-            raise ValueError(
-                "MRoPE sections not found in config.text_config.rope_scaling.mrope_section"
-            )
+            raise ValueError("MRoPE sections not found in config.text_config.rope_scaling.mrope_section")
 
         # The HF logic is `mrope_section * 2`, not `[s * 2 for s in mrope_section]`.
         # This results in [16, 24, 24, 16, 24, 24]
@@ -88,9 +84,7 @@ class Qwen25VLTextModel(Model):
         self.attention_attrs["op_type"] = "GroupQueryAttention"
 
         if not self.is_gqa_supported():
-            print(
-                f"Warning: {self.ep} does not support GQA for {self.io_dtype}, so GQA might fallback to CPU!"
-            )
+            print(f"Warning: {self.ep} does not support GQA for {self.io_dtype}, so GQA might fallback to CPU!")
 
         # Create and save the inv_freq tensor
         self.make_inv_freq_tensor()
@@ -103,10 +97,7 @@ class Qwen25VLTextModel(Model):
         dim = int(self.rope_attrs["partial_rotary_factor"] * self.head_size)
         inv_freq = 1.0 / (
             self.rope_attrs["rescale_factors"]
-            * (
-                self.rope_attrs["theta"]
-                ** (torch.arange(0, dim, 2, dtype=torch.int64).float() / dim)
-            )
+            * (self.rope_attrs["theta"] ** (torch.arange(0, dim, 2, dtype=torch.int64).float() / dim))
         )
 
         # The HF model expects H/2, not R/2
@@ -402,9 +393,7 @@ class Qwen25VLTextModel(Model):
 
         return flat_cos, flat_sin
 
-    def apply_mrope_rotation(
-        self, layer_id, q_or_k_path, q_or_k_shape, dyn_cos, dyn_sin, num_heads, basename
-    ):
+    def apply_mrope_rotation(self, layer_id, q_or_k_path, q_or_k_shape, dyn_cos, dyn_sin, num_heads, basename):
         # Make nodes for the MRoPE rotation subgraph using RotaryEmbedding op
         #
         # 1. Flatten 3D caches [3, B, S, H] -> [B*S, H/2] (via make_mrope_flattened_caches)
@@ -741,9 +730,7 @@ class Qwen3VLTextModel(Qwen25VLTextModel):
         # Fix model_type: HF architecture "Qwen3VLForConditionalGeneration" would produce "qwen3vl"
         # but the C++ runtime expects "qwen3_vl" (with underscore).
         # Intentional override of the superclass attribute (used in genai_config.json).
-        self.model_type = (
-            "Qwen3_VLForConditionalGeneration"  # overrides Model.model_type on purpose
-        )
+        self.model_type = "Qwen3_VLForConditionalGeneration"  # overrides Model.model_type on purpose
 
         # Qwen3 attention uses QK normalization
         self.attention_attrs["q_norm"] = True
@@ -1022,9 +1009,7 @@ class Qwen35TextModel(Model):
         # mRoPE config
         self.mrope_sections = self.rope_attrs.get("mrope", {}).get("sections", [])
         if not self.mrope_sections:
-            raise ValueError(
-                "MRoPE sections not found in config.text_config.rope_scaling.mrope_section"
-            )
+            raise ValueError("MRoPE sections not found in config.text_config.rope_scaling.mrope_section")
         if len(self.mrope_sections) != 3:
             raise ValueError(
                 f"Expected 3 MRoPE sections [T, H, W], got {len(self.mrope_sections)}: {self.mrope_sections}"
@@ -1040,14 +1025,10 @@ class Qwen35TextModel(Model):
         # Parse layer types
         if hasattr(config, "layer_types") and config.layer_types is not None:
             self.layer_types = list(config.layer_types)
-        elif (
-            hasattr(config, "full_attention_interval")
-            and config.full_attention_interval is not None
-        ):
+        elif hasattr(config, "full_attention_interval") and config.full_attention_interval is not None:
             interval = config.full_attention_interval
             self.layer_types = [
-                "full_attention" if (i + 1) % interval == 0 else "linear_attention"
-                for i in range(self.num_layers)
+                "full_attention" if (i + 1) % interval == 0 else "linear_attention" for i in range(self.num_layers)
             ]
         else:
             self.layer_types = ["full_attention"] * self.num_layers
@@ -1139,9 +1120,7 @@ class Qwen35TextModel(Model):
                     self.linear_conv_kernel_dim - 1,
                 ]
 
-                self.input_names[f"past_state.{i}.recurrent"] = (
-                    f"past_key_values.{i}.recurrent_state"
-                )
+                self.input_names[f"past_state.{i}.recurrent"] = f"past_key_values.{i}.recurrent_state"
                 self.input_types[f"past_state.{i}.recurrent"] = state_dtype
                 self.input_shapes[f"past_state.{i}.recurrent"] = [
                     "batch_size",
@@ -1182,11 +1161,7 @@ class Qwen35TextModel(Model):
     def make_layer(self, layer_id, layer):
         """Override to pass ``linear_attn`` instead of ``self_attn`` for
         linear-attention layers (the base class assumes ``self_attn``)."""
-        attn_module = (
-            layer.linear_attn
-            if self.layer_types[layer_id] == "linear_attention"
-            else layer.self_attn
-        )
+        attn_module = layer.linear_attn if self.layer_types[layer_id] == "linear_attention" else layer.self_attn
         self.make_layernorm(
             layer_id,
             layer.input_layernorm,
@@ -1395,10 +1370,7 @@ class Qwen35TextModel(Model):
 
         inv_freq = 1.0 / (
             self.rope_attrs["rescale_factors"]
-            * (
-                self.rope_attrs["theta"]
-                ** (torch.arange(0, rdim, 2, dtype=torch.int64).float() / rdim)
-            )
+            * (self.rope_attrs["theta"] ** (torch.arange(0, rdim, 2, dtype=torch.int64).float() / rdim))
         )
 
         positions = torch.arange(max_len, dtype=torch.float32)
@@ -1508,9 +1480,7 @@ class Qwen35TextModel(Model):
 
         return interleave("cos", cos_cache), interleave("sin", sin_cache)
 
-    def _apply_mrope_rotation(
-        self, layer_id, qk_path, qk_shape, dyn_cos, dyn_sin, num_heads, basename
-    ):
+    def _apply_mrope_rotation(self, layer_id, qk_path, qk_shape, dyn_cos, dyn_sin, num_heads, basename):
         """Apply mRoPE via com.microsoft.RotaryEmbedding (4-input variant).
 
         cos/sin are pre-gathered [B, S, rdim_half].  We flatten them to
@@ -1707,15 +1677,13 @@ class Qwen35TextModel(Model):
         kernel_size = self.linear_conv_kernel_dim
 
         # Projections, conv weight init, QKV transpose
-        z_name, b_name, a_name, qkv_t_output, conv_weight_name = (
-            self._make_linear_attention_projections(layer_id, linear_attn, root_input)
+        z_name, b_name, a_name, qkv_t_output, conv_weight_name = self._make_linear_attention_projections(
+            layer_id, linear_attn, root_input
         )
 
         # --- Fused conv: CausalConvWithState (com.microsoft) ---
         conv_bias_name = f"model.layers.{layer_id}.linear_attn.conv1d.bias"
-        self.make_initializer(
-            torch.zeros(conv_dim, dtype=torch.float32), conv_bias_name, to=self.io_dtype
-        )
+        self.make_initializer(torch.zeros(conv_dim, dtype=torch.float32), conv_bias_name, to=self.io_dtype)
 
         past_conv = f"past_key_values.{layer_id}.conv_state"
         present_conv = f"present.{layer_id}.conv_state"
@@ -1744,14 +1712,12 @@ class Qwen35TextModel(Model):
         )
 
         # Split QKV, L2 norm, gates
-        q_scaled_output, k_norm_out, v_out, g_output, beta_output = (
-            self._make_linear_attention_normalize_and_gate(
-                layer_id,
-                linear_attn,
-                conv_out_t_output,
-                b_name,
-                a_name,
-            )
+        q_scaled_output, k_norm_out, v_out, g_output, beta_output = self._make_linear_attention_normalize_and_gate(
+            layer_id,
+            linear_attn,
+            conv_out_t_output,
+            b_name,
+            a_name,
         )
 
         # --- Fused recurrence: LinearAttention (com.microsoft) ---
@@ -2052,9 +2018,7 @@ class Qwen35TextModel(Model):
         self.make_rsqrt(rsqrt_name, [f"{add_eps_name}/output_0"], self.io_dtype, reduced_shape)
 
         norm_name = f"{basename}/Normalize/Mul"
-        self.make_mul(
-            norm_name, [input_name, f"{rsqrt_name}/output_0"], self.io_dtype, full_shape
-        )
+        self.make_mul(norm_name, [input_name, f"{rsqrt_name}/output_0"], self.io_dtype, full_shape)
 
         return f"{norm_name}/output_0"
 

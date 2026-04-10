@@ -24,9 +24,7 @@ class NemotronHModel(LlamaModel):
 
     def has_final_norm(self, module, orig_model):
         return (
-            hasattr(orig_model, "model")
-            and hasattr(orig_model.model, "norm_f")
-            and module == orig_model.model.norm_f
+            hasattr(orig_model, "model") and hasattr(orig_model.model, "norm_f") and module == orig_model.model.norm_f
         )
 
     def make_layer(self, layer_id, layer):

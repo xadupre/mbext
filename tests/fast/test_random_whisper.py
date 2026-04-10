@@ -123,9 +123,7 @@ class TestWhisperModel(ExtTestCase):
             pt_enc_out = model.model.encoder(pt_audio)
         pt_hidden = pt_enc_out.last_hidden_state.detach().cpu().numpy()
 
-        enc_disc = self.get_numpy_discrepancy(
-            pt_hidden.astype(np_dtype), enc_results["hidden_states"]
-        )
+        enc_disc = self.get_numpy_discrepancy(pt_hidden.astype(np_dtype), enc_results["hidden_states"])
         self.log_results({"step": "encoder", **enc_disc, **log_data})
 
         atol_enc = {"fp32": 1e-4, "fp16": 5e-2, "int4": 0.5}
@@ -144,12 +142,8 @@ class TestWhisperModel(ExtTestCase):
         dec_feed = {"input_ids": input_ids}
         # Empty self-attention KV caches (no prior decode steps)
         for i in range(num_decoder_layers):
-            dec_feed[f"past_key_self_{i}"] = np.zeros(
-                (batch_size, num_attn_heads, 0, head_size), dtype=np_dtype
-            )
-            dec_feed[f"past_value_self_{i}"] = np.zeros(
-                (batch_size, num_attn_heads, 0, head_size), dtype=np_dtype
-            )
+            dec_feed[f"past_key_self_{i}"] = np.zeros((batch_size, num_attn_heads, 0, head_size), dtype=np_dtype)
+            dec_feed[f"past_value_self_{i}"] = np.zeros((batch_size, num_attn_heads, 0, head_size), dtype=np_dtype)
         # Cross-attention KV caches from the encoder pass
         for i in range(num_encoder_layers):
             dec_feed[f"past_key_cross_{i}"] = enc_results[f"present_key_cross_{i}"]

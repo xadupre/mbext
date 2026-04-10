@@ -19,9 +19,7 @@ class TestTrainedSmolLM3(ExtTestCase):
         text = "What is machine learning?"
         inputs = tokenizer(text, return_tensors="pt")
 
-        output_dir, cache_dir = self.get_dirs(
-            f"test_trained_smollm3_3b_{precision}_{provider}", clean=False
-        )
+        output_dir, cache_dir = self.get_dirs(f"test_trained_smollm3_3b_{precision}_{provider}", clean=False)
         onnx_path = os.path.join(output_dir, "model.onnx")
         if not os.path.exists(onnx_path):
             create_model(
@@ -36,9 +34,7 @@ class TestTrainedSmolLM3(ExtTestCase):
         onnx_path = os.path.join(output_dir, "model.onnx")
         self.assertExists(onnx_path)
 
-        model = AutoModelForCausalLM.from_pretrained(
-            SMOLLM3_MODEL_NAME, ignore_mismatched_sizes=True, dtype=dtype
-        )
+        model = AutoModelForCausalLM.from_pretrained(SMOLLM3_MODEL_NAME, ignore_mismatched_sizes=True, dtype=dtype)
         model.eval().to(provider).to(dtype)
 
         return (
@@ -60,9 +56,7 @@ class TestTrainedSmolLM3(ExtTestCase):
 
         dtype = self.get_input_torch_dtype(precision)
 
-        onnx_path, model, torch_feed, onnx_feed, tokenizer = self._common_part(
-            precision, dtype, provider=provider
-        )
+        onnx_path, model, torch_feed, onnx_feed, tokenizer = self._common_part(precision, dtype, provider=provider)
         sess = self._check_with_ort(onnx_path, cpu=provider == "cpu")
         self.fill_with_empty_cache(onnx_feed, sess, provider)
 
@@ -105,9 +99,7 @@ class TestTrainedSmolLM3(ExtTestCase):
 
         dtype = self.get_input_torch_dtype(precision)
 
-        onnx_path, model, torch_feed, onnx_feed, tokenizer = self._common_part(
-            precision, dtype, provider=provider
-        )
+        onnx_path, model, torch_feed, onnx_feed, tokenizer = self._common_part(precision, dtype, provider=provider)
 
         max_new_tokens = 20
 

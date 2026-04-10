@@ -25,9 +25,7 @@ class TestTrainedQwen3(ExtTestCase):
         inputs = tokenizer(text, return_tensors="pt")
 
         smodel_id = model_id.lower().replace("/", "_").replace(".", "_").replace("-", "_")
-        output_dir, cache_dir = self.get_dirs(
-            f"test_trained_{smodel_id}_{precision}_{provider}", clean=False
-        )
+        output_dir, cache_dir = self.get_dirs(f"test_trained_{smodel_id}_{precision}_{provider}", clean=False)
         onnx_path = os.path.join(output_dir, "model.onnx")
         if not os.path.exists(onnx_path):
             create_model(
@@ -42,9 +40,7 @@ class TestTrainedQwen3(ExtTestCase):
         onnx_path = os.path.join(output_dir, "model.onnx")
         self.assertExists(onnx_path)
 
-        model = AutoModelForCausalLM.from_pretrained(
-            model_id, ignore_mismatched_sizes=True, dtype=dtype
-        )
+        model = AutoModelForCausalLM.from_pretrained(model_id, ignore_mismatched_sizes=True, dtype=dtype)
         model.eval().to(provider).to(dtype)
 
         return (

@@ -26,9 +26,7 @@ class PhiModel(Model):
             simple=self.layernorm_attrs["simple"],
             location="input",
         )
-        self.make_attention(
-            layer_id, layer.self_attn, root_input=self.layernorm_attrs["output_0"]
-        )
+        self.make_attention(layer_id, layer.self_attn, root_input=self.layernorm_attrs["output_0"])
 
         old_skip_input = self.layernorm_attrs["skip_input"]
         self.make_mlp(layer_id, layer.mlp, root_input=self.layernorm_attrs["output_0"])
@@ -211,9 +209,7 @@ class Phi3SmallModel(Model):
             q_pos = torch.arange(N_BLOCK)[:, None]
             k_pos = torch.arange(N_BLOCK)[None]
             mask_vert_strided = (torch.arange(N_BLOCK) + 1) % vert_stride == 0
-            block_mask_dense = (q_pos >= k_pos) & (
-                (q_pos - k_pos < local_blocks) | mask_vert_strided
-            )
+            block_mask_dense = (q_pos >= k_pos) & ((q_pos - k_pos < local_blocks) | mask_vert_strided)
             N_BLOCK_Q = self.calculate_cdiv(q_len, BLOCK)
             block_mask_dense_output = block_mask_dense[-N_BLOCK_Q:].to_sparse_csr()
 
@@ -225,17 +221,12 @@ class Phi3SmallModel(Model):
         else:
             q_pos = torch.arange(N_BLOCK)[None, :, None]
             k_pos = torch.arange(N_BLOCK)[None, None]
-            head_sliding_step = max(
-                1, int(vert_stride / n_heads)
-            )  # if vert_stride <= n_heads, rotating the heads
+            head_sliding_step = max(1, int(vert_stride / n_heads))  # if vert_stride <= n_heads, rotating the heads
             mask_vert_strided = [
-                (torch.arange(N_BLOCK) + h * head_sliding_step + 1) % vert_stride == 0
-                for h in range(n_heads)
+                (torch.arange(N_BLOCK) + h * head_sliding_step + 1) % vert_stride == 0 for h in range(n_heads)
             ]
             mask_vert_strided = torch.vstack(mask_vert_strided).unsqueeze(1)
-            block_mask_dense = (q_pos >= k_pos) & (
-                (q_pos - k_pos < local_blocks) | mask_vert_strided
-            )
+            block_mask_dense = (q_pos >= k_pos) & ((q_pos - k_pos < local_blocks) | mask_vert_strided)
             N_BLOCK_Q = self.calculate_cdiv(q_len, BLOCK)
             block_mask_dense_output = block_mask_dense[:, -N_BLOCK_Q:]
 
@@ -531,9 +522,7 @@ class Phi3MoELongRoPEModel(MistralModel):
             simple=self.layernorm_attrs["simple"],
             location="input",
         )
-        self.make_attention(
-            layer_id, layer.self_attn, root_input=self.layernorm_attrs["output_0"]
-        )
+        self.make_attention(layer_id, layer.self_attn, root_input=self.layernorm_attrs["output_0"])
         self.make_layernorm(
             layer_id,
             layer.post_attention_layernorm,

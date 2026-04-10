@@ -37,9 +37,7 @@ class TestTrainedOLMo3Instruct(ExtTestCase):
         onnx_path = os.path.join(output_dir, "model.onnx")
         self.assertExists(onnx_path)
 
-        model = AutoModelForCausalLM.from_pretrained(
-            MODEL_NAME_OLMO3, ignore_mismatched_sizes=True, dtype=dtype
-        )
+        model = AutoModelForCausalLM.from_pretrained(MODEL_NAME_OLMO3, ignore_mismatched_sizes=True, dtype=dtype)
         model.eval().to(provider).to(dtype)
 
         return (
@@ -61,9 +59,7 @@ class TestTrainedOLMo3Instruct(ExtTestCase):
 
         dtype = self.get_input_torch_dtype(precision)
 
-        onnx_path, model, torch_feed, onnx_feed, tokenizer = self._common_part(
-            precision, dtype, provider=provider
-        )
+        onnx_path, model, torch_feed, onnx_feed, tokenizer = self._common_part(precision, dtype, provider=provider)
         sess = self._check_with_ort(onnx_path, cpu=provider == "cpu")
         self.fill_with_empty_cache(onnx_feed, sess, provider)
 
@@ -104,9 +100,7 @@ class TestTrainedOLMo3Instruct(ExtTestCase):
 
         dtype = self.get_input_torch_dtype(precision)
 
-        onnx_path, model, torch_feed, onnx_feed, tokenizer = self._common_part(
-            precision, dtype, provider=provider
-        )
+        onnx_path, model, torch_feed, onnx_feed, tokenizer = self._common_part(precision, dtype, provider=provider)
 
         max_new_tokens = 20
 

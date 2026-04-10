@@ -130,10 +130,7 @@ class TestRandomQwen25VL(ExtTestCase):
         # The three dims correspond to temporal, height, and width.
         # For text-only inference all three dims use the same arange.
         position_ids_3d = (
-            np.arange(seq_len, dtype=np.int64)
-            .reshape(1, 1, seq_len)
-            .repeat(3, axis=0)
-            .repeat(batch_size, axis=1)
+            np.arange(seq_len, dtype=np.int64).reshape(1, 1, seq_len).repeat(3, axis=0).repeat(batch_size, axis=1)
         )
 
         with self.subTest(step="prefill"):
@@ -168,9 +165,7 @@ class TestRandomQwen25VL(ExtTestCase):
                 pt_prefill = model(
                     inputs_embeds=inputs_embeds.to(provider),
                     position_ids=pt_position_ids,
-                    attention_mask=torch.ones((batch_size, seq_len), dtype=torch.long).to(
-                        provider
-                    ),
+                    attention_mask=torch.ones((batch_size, seq_len), dtype=torch.long).to(provider),
                 )
 
             np_prefill = pt_prefill.logits.detach().cpu().numpy()
@@ -217,9 +212,7 @@ class TestRandomQwen25VL(ExtTestCase):
                 pt_decode = model(
                     inputs_embeds=next_embeds.to(provider),
                     position_ids=pt_decode_pos_ids,
-                    attention_mask=torch.ones((batch_size, seq_len + 1), dtype=torch.long).to(
-                        provider
-                    ),
+                    attention_mask=torch.ones((batch_size, seq_len + 1), dtype=torch.long).to(provider),
                     past_key_values=pt_past_kv,
                 )
                 pt_decode_logits = pt_decode.logits.detach().cpu().numpy()
@@ -228,9 +221,7 @@ class TestRandomQwen25VL(ExtTestCase):
             self.log_results({"step": "decode", **disc, **log_data})
             atol = {"fp16": 1e-2, "bf16": 1e-2, "fp32": 1e-3, "int4": 0.5}
             rtol = {"fp16": 10, "bf16": 1e-2, "fp32": 1e-3, "int4": 10000}
-            np.testing.assert_allclose(
-                pt_decode_logits, onnx_decode_logits, atol=atol[precision], rtol=rtol[precision]
-            )
+            np.testing.assert_allclose(pt_decode_logits, onnx_decode_logits, atol=atol[precision], rtol=rtol[precision])
 
     @hide_stdout()
     def test_fast_discrepancy_qwen25vl_fp32_cpu(self):

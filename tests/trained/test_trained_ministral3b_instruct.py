@@ -19,9 +19,7 @@ class TestTrainedMinistral3BInstruct(ExtTestCase):
         text = "Explain tokenization in simple terms."
         inputs = tokenizer(text, return_tensors="pt")
 
-        output_dir, cache_dir = self.get_dirs(
-            f"test_trained_ministral3b_instruct_{precision}_{provider}", clean=False
-        )
+        output_dir, cache_dir = self.get_dirs(f"test_trained_ministral3b_instruct_{precision}_{provider}", clean=False)
         onnx_path = os.path.join(output_dir, "model.onnx")
         if not os.path.exists(onnx_path):
             create_model(
@@ -60,9 +58,7 @@ class TestTrainedMinistral3BInstruct(ExtTestCase):
 
         dtype = self.get_input_torch_dtype(precision)
 
-        onnx_path, model, torch_feed, onnx_feed = self._common_part(
-            precision, dtype, provider=provider
-        )
+        onnx_path, model, torch_feed, onnx_feed = self._common_part(precision, dtype, provider=provider)
         sess = self._check_with_ort(onnx_path, cpu=provider == "cpu")
         self.fill_with_empty_cache(onnx_feed, sess, provider)
 
@@ -113,9 +109,7 @@ class TestTrainedMinistral3BInstruct(ExtTestCase):
         try:
             import onnxruntime_genai as og
         except ImportError:
-            raise unittest.SkipTest(
-                "onnxruntime-genai is not installed; skipping genai comparison test."
-            )
+            raise unittest.SkipTest("onnxruntime-genai is not installed; skipping genai comparison test.")
 
         import torch
         from transformers import AutoTokenizer
@@ -179,9 +173,7 @@ class TestTrainedMinistral3BInstruct(ExtTestCase):
                 experiment="generate",
                 provider="cuda",
                 test="test_trained_ministral3b_instruct_genai_generate_cuda",
-                expected_text=tokenizer.decode(
-                    pt_tokens[start_sequence:], skip_special_tokens=False
-                ),
+                expected_text=tokenizer.decode(pt_tokens[start_sequence:], skip_special_tokens=False),
                 genai_text=tokenizer.decode(og_tokens, skip_special_tokens=False),
                 input_type="text",
             )
@@ -205,9 +197,7 @@ class TestTrainedMinistral3BInstruct(ExtTestCase):
         try:
             import onnxruntime_genai as og
         except ImportError:
-            raise unittest.SkipTest(
-                "onnxruntime-genai is not installed; skipping genai comparison test."
-            )
+            raise unittest.SkipTest("onnxruntime-genai is not installed; skipping genai comparison test.")
 
         import torch
         from transformers import AutoTokenizer
@@ -271,9 +261,7 @@ class TestTrainedMinistral3BInstruct(ExtTestCase):
                 experiment="generate",
                 provider="cpu",
                 test="test_trained_ministral3b_instruct_genai_generate_cpu",
-                expected_text=tokenizer.decode(
-                    pt_tokens[start_sequence:], skip_special_tokens=False
-                ),
+                expected_text=tokenizer.decode(pt_tokens[start_sequence:], skip_special_tokens=False),
                 genai_text=tokenizer.decode(og_tokens, skip_special_tokens=False),
                 input_type="text",
             )

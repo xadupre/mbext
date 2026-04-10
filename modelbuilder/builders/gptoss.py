@@ -31,9 +31,7 @@ class GPTOSSModel(Model):
             simple=self.layernorm_attrs["simple"],
             location="input",
         )
-        self.make_attention(
-            layer_id, layer.self_attn, root_input=self.layernorm_attrs["output_0"]
-        )
+        self.make_attention(layer_id, layer.self_attn, root_input=self.layernorm_attrs["output_0"])
         self.make_layernorm(
             layer_id,
             layer.post_attention_layernorm,
@@ -56,8 +54,7 @@ class GPTOSSModel(Model):
 
     def make_rotary_embedding_caches_from_scratch(self):
         inv_freq = 1.0 / (
-            self.rope_attrs["theta"]
-            ** (torch.arange(0, self.head_size, 2, dtype=torch.float) / self.head_size)
+            self.rope_attrs["theta"] ** (torch.arange(0, self.head_size, 2, dtype=torch.float) / self.head_size)
         )
         inv_freq = self.make_inv_freq_rescaled(inv_freq)
 
@@ -759,9 +756,7 @@ class GPTOSSModel(Model):
             shape=["batch_size * sequence_length", self.moe_attrs["num_experts"]],
         )
 
-        gate_up_proj_weight = (
-            f"model.layers.{layer_id}.moe.experts.gate_up_proj.{moe_weight_type}"
-        )
+        gate_up_proj_weight = f"model.layers.{layer_id}.moe.experts.gate_up_proj.{moe_weight_type}"
         gate_up_proj_scales = f"model.layers.{layer_id}.moe.experts.gate_up_proj.scales"
         gate_up_proj_bias = f"model.layers.{layer_id}.moe.experts.gate_up_proj.bias"
         gate_up_proj_zero_points = f"model.layers.{layer_id}.moe.experts.gate_up_proj.zero_points"
@@ -836,13 +831,9 @@ class GPTOSSModel(Model):
                     down_proj_qweight_list.append(qweight2)
                     down_proj_scales_list.append(scales2)
 
-                gate_up_proj_qweight_tensor = torch.stack(gate_up_proj_qweight_list, dim=0).to(
-                    torch.uint8
-                )
+                gate_up_proj_qweight_tensor = torch.stack(gate_up_proj_qweight_list, dim=0).to(torch.uint8)
                 gate_up_proj_scales_tensor = torch.stack(gate_up_proj_scales_list, dim=0)
-                down_proj_qweight_tensor = torch.stack(down_proj_qweight_list, dim=0).to(
-                    torch.uint8
-                )
+                down_proj_qweight_tensor = torch.stack(down_proj_qweight_list, dim=0).to(torch.uint8)
                 down_proj_scales_tensor = torch.stack(down_proj_scales_list, dim=0)
 
             # Determine shape based on Quark vs non-Quark
@@ -856,9 +847,7 @@ class GPTOSSModel(Model):
 
             # Save qweight tensors
             self.make_initializer(
-                gate_up_proj_qweight_tensor.view(
-                    self.moe_attrs["num_experts"], -1, hidden_size_padded // pack_size
-                ),
+                gate_up_proj_qweight_tensor.view(self.moe_attrs["num_experts"], -1, hidden_size_padded // pack_size),
                 gate_up_proj_weight,
             )
             self.make_initializer(
@@ -871,9 +860,7 @@ class GPTOSSModel(Model):
             )
 
             # Save scales tensors
-            self.make_initializer(
-                gate_up_proj_scales_tensor, gate_up_proj_scales, to=self.io_dtype
-            )
+            self.make_initializer(gate_up_proj_scales_tensor, gate_up_proj_scales, to=self.io_dtype)
             self.make_initializer(down_proj_scales_tensor, down_proj_scales, to=self.io_dtype)
 
         # Save biases (shared for all paths)
@@ -924,8 +911,7 @@ class GPTOSSModel(Model):
                 # Fused gate_up projection
                 gate_up_proj = (
                     expert.gate_up_proj.bias
-                    if hasattr(expert.gate_up_proj, "bias")
-                    and expert.gate_up_proj.bias is not None
+                    if hasattr(expert.gate_up_proj, "bias") and expert.gate_up_proj.bias is not None
                     else torch.zeros(expert.gate_up_proj.qweight.shape[0])
                 )
                 combined_biases.append(gate_up_proj)
@@ -946,9 +932,7 @@ class GPTOSSModel(Model):
                 gate_out_dim = gate_bias.shape[0]
                 up_out_dim = up_bias.shape[0]
 
-                combined_bias = torch.zeros(
-                    gate_out_dim + up_out_dim, dtype=gate_bias.dtype, device="cpu"
-                )
+                combined_bias = torch.zeros(gate_out_dim + up_out_dim, dtype=gate_bias.dtype, device="cpu")
                 combined_bias[::2] = gate_bias  # Even indices = gate
                 combined_bias[1::2] = up_bias  # Odd indices = up
 

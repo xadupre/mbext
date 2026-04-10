@@ -24,9 +24,7 @@ class GraniteModel(MistralModel):
             simple=self.layernorm_attrs["simple"],
             location="input",
         )
-        self.make_attention(
-            layer_id, layer.self_attn, root_input=self.layernorm_attrs["output_0"]
-        )
+        self.make_attention(layer_id, layer.self_attn, root_input=self.layernorm_attrs["output_0"])
 
         residual_mul_1_name = f"/model/layers.{layer_id}/residual_mul/Mul_1"
         residual_mul_1_inputs = [

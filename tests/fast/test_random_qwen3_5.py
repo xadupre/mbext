@@ -91,9 +91,7 @@ class TestRandomQwen3_5(ExtTestCase):
 
         from modelbuilder.builder import create_model
 
-        basename = (
-            f"test_qwen3_5_{precision}_{provider}_{'_'.join(config.text_config.layer_types)}"
-        )
+        basename = f"test_qwen3_5_{precision}_{provider}_{'_'.join(config.text_config.layer_types)}"
         model_dir_full = self.get_model_dir(basename)
         output_dir, cache_dir = self.get_dirs(basename)
 
@@ -143,9 +141,7 @@ class TestRandomQwen3_5(ExtTestCase):
         input_ids = torch.randint(0, text_cfg.vocab_size, (batch_size, seq_len))
         with torch.no_grad():
             inputs_embeds = (
-                model.model.language_model.embed_tokens(input_ids)
-                .numpy()
-                .astype(self.get_input_np_dtype(precision))
+                model.model.language_model.embed_tokens(input_ids).numpy().astype(self.get_input_np_dtype(precision))
             )
 
         # 3D position_ids [3, batch_size, seq_len] for mRoPE.
@@ -219,9 +215,7 @@ class TestRandomQwen3_5(ExtTestCase):
         config = _make_qwen3_5_config(["full_attention", "full_attention"])
         model, output_dir = self._build_and_save_model(config, "fp32", "cpu")
 
-        outputs = self._run_text_decoder(
-            model, output_dir, config, "fp32", ["full_attention", "full_attention"]
-        )
+        outputs = self._run_text_decoder(model, output_dir, config, "fp32", ["full_attention", "full_attention"])
         self.assertIsNotNone(outputs[0])
         # logits: [batch_size, seq_len, vocab_size]
         self.assertEqual(outputs[0].shape, (1, 5, 32000))
@@ -233,9 +227,7 @@ class TestRandomQwen3_5(ExtTestCase):
         config = _make_qwen3_5_config(["full_attention", "full_attention"])
         model, output_dir = self._build_and_save_model(config, "fp16", "cpu")
 
-        outputs = self._run_text_decoder(
-            model, output_dir, config, "fp16", ["full_attention", "full_attention"]
-        )
+        outputs = self._run_text_decoder(model, output_dir, config, "fp16", ["full_attention", "full_attention"])
         self.assertIsNotNone(outputs[0])
         self.assertEqual(outputs[0].shape, (1, 5, 32000))
 

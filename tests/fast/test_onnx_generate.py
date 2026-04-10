@@ -111,9 +111,7 @@ class TestOnnxGenerate(ExtTestCase):
         model = _make_tiny_lm_no_cache(fixed_token=3)
         prompt = np.array([[1, 2]], dtype=np.int64)
 
-        result = onnx_generate(
-            model, prompt, max_new_tokens=3, eos_token_id=3, return_session=True
-        )
+        result = onnx_generate(model, prompt, max_new_tokens=3, eos_token_id=3, return_session=True)
 
         self.assertIsInstance(result, tuple)
         self.assertEqual(len(result), 3)

@@ -16,14 +16,8 @@ def _flatten_key_value_cache(
     values = [lay.values for lay in cache.layers]
     flat = list(itertools.chain.from_iterable(zip(keys, values)))
     unique = set(type(lay) for lay in cache.layers)
-    assert unique == {
-        transformers.cache_utils.DynamicLayer
-    }, f"Not implemented for layers type {unique}"
-    keys = list(
-        itertools.chain.from_iterable(
-            (f"key_{i}", f"value_{i}") for i in range(len(cache.layers))
-        )
-    )
+    assert unique == {transformers.cache_utils.DynamicLayer}, f"Not implemented for layers type {unique}"
+    keys = list(itertools.chain.from_iterable((f"key_{i}", f"value_{i}") for i in range(len(cache.layers))))
     return flat, keys
 
 
@@ -40,9 +34,7 @@ def _unflatten_cache(
     output_type=None,
 ) -> transformers.cache_utils.DynamicCache:
     """Restores a cache from python objects."""
-    expected = list(
-        itertools.chain.from_iterable((f"key_{i}", f"value_{i}") for i in range(len(values) // 2))
-    )
+    expected = list(itertools.chain.from_iterable((f"key_{i}", f"value_{i}") for i in range(len(values) // 2)))
     assert expected == context, f"Does not seem to be a dynamic cache {expected} != {context}"
     res = transformers.cache_utils.DynamicCache()
     for i in range(len(values) // 2):

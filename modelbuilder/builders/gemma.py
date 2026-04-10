@@ -51,9 +51,7 @@ class Gemma2Model(GemmaModel):
         )
         self.layernorm_attrs["cast"]["root_input"] = original_cast_root_input
 
-        self.make_attention(
-            layer_id, layer.self_attn, root_input=self.layernorm_attrs["output_0"]
-        )
+        self.make_attention(layer_id, layer.self_attn, root_input=self.layernorm_attrs["output_0"])
 
         # Adjust LayerNorm attributes for extra LayerNorm to insert
         # 1. Temporarily set root_input for LayerNorm to skip_input for post_attention_layernorm
@@ -205,6 +203,4 @@ class Gemma3Model(Gemma2Model):
             "sin_cache_name",
             (self.sin_cache_global_name if self.window_size == -1 else self.sin_cache_local_name),
         )
-        return super().make_rotary_embedding_caches(
-            cos_cache_name=cos_cache_name, sin_cache_name=sin_cache_name
-        )
+        return super().make_rotary_embedding_caches(cos_cache_name=cos_cache_name, sin_cache_name=sin_cache_name)

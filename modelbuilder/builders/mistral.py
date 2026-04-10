@@ -128,9 +128,7 @@ class Ministral3VisionEncoderModel:
         self.vis_intermediate_size = vc.intermediate_size
         self.vis_num_heads = vc.num_attention_heads
         self.vis_head_dim = (
-            vc.head_dim
-            if hasattr(vc, "head_dim") and vc.head_dim
-            else vc.hidden_size // vc.num_attention_heads
+            vc.head_dim if hasattr(vc, "head_dim") and vc.head_dim else vc.hidden_size // vc.num_attention_heads
         )
         self.vis_num_layers = vc.num_hidden_layers
         self.vis_rms_norm_eps = 1e-5  # hardcoded in PixtralRMSNorm
@@ -480,15 +478,9 @@ class Ministral3VisionEncoderModel:
 
         # Transpose to [1, num_heads, n_patches, head_dim]
         qkv_t_shape = [1, nh, n_p, hd]
-        q_t = self._transpose(
-            f"{b}/q_t", q_4d, perm=[0, 2, 1, 3], dtype=self.io_dtype, out_shape=qkv_t_shape
-        )
-        k_t = self._transpose(
-            f"{b}/k_t", k_4d, perm=[0, 2, 1, 3], dtype=self.io_dtype, out_shape=qkv_t_shape
-        )
-        v_t = self._transpose(
-            f"{b}/v_t", v_4d, perm=[0, 2, 1, 3], dtype=self.io_dtype, out_shape=qkv_t_shape
-        )
+        q_t = self._transpose(f"{b}/q_t", q_4d, perm=[0, 2, 1, 3], dtype=self.io_dtype, out_shape=qkv_t_shape)
+        k_t = self._transpose(f"{b}/k_t", k_4d, perm=[0, 2, 1, 3], dtype=self.io_dtype, out_shape=qkv_t_shape)
+        v_t = self._transpose(f"{b}/v_t", v_4d, perm=[0, 2, 1, 3], dtype=self.io_dtype, out_shape=qkv_t_shape)
 
         # Apply 2-D RoPE to Q and K
         q_rope = self._apply_rope(f"{b}/q", q_t, cos_name, sin_name, qkv_t_shape)
@@ -512,9 +504,7 @@ class Ministral3VisionEncoderModel:
             dtype=self.io_dtype,
             shape=[1, nh, n_p, n_p],
         )
-        attn_probs = self._softmax(
-            f"{b}/attn_softmax", attn_ws, dtype=self.io_dtype, shape=[1, nh, n_p, n_p]
-        )
+        attn_probs = self._softmax(f"{b}/attn_softmax", attn_ws, dtype=self.io_dtype, shape=[1, nh, n_p, n_p])
         attn_out_t = self._matmul_raw(f"{b}/attn_out/MatMul", attn_probs, v_t, shape=qkv_t_shape)
 
         # Transpose + Reshape back to [1, n_patches, hidden_size]
@@ -714,9 +704,7 @@ class Ministral3VisionEncoderModel:
         n_h = n_w = self.n_patches_per_side
         mh, mw = n_h // s, n_w // s
 
-        assert (
-            n_h % s == 0 and n_w % s == 0
-        ), f"image grid {n_h}x{n_w} not divisible by spatial_merge_size={s}"
+        assert n_h % s == 0 and n_w % s == 0, f"image grid {n_h}x{n_w} not divisible by spatial_merge_size={s}"
 
         # --- Projector RMSNorm ---
         proj_norm_eps = float(self.config.text_config.rms_norm_eps)
@@ -919,9 +907,7 @@ class Ministral3VisionEncoderModel:
                     pbar.total = metadata.total
                     total_set = True
                 pbar.update()
-                pbar.set_description(
-                    f"Saving {tensor.name} ({tensor.dtype.short_name()}, {tensor.shape})"
-                )
+                pbar.set_description(f"Saving {tensor.name} ({tensor.dtype.short_name()}, {tensor.shape})")
 
             ir.save(
                 self.onnx_model,
@@ -947,9 +933,7 @@ class Ministral3ConditionalGenerationModel:
 
     def __init__(self, config, io_dtype, onnx_dtype, ep, cache_dir, extra_options):
         # --- Vision encoder ---
-        self.vision_encoder = Ministral3VisionEncoderModel(
-            config, io_dtype, onnx_dtype, ep, cache_dir, extra_options
-        )
+        self.vision_encoder = Ministral3VisionEncoderModel(config, io_dtype, onnx_dtype, ep, cache_dir, extra_options)
 
         # --- Text decoder ---
         # Flatten text_config attributes onto the top-level config so that the
@@ -979,19 +963,14 @@ class Ministral3ConditionalGenerationModel:
         text_extra_options = dict(extra_options)
         text_extra_options["exclude_embeds"] = True
 
-        self.text_model = Ministral3TextModel(
-            text_obj_config, io_dtype, onnx_dtype, ep, cache_dir, text_extra_options
-        )
+        self.text_model = Ministral3TextModel(text_obj_config, io_dtype, onnx_dtype, ep, cache_dir, text_extra_options)
 
     # ------------------------------------------------------------------
     # builder.py interface
     # ------------------------------------------------------------------
 
     def make_model(self, input_path):
-        print(
-            "Building vision encoder (Pixtral + multimodal projector) for "
-            "Mistral3ForConditionalGeneration..."
-        )
+        print("Building vision encoder (Pixtral + multimodal projector) for " "Mistral3ForConditionalGeneration...")
         self.vision_encoder.make_model(input_path)
         print("Building text decoder for Mistral3ForConditionalGeneration...")
         self.text_model.make_model(input_path)

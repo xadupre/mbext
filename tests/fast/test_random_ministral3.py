@@ -176,9 +176,7 @@ class TestMinistral3(ExtTestCase):
             self.log_results({"step": "decode", **disc, **log_data})
             atol = {"fp16": 1e-2, "bf16": 1e-2, "fp32": 1e-3, "int4": 0.5}
             rtol = {"fp16": 10, "bf16": 1e-2, "fp32": 1e-3, "int4": 10000}
-            np.testing.assert_allclose(
-                pt_decode_logits, onnx_decode_logits, atol=atol[precision], rtol=rtol[precision]
-            )
+            np.testing.assert_allclose(pt_decode_logits, onnx_decode_logits, atol=atol[precision], rtol=rtol[precision])
 
     def common_ministral3_greedy_generation(self, precision, provider):
         import torch
@@ -282,9 +280,7 @@ class TestMinistral3(ExtTestCase):
             feed = {
                 "input_ids": current_ids,
                 "attention_mask": np.ones((batch_size, past_len + cur_len), dtype=np.int64),
-                "position_ids": np.arange(past_len, past_len + cur_len, dtype=np.int64).reshape(
-                    batch_size, cur_len
-                ),
+                "position_ids": np.arange(past_len, past_len + cur_len, dtype=np.int64).reshape(batch_size, cur_len),
             }
             for i in range(num_hidden_layers):
                 feed[f"past_key_values.{i}.key"] = past_kv[f"past_key_values.{i}.key"]
@@ -449,12 +445,8 @@ class TestMinistral3(ExtTestCase):
         )
         config.architectures = ["Mistral3ForConditionalGeneration"]
 
-        model_dir = self.get_model_dir(
-            "test_ministral3_conditional_generation_fp32_cpu_random_weights"
-        )
-        output_dir, cache_dir = self.get_dirs(
-            "test_ministral3_conditional_generation_fp32_cpu_random_weights"
-        )
+        model_dir = self.get_model_dir("test_ministral3_conditional_generation_fp32_cpu_random_weights")
+        output_dir, cache_dir = self.get_dirs("test_ministral3_conditional_generation_fp32_cpu_random_weights")
 
         model = Mistral3ForConditionalGeneration(config)
         model.eval()
@@ -505,9 +497,7 @@ class TestMinistral3(ExtTestCase):
         expected_merged_patches = (num_patches_per_side**2) // (spatial_merge_size**2)
 
         vision_sess = self.check_ort(vision_onnx_path)
-        pixel_values = np.zeros(
-            (1, vision_config.num_channels, image_size, image_size), dtype=np.float32
-        )
+        pixel_values = np.zeros((1, vision_config.num_channels, image_size, image_size), dtype=np.float32)
         vision_outputs = vision_sess.run(None, {"pixel_values": pixel_values})
         self.assertIsNotNone(vision_outputs[0])
         self.assertEqual(vision_outputs[0].shape[0], expected_merged_patches)
@@ -521,9 +511,7 @@ class TestMinistral3(ExtTestCase):
         seq_len = 5
         input_ids = torch.randint(0, text_config.vocab_size, (batch_size, seq_len))
         with torch.no_grad():
-            inputs_embeds = (
-                model.model.language_model.embed_tokens(input_ids).numpy().astype(np.float32)
-            )
+            inputs_embeds = model.model.language_model.embed_tokens(input_ids).numpy().astype(np.float32)
 
         text_sess = self.check_ort(text_onnx_path)
         onnx_input_names = {inp.name for inp in text_sess.get_inputs()}

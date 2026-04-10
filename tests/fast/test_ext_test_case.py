@@ -157,9 +157,7 @@ class TestLogResults(ExtTestCase):
             try:
                 os.chdir(tmpdir)
                 for experiment in ("prefill", "decode"):
-                    self.log_results(
-                        {"model_id": "m", "experiment": experiment, "max_abs_err": 0.0}
-                    )
+                    self.log_results({"model_id": "m", "experiment": experiment, "max_abs_err": 0.0})
 
                 md_path = os.path.join("stats", "end2end_results.md")
                 with open(md_path) as f:

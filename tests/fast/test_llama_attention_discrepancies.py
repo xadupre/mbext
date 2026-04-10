@@ -70,12 +70,8 @@ class _AttentionOnlyLlamaModel(LlamaModel):
         )
         # Input: past KV cache for layer 0
         kv_shape = ["batch_size", self.num_kv_heads, "past_sequence_length", self.head_size]
-        g_inputs.append(
-            self.make_value("past_key_values.0.key", dtype=self.io_dtype, shape=kv_shape)
-        )
-        g_inputs.append(
-            self.make_value("past_key_values.0.value", dtype=self.io_dtype, shape=kv_shape)
-        )
+        g_inputs.append(self.make_value("past_key_values.0.key", dtype=self.io_dtype, shape=kv_shape))
+        g_inputs.append(self.make_value("past_key_values.0.value", dtype=self.io_dtype, shape=kv_shape))
 
         # Output: attention output (before residual connection)
         g_outputs.append(
@@ -92,12 +88,8 @@ class _AttentionOnlyLlamaModel(LlamaModel):
             "total_sequence_length",
             self.head_size,
         ]
-        g_outputs.append(
-            self.make_value("present.0.key", dtype=self.io_dtype, shape=kv_out_shape)
-        )
-        g_outputs.append(
-            self.make_value("present.0.value", dtype=self.io_dtype, shape=kv_out_shape)
-        )
+        g_outputs.append(self.make_value("present.0.key", dtype=self.io_dtype, shape=kv_out_shape))
+        g_outputs.append(self.make_value("present.0.value", dtype=self.io_dtype, shape=kv_out_shape))
 
     def make_model(self, attn_module, out_dir):
         """Build and save an attention-only ONNX model.
@@ -167,9 +159,7 @@ class TestLlamaAttentionDiscrepancies(ExtTestCase):
         inner = pt_model.model
         attn_module = inner.layers[0].self_attn
 
-        builder = _AttentionOnlyLlamaModel(
-            config, ir.DataType.FLOAT, ir.DataType.FLOAT, "cpu", cache_dir, {}
-        )
+        builder = _AttentionOnlyLlamaModel(config, ir.DataType.FLOAT, ir.DataType.FLOAT, "cpu", cache_dir, {})
         builder.make_model(attn_module, output_dir)
 
         onnx_path = os.path.join(output_dir, "model.onnx")
@@ -188,9 +178,7 @@ class TestLlamaAttentionDiscrepancies(ExtTestCase):
 
         pos_emb = inner.rotary_emb(hidden_states, position_ids=pos_ids)
         with torch.no_grad():
-            attn_out, _ = attn_module(
-                hidden_states, position_embeddings=pos_emb, past_key_values=past_kv
-            )
+            attn_out, _ = attn_module(hidden_states, position_embeddings=pos_emb, past_key_values=past_kv)
         return attn_out.numpy()
 
     @staticmethod
@@ -327,9 +315,7 @@ class TestLlamaAttentionDiscrepancies(ExtTestCase):
         self._run_pt_attn(inner, attn_module, hidden_states, pos_ids, past_kv_pt)
 
         pos_ids_dec = torch.arange(seq_len, seq_len + 1).unsqueeze(0)
-        pt_decode_out = self._run_pt_attn(
-            inner, attn_module, hidden_states_dec, pos_ids_dec, past_kv_pt
-        )
+        pt_decode_out = self._run_pt_attn(inner, attn_module, hidden_states_dec, pos_ids_dec, past_kv_pt)
 
         disc = self.get_numpy_discrepancy(pt_decode_out, onnx_decode_out)
         disc.update(

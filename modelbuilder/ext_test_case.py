@@ -24,9 +24,7 @@ class PvVersion:
     def __init__(self, version: str):
         self.version = version
         self.t_version = tuple(
-            self.to_int(i)
-            for i in re.split(r"[.+]", version)
-            if not i.startswith(("dev", "rc", "post", "cpu", "cu"))
+            self.to_int(i) for i in re.split(r"[.+]", version) if not i.startswith(("dev", "rc", "post", "cpu", "cu"))
         )
 
     def __repr__(self) -> str:
@@ -372,21 +370,13 @@ class ExtTestCase(unittest.TestCase):
 
         if inputs_embeds_dim > 0:
             onnx_feed = {
-                "attention_mask": np.random.randint(
-                    0, 1, (batch_size, seq_len + past_length), dtype=np.int64
-                ),
-                "inputs_embeds": np.random.randn(
-                    batch_size, seq_len, inputs_embeds_dim, 3072
-                ).astype(dtype=np_dtype),
+                "attention_mask": np.random.randint(0, 1, (batch_size, seq_len + past_length), dtype=np.int64),
+                "inputs_embeds": np.random.randn(batch_size, seq_len, inputs_embeds_dim, 3072).astype(dtype=np_dtype),
             }
         else:
             onnx_feed = {
-                "input_ids": np.random.randint(
-                    0, vocab_size, (batch_size, seq_len), dtype=np.int64
-                ),
-                "attention_mask": np.random.randint(
-                    0, 1, (batch_size, seq_len + past_length), dtype=np.int64
-                ),
+                "input_ids": np.random.randint(0, vocab_size, (batch_size, seq_len), dtype=np.int64),
+                "attention_mask": np.random.randint(0, 1, (batch_size, seq_len + past_length), dtype=np.int64),
             }
         torch_feed = {k: torch.from_numpy(v).to(provider) for k, v in onnx_feed.items()}
         cache = []
@@ -755,11 +745,7 @@ def results_to_dataframe(results: List[Dict[str, Any]]) -> str:
     ]:
         if c in df.columns:
             df = df.drop(c, axis=1)
-    index = [
-        c
-        for c in ["model_id", "experiment", "precision", "provider", "input_type"]
-        if c in df.columns
-    ]
+    index = [c for c in ["model_id", "experiment", "precision", "provider", "input_type"] if c in df.columns]
     df = df.set_index(index).reset_index(drop=False).fillna("")
     return df
 
@@ -796,11 +782,7 @@ def run_session_or_io_binding(
         # tensors instead (following the onnxruntime-genai test pattern).
         if step == "prefill":
             torch_feed = {
-                k: (
-                    torch.from_numpy(feed[k]).to(device)
-                    if isinstance(feed[k], np.ndarray)
-                    else feed[k].to(device)
-                )
+                k: (torch.from_numpy(feed[k]).to(device) if isinstance(feed[k], np.ndarray) else feed[k].to(device))
                 for k in inputs_without_cache
             }
             for i in range(num_hidden_layers):
@@ -853,23 +835,13 @@ def run_session_or_io_binding(
             # Extract float32 logits as numpy; keep KV cache as torch tensors
             # so they can be fed directly into the decode io_binding call.
             if ort_prefill_logits.dtype == torch.bfloat16:
-                ort_logits_np = (
-                    ort_prefill_logits.detach()
-                    .cpu()
-                    .to(torch.float32)
-                    .numpy()
-                    .astype(ml_dtypes.bfloat16)
-                )
+                ort_logits_np = ort_prefill_logits.detach().cpu().to(torch.float32).numpy().astype(ml_dtypes.bfloat16)
             else:
                 ort_logits_np = ort_prefill_logits.detach().cpu().numpy()
         else:
             # The KV cache from prefill is already on CUDA as torch tensors.
             torch_feed = {
-                k: (
-                    torch.from_numpy(feed[k]).to(device)
-                    if isinstance(feed[k], np.ndarray)
-                    else feed[k].to(device)
-                )
+                k: (torch.from_numpy(feed[k]).to(device) if isinstance(feed[k], np.ndarray) else feed[k].to(device))
                 for k in feed
             }
             past_kv_len = results["present.0.key"].shape[2]
