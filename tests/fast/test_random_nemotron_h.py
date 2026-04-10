@@ -165,10 +165,15 @@ class TestNemotronH(ExtTestCase):
             )
 
             with torch.no_grad():
-                pt_past_kv = pt_prefill.past_key_values
-                next_token_tensor = torch.tensor([[next_token]], dtype=torch.long).to(provider)
-                pt_decode = model(next_token_tensor, past_key_values=pt_past_kv)
-                pt_decode_logits = pt_decode.logits.detach().cpu().numpy()
+                # NemotronH's _update_mamba_mask raises ValueError when
+                # past_key_values is a DynamicCache (attention-only).
+                # Run from scratch without cache to get the same logits.
+                all_ids = torch.cat(
+                    [input_ids, torch.tensor([[next_token]], dtype=torch.long).to(provider)],
+                    dim=1,
+                )
+                pt_decode = model(all_ids, use_cache=False)
+                pt_decode_logits = pt_decode.logits[:, -1:, :].detach().cpu().numpy()
 
             disc = self.get_numpy_discrepancy(pt_decode_logits, onnx_decode_logits)
             self.log_results({"step": "decode", **disc, **log_data})
@@ -251,11 +256,15 @@ class TestNemotronH(ExtTestCase):
         prompt_ids = torch.randint(3, config.vocab_size, (batch_size, 5)).to(provider)
 
         with torch.no_grad():
+            # use_cache=False avoids the has_previous_state error: NemotronH's
+            # _update_mamba_mask raises ValueError when past_key_values is a
+            # DynamicCache containing only attention layers (no Mamba layers).
             pt_output = model.generate(
                 prompt_ids,
                 max_new_tokens=max_new_tokens,
                 do_sample=False,
                 pad_token_id=config.eos_token_id,
+                use_cache=False,
             )
         pt_tokens = pt_output[0].tolist()
 
