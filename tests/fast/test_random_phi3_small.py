@@ -414,9 +414,13 @@ class TestPhi3Small(ExtTestCase):
         config_obj = Phi3SmallConfig(**cfg_kwargs)
 
         # Instantiate and save the model weights + config (without auto_map yet).
+        # safe_serialization=False avoids the "shared tensors" error that some
+        # transformers versions raise when lm_head.weight is tied to
+        # embed_tokens.weight via post_init()/tie_weights() but the config
+        # has no _tied_weights_keys attribute set.
         model = Phi3SmallForCausalLM(config_obj)
         model.eval()
-        model.save_pretrained(model_dir)
+        model.save_pretrained(model_dir, safe_serialization=False)
 
         # model.save_pretrained overwrites config.json without auto_map, so we
         # must patch it in afterwards so that AutoConfig / AutoModelForCausalLM
