@@ -284,6 +284,7 @@ class TestPhiMoE(ExtTestCase):
         return config
 
     @hide_stdout()
+    @requires_cuda()  # for tensorrt-llm
     def test_phimoe_onnx_build_cpu(self):
         """Build the PhiMoE ONNX model with synthetic random weights (CPU safe).
 
