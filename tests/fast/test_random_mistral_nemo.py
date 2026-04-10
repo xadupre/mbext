@@ -1044,6 +1044,171 @@ class TestMistralNeMo(ExtTestCase):
         #             ~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^
         # IndexError: list index out of range
 
+    @hide_stdout()
+    def test_fast_discrepancy_mistral_nemo_fp32_cpu_with_explicit_head_dim(self):
+        """
+        Verify that MistralNeMoForCausalLM can be converted to ONNX when the
+        model config has an explicit ``head_dim`` that differs from
+        ``hidden_size // num_attention_heads``.
+
+        The real Mistral-Nemo-Instruct-2407 model uses ``head_dim=128`` while
+        ``hidden_size / num_attention_heads = 5120 / 32 = 160``.  This test
+        mirrors that scenario at a small scale (``head_dim=48`` vs the naive
+        ``512 // 8 = 64``) to ensure:
+
+        * ``create_model`` produces an ONNX file whose KV-cache tensors use the
+          explicit ``head_dim`` (48) and **not** the naive ratio (64).
+        * The ONNX logits on the prefill step are close to those of the
+          original PyTorch model.
+        """
+        import torch
+        from tokenizers import Tokenizer
+        from tokenizers.models import WordLevel
+        from transformers import (
+            AutoModelForCausalLM,
+            MistralConfig,
+            PreTrainedTokenizerFast,
+        )
+
+        from modelbuilder.builder import create_model
+
+        head_dim = 48  # intentionally != hidden_size // num_attention_heads (64)
+        num_hidden_layers = 1
+        config = MistralConfig(
+            architectures=["MistralNeMoForCausalLM"],
+            bos_token_id=1,
+            eos_token_id=2,
+            head_dim=head_dim,
+            hidden_act="silu",
+            hidden_size=512,
+            intermediate_size=1376,
+            max_position_embeddings=1024,
+            model_type="mistral",
+            num_attention_heads=8,
+            num_hidden_layers=num_hidden_layers,
+            num_key_value_heads=4,
+            rms_norm_eps=1e-05,
+            rope_theta=1000000.0,
+            sliding_window=None,
+            vocab_size=32000,
+        )
+
+        basename = "test_discrepancies_mistral_nemo_fp32_cpu_with_explicit_head_dim"
+        model_dir = self.get_model_dir(basename)
+        output_dir, cache_dir = self.get_dirs(basename)
+
+        torch.manual_seed(0)
+        model = AutoModelForCausalLM.from_config(config)
+        model.eval()
+        model.save_pretrained(model_dir)
+
+        vocab = {"<unk>": 0, "<s>": 1, "</s>": 2}
+        tokenizer = PreTrainedTokenizerFast(
+            tokenizer_object=Tokenizer(WordLevel(vocab=vocab, unk_token="<unk>")),
+            bos_token="<s>",
+            eos_token="</s>",
+            unk_token="<unk>",
+        )
+        tokenizer.save_pretrained(model_dir)
+
+        create_model(
+            model_name=MISTRAL_NEMO_MODEL_NAME,
+            input_path=model_dir,
+            output_dir=output_dir,
+            precision="fp32",
+            execution_provider="cpu",
+            cache_dir=cache_dir,
+            num_hidden_layers=num_hidden_layers,
+        )
+
+        onnx_path = os.path.join(output_dir, "model.onnx")
+        self.assertExists(onnx_path)
+        sess = self.check_ort(onnx_path)
+
+        # Verify that the ONNX KV-cache tensors use head_dim=48, not 64.
+        kv_shapes = {
+            inp.name: inp.shape
+            for inp in sess.get_inputs()
+            if inp.name.startswith("past_key_values")
+        }
+        for name, shape in kv_shapes.items():
+            self.assertEqual(
+                shape[3],
+                head_dim,
+                f"{name} has KV head size {shape[3]}, expected {head_dim}",
+            )
+
+        batch_size = 1
+        seq_len = 5
+        onnx_input_names = [i.name for i in sess.get_inputs()]
+
+        input_ids = torch.randint(0, config.vocab_size, (batch_size, seq_len))
+        prefill_feed = {
+            "input_ids": input_ids.numpy().astype(np.int64),
+            "attention_mask": np.ones((batch_size, seq_len), dtype=np.int64),
+            "position_ids": np.arange(seq_len, dtype=np.int64).reshape(batch_size, seq_len),
+        }
+        for i in range(num_hidden_layers):
+            prefill_feed[f"past_key_values.{i}.key"] = np.zeros(
+                (batch_size, config.num_key_value_heads, 0, head_dim),
+                dtype=np.float32,
+            )
+            prefill_feed[f"past_key_values.{i}.value"] = np.zeros(
+                (batch_size, config.num_key_value_heads, 0, head_dim),
+                dtype=np.float32,
+            )
+        prefill_feed = {k: v for k, v in prefill_feed.items() if k in onnx_input_names}
+
+        onnx_out = sess.run(None, prefill_feed)
+        ort_logits = onnx_out[0]
+
+        with torch.no_grad():
+            pt_out = model(input_ids)
+        np_logits = pt_out.logits.detach().cpu().numpy()
+
+        self.assertEqual(np_logits.shape, ort_logits.shape)
+        np.testing.assert_allclose(
+            np_logits[:, :1, :],
+            ort_logits[:, :1, :],
+            atol=1e-3,
+            rtol=1e-3,
+        )
+
+    def test_dequantize_fp8_weights_no_op_when_no_fp8(self):
+        """_dequantize_fp8_weights leaves normal float32 weights unchanged."""
+        import torch
+
+        from modelbuilder.builders.mistral import _dequantize_fp8_weights
+
+        linear = torch.nn.Linear(8, 4, bias=False)
+        original_data = linear.weight.data.clone()
+        _dequantize_fp8_weights(linear)
+        self.assertTrue(torch.allclose(linear.weight.data, original_data))
+
+    def test_dequantize_fp8_weights_applies_scale(self):
+        """_dequantize_fp8_weights dequantizes float8_e4m3fn weights correctly."""
+        import torch
+
+        fp8_dtype = getattr(torch, "float8_e4m3fn", None)
+        if fp8_dtype is None:
+            self.skipTest("float8_e4m3fn not available in this PyTorch build")
+
+        from modelbuilder.builders.mistral import _dequantize_fp8_weights
+
+        linear = torch.nn.Linear(8, 4, bias=False)
+        # Simulate FP8 quantization: store weight as float8_e4m3fn.
+        fp8_weight = linear.weight.data.to(fp8_dtype)
+        linear.weight = torch.nn.Parameter(fp8_weight, requires_grad=False)
+        # Use a scale > 1 to ensure the multiplication is exercised distinctly.
+        scale_inv = torch.tensor([2.0])
+        linear.register_buffer("weight_scale_inv", scale_inv)
+
+        _dequantize_fp8_weights(linear)
+
+        self.assertEqual(linear.weight.dtype, torch.float32)
+        expected = fp8_weight.float() * scale_inv.float()
+        self.assertTrue(torch.allclose(linear.weight.data, expected))
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
