@@ -320,6 +320,12 @@ def create_model(
         onnx_model = NemotronModel(
             config, io_dtype, onnx_dtype, execution_provider, cache_dir, extra_options
         )
+    elif config.architectures[0] == "NemotronHForCausalLM":
+        from .builders.nemotron import NemotronHModel
+
+        onnx_model = NemotronHModel(
+            config, io_dtype, onnx_dtype, execution_provider, cache_dir, extra_options
+        )
     elif config.architectures[0] == "OlmoForCausalLM":
         from .builders.olmo import OLMoModel
 
