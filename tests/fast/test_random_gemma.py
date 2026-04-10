@@ -8,12 +8,7 @@ import unittest
 
 import numpy as np
 
-from modelbuilder.ext_test_case import (
-    ExtTestCase,
-    hide_stdout,
-    requires_cuda,
-    run_session_or_io_binding,
-)
+from modelbuilder.ext_test_case import ExtTestCase, hide_stdout, requires_cuda, run_session_or_io_binding
 
 MODEL_NAME = "google/gemma-2b"
 
@@ -58,10 +53,7 @@ class TestRandomGemma(ExtTestCase):
 
         vocab = {"<unk>": 0, "</s>": 1, "<bos>": 2}
         tokenizer = PreTrainedTokenizerFast(
-            tokenizer_object=Tokenizer(WordLevel(vocab=vocab, unk_token="<unk>")),
-            bos_token="<bos>",
-            eos_token="</s>",
-            unk_token="<unk>",
+            tokenizer_object=Tokenizer(WordLevel(vocab=vocab, unk_token="<unk>")), bos_token="<bos>", eos_token="</s>", unk_token="<unk>"
         )
         tokenizer.save_pretrained(model_dir)
 
@@ -105,12 +97,10 @@ class TestRandomGemma(ExtTestCase):
             }
             for i in range(num_hidden_layers):
                 prefill_feed[f"past_key_values.{i}.key"] = np.zeros(
-                    (batch_size, config.num_key_value_heads, 0, head_size),
-                    dtype=self.get_input_np_dtype(precision),
+                    (batch_size, config.num_key_value_heads, 0, head_size), dtype=self.get_input_np_dtype(precision)
                 )
                 prefill_feed[f"past_key_values.{i}.value"] = np.zeros(
-                    (batch_size, config.num_key_value_heads, 0, head_size),
-                    dtype=self.get_input_np_dtype(precision),
+                    (batch_size, config.num_key_value_heads, 0, head_size), dtype=self.get_input_np_dtype(precision)
                 )
             prefill_feed = {k: v for k, v in prefill_feed.items() if k in onnx_input_names}
 
@@ -204,10 +194,7 @@ class TestRandomGemma(ExtTestCase):
 
         vocab = {"<unk>": 0, "</s>": 1, "<bos>": 2}
         tokenizer = PreTrainedTokenizerFast(
-            tokenizer_object=Tokenizer(WordLevel(vocab=vocab, unk_token="<unk>")),
-            bos_token="<bos>",
-            eos_token="</s>",
-            unk_token="<unk>",
+            tokenizer_object=Tokenizer(WordLevel(vocab=vocab, unk_token="<unk>")), bos_token="<bos>", eos_token="</s>", unk_token="<unk>"
         )
         tokenizer.save_pretrained(model_dir)
 
@@ -235,12 +222,7 @@ class TestRandomGemma(ExtTestCase):
         prompt_ids = torch.randint(3, config.vocab_size, (batch_size, 5)).to(provider)
 
         with torch.no_grad():
-            pt_output = model.generate(
-                prompt_ids,
-                max_new_tokens=max_new_tokens,
-                do_sample=False,
-                pad_token_id=config.eos_token_id,
-            )
+            pt_output = model.generate(prompt_ids, max_new_tokens=max_new_tokens, do_sample=False, pad_token_id=config.eos_token_id)
         pt_tokens = pt_output[0].tolist()
 
         current_ids = prompt_ids.detach().cpu().numpy().astype(np.int64)
@@ -248,12 +230,10 @@ class TestRandomGemma(ExtTestCase):
         past_kv = {}
         for i in range(num_hidden_layers):
             past_kv[f"past_key_values.{i}.key"] = np.zeros(
-                (batch_size, config.num_key_value_heads, 0, head_size),
-                dtype=self.get_input_np_dtype(precision),
+                (batch_size, config.num_key_value_heads, 0, head_size), dtype=self.get_input_np_dtype(precision)
             )
             past_kv[f"past_key_values.{i}.value"] = np.zeros(
-                (batch_size, config.num_key_value_heads, 0, head_size),
-                dtype=self.get_input_np_dtype(precision),
+                (batch_size, config.num_key_value_heads, 0, head_size), dtype=self.get_input_np_dtype(precision)
             )
 
         onnx_tokens = current_ids[0].tolist()

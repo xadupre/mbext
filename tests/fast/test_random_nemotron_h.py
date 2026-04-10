@@ -8,13 +8,7 @@ import unittest
 
 import numpy as np
 
-from modelbuilder.ext_test_case import (
-    ExtTestCase,
-    hide_stdout,
-    requires_cuda,
-    requires_transformers,
-    run_session_or_io_binding,
-)
+from modelbuilder.ext_test_case import ExtTestCase, hide_stdout, requires_cuda, requires_transformers, run_session_or_io_binding
 
 MODEL_NAME = "nvidia/NVIDIA-Nemotron-3-Nano-4B-BF16"
 
@@ -59,10 +53,7 @@ class TestNemotronH(ExtTestCase):
 
         vocab = {"<unk>": 0, "<s>": 1, "</s>": 2}
         tokenizer = PreTrainedTokenizerFast(
-            tokenizer_object=Tokenizer(WordLevel(vocab=vocab, unk_token="<unk>")),
-            bos_token="<s>",
-            eos_token="</s>",
-            unk_token="<unk>",
+            tokenizer_object=Tokenizer(WordLevel(vocab=vocab, unk_token="<unk>")), bos_token="<s>", eos_token="</s>", unk_token="<unk>"
         )
         tokenizer.save_pretrained(model_dir)
 
@@ -77,13 +68,7 @@ class TestNemotronH(ExtTestCase):
         )
 
         log_data = dict(
-            precision=precision,
-            model_id=MODEL_NAME,
-            experiment="forward",
-            provider=provider,
-            test=basename,
-            input_type="text",
-            kind="fast",
+            precision=precision, model_id=MODEL_NAME, experiment="forward", provider=provider, test=basename, input_type="text", kind="fast"
         )
 
         onnx_path = os.path.join(output_dir, "model.onnx")
@@ -107,12 +92,10 @@ class TestNemotronH(ExtTestCase):
             }
             for i in range(num_hidden_layers):
                 prefill_feed[f"past_key_values.{i}.key"] = np.zeros(
-                    (batch_size, config.num_key_value_heads, 0, head_size),
-                    dtype=self.get_input_np_dtype(precision),
+                    (batch_size, config.num_key_value_heads, 0, head_size), dtype=self.get_input_np_dtype(precision)
                 )
                 prefill_feed[f"past_key_values.{i}.value"] = np.zeros(
-                    (batch_size, config.num_key_value_heads, 0, head_size),
-                    dtype=self.get_input_np_dtype(precision),
+                    (batch_size, config.num_key_value_heads, 0, head_size), dtype=self.get_input_np_dtype(precision)
                 )
             prefill_feed = {k: v for k, v in prefill_feed.items() if k in onnx_input_names}
 
@@ -133,12 +116,7 @@ class TestNemotronH(ExtTestCase):
             np_prefill = pt_prefill.logits.detach().cpu().numpy()
             disc = self.get_numpy_discrepancy(np_prefill, ort_logits_np)
             self.log_results({"step": "prefill", **disc, **log_data})
-            atol = {
-                "fp16": 3e-2,
-                "bf16": 2e-2,
-                "fp32": 1e-3,
-                "int4": 0.5,
-            }
+            atol = {"fp16": 3e-2, "bf16": 2e-2, "fp32": 1e-3, "int4": 0.5}
             np.testing.assert_allclose(np_prefill, ort_logits_np, atol=atol[precision], rtol=1e-3)
 
         with self.subTest(step="decode"):
@@ -170,10 +148,7 @@ class TestNemotronH(ExtTestCase):
                 # NemotronH's _update_mamba_mask raises ValueError when
                 # past_key_values is a DynamicCache (attention-only).
                 # Run from scratch without cache to get the same logits.
-                all_ids = torch.cat(
-                    [input_ids, torch.tensor([[next_token]], dtype=torch.long).to(provider)],
-                    dim=1,
-                )
+                all_ids = torch.cat([input_ids, torch.tensor([[next_token]], dtype=torch.long).to(provider)], dim=1)
                 pt_decode = model(all_ids, use_cache=False)
                 pt_decode_logits = pt_decode.logits[:, -1:, :].detach().cpu().numpy()
 
@@ -181,12 +156,7 @@ class TestNemotronH(ExtTestCase):
             self.log_results({"step": "decode", **disc, **log_data})
             atol = {"fp16": 1e-2, "bf16": 2e-2, "fp32": 1e-3, "int4": 0.5}
             rtol = {"fp16": 10, "bf16": 10, "fp32": 1e-3, "int4": 10000}
-            np.testing.assert_allclose(
-                pt_decode_logits,
-                onnx_decode_logits,
-                atol=atol[precision],
-                rtol=rtol[precision],
-            )
+            np.testing.assert_allclose(pt_decode_logits, onnx_decode_logits, atol=atol[precision], rtol=rtol[precision])
 
     def common_nemotron_h_greedy_generation(self, precision, provider):
         import torch
@@ -227,10 +197,7 @@ class TestNemotronH(ExtTestCase):
 
         vocab = {"<unk>": 0, "<s>": 1, "</s>": 2}
         tokenizer = PreTrainedTokenizerFast(
-            tokenizer_object=Tokenizer(WordLevel(vocab=vocab, unk_token="<unk>")),
-            bos_token="<s>",
-            eos_token="</s>",
-            unk_token="<unk>",
+            tokenizer_object=Tokenizer(WordLevel(vocab=vocab, unk_token="<unk>")), bos_token="<s>", eos_token="</s>", unk_token="<unk>"
         )
         tokenizer.save_pretrained(model_dir)
 
@@ -262,11 +229,7 @@ class TestNemotronH(ExtTestCase):
             # _update_mamba_mask raises ValueError when past_key_values is a
             # DynamicCache containing only attention layers (no Mamba layers).
             pt_output = model.generate(
-                prompt_ids,
-                max_new_tokens=max_new_tokens,
-                do_sample=False,
-                pad_token_id=config.eos_token_id,
-                use_cache=False,
+                prompt_ids, max_new_tokens=max_new_tokens, do_sample=False, pad_token_id=config.eos_token_id, use_cache=False
             )
         pt_tokens = pt_output[0].tolist()
 
@@ -275,12 +238,10 @@ class TestNemotronH(ExtTestCase):
         past_kv = {}
         for i in range(num_hidden_layers):
             past_kv[f"past_key_values.{i}.key"] = np.zeros(
-                (batch_size, config.num_key_value_heads, 0, head_size),
-                dtype=self.get_input_np_dtype(precision),
+                (batch_size, config.num_key_value_heads, 0, head_size), dtype=self.get_input_np_dtype(precision)
             )
             past_kv[f"past_key_values.{i}.value"] = np.zeros(
-                (batch_size, config.num_key_value_heads, 0, head_size),
-                dtype=self.get_input_np_dtype(precision),
+                (batch_size, config.num_key_value_heads, 0, head_size), dtype=self.get_input_np_dtype(precision)
             )
 
         onnx_tokens = current_ids[0].tolist()

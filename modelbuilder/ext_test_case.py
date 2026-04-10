@@ -23,9 +23,7 @@ class PvVersion:
 
     def __init__(self, version: str):
         self.version = version
-        self.t_version = tuple(
-            self.to_int(i) for i in re.split(r"[.+]", version) if not i.startswith(("dev", "rc", "post", "cpu", "cu"))
-        )
+        self.t_version = tuple(self.to_int(i) for i in re.split(r"[.+]", version) if not i.startswith(("dev", "rc", "post", "cpu", "cu")))
 
     def __repr__(self) -> str:
         "usual"
@@ -256,24 +254,12 @@ class ExtTestCase(unittest.TestCase):
         if not os.path.exists(name):
             raise AssertionError(f"File or folder {name!r} does not exists.")
 
-    def assertEqualArray(
-        self,
-        expected: np.ndarray,
-        value: np.ndarray,
-        atol: float = 0,
-        rtol: float = 0,
-    ):
+    def assertEqualArray(self, expected: np.ndarray, value: np.ndarray, atol: float = 0, rtol: float = 0):
         self.assertEqual(expected.dtype, value.dtype)
         self.assertEqual(expected.shape, value.shape)
         np.testing.assert_allclose(expected, value, atol=atol, rtol=rtol)
 
-    def assertAlmostEqual(
-        self,
-        expected: np.ndarray,
-        value: np.ndarray,
-        atol: float = 0,
-        rtol: float = 0,
-    ):
+    def assertAlmostEqual(self, expected: np.ndarray, value: np.ndarray, atol: float = 0, rtol: float = 0):
         if not isinstance(expected, np.ndarray):
             expected = np.array(expected)
         if not isinstance(value, np.ndarray):
@@ -311,9 +297,7 @@ class ExtTestCase(unittest.TestCase):
         if not full.startswith(prefix):
             raise AssertionError(f"prefix={prefix!r} does not start string {full!r}.")
 
-    def check_ort(
-        self, onx: Union["onnx.ModelProto", str]  # noqa: F821
-    ) -> "onnxruntime.InferenceSession":  # noqa: F821
+    def check_ort(self, onx: Union["onnx.ModelProto", str]) -> "onnxruntime.InferenceSession":  # noqa: F821  # noqa: F821
         return self._check_with_ort(onx, cpu=True)
 
     def _check_with_ort(
@@ -324,10 +308,7 @@ class ExtTestCase(unittest.TestCase):
         providers = ["CPUExecutionProvider"]
         if not cpu and "CUDAExecutionProvider" in get_available_providers():
             providers.insert(0, "CUDAExecutionProvider")
-        return InferenceSession(
-            proto.SerializeToString() if hasattr(proto, "SerializeToString") else proto,
-            providers=providers,
-        )
+        return InferenceSession(proto.SerializeToString() if hasattr(proto, "SerializeToString") else proto, providers=providers)
 
     def get_numpy_discrepancy(self, tensor_a, tensor_b):
         return get_numpy_discrepancy(tensor_a, tensor_b)
@@ -381,12 +362,12 @@ class ExtTestCase(unittest.TestCase):
         torch_feed = {k: torch.from_numpy(v).to(provider) for k, v in onnx_feed.items()}
         cache = []
         for i in range(num_hidden_layers):
-            onnx_feed[f"past_key_values.{i}.key"] = np.random.randn(
-                batch_size, num_key_value_heads, past_length, head_size
-            ).astype(np_dtype)
-            onnx_feed[f"past_key_values.{i}.value"] = np.random.randn(
-                batch_size, num_key_value_heads, past_length, head_size
-            ).astype(np_dtype)
+            onnx_feed[f"past_key_values.{i}.key"] = np.random.randn(batch_size, num_key_value_heads, past_length, head_size).astype(
+                np_dtype
+            )
+            onnx_feed[f"past_key_values.{i}.value"] = np.random.randn(batch_size, num_key_value_heads, past_length, head_size).astype(
+                np_dtype
+            )
             cache.append(
                 (
                     torch.from_numpy(onnx_feed[f"past_key_values.{i}.key"]).to(provider),
@@ -415,22 +396,13 @@ def get_input_np_dtype(precision):
         import ml_dtypes
 
         return ml_dtypes.bfloat16
-    return {
-        "int4": np.float32,
-        "fp16": np.float16,
-        "fp32": np.float32,
-    }[precision]
+    return {"int4": np.float32, "fp16": np.float16, "fp32": np.float32}[precision]
 
 
 def get_input_torch_dtype(precision):
     import torch
 
-    return {
-        "int4": torch.float32,
-        "fp16": torch.float16,
-        "fp32": torch.float32,
-        "bf16": torch.bfloat16,
-    }[precision]
+    return {"int4": torch.float32, "fp16": torch.float16, "fp32": torch.float32, "bf16": torch.bfloat16}[precision]
 
 
 def ort_dtype_to_onnx_dtype(stype: str):
@@ -456,12 +428,9 @@ def ort_dtype_to_torch_dtype(stype: str):
 def ort_dtype_to_np_dtype(stype: str):
     import ml_dtypes
 
-    return {
-        "tensor(bfloat16)": ml_dtypes.bfloat16,
-        "tensor(float)": np.float32,
-        "tensor(float16)": np.float16,
-        "tensor(int64)": np.int64,
-    }[stype]
+    return {"tensor(bfloat16)": ml_dtypes.bfloat16, "tensor(float)": np.float32, "tensor(float16)": np.float16, "tensor(int64)": np.int64}[
+        stype
+    ]
 
 
 def onnx_dtype_to_torch_dtype(stype: str):
@@ -495,11 +464,7 @@ def edit_distance(str1, str2) -> int:
             else:
                 cost = 1
 
-            dp[i][j] = min(
-                dp[i - 1][j] + 1,  # Deletion
-                dp[i][j - 1] + 1,  # Insertion
-                dp[i - 1][j - 1] + cost,  # Substitution
-            )
+            dp[i][j] = min(dp[i - 1][j] + 1, dp[i][j - 1] + 1, dp[i - 1][j - 1] + cost)  # Deletion  # Insertion  # Substitution
 
     return dp[m][n]
 
@@ -513,12 +478,7 @@ def first_token_diff(expected: List[int], values: List[int]) -> Dict[str, Any]:
                 first_diff = i
                 break
     total_diff = edit_distance(expected, values)
-    return dict(
-        first_diff=first_diff,
-        delta_length=delta_length,
-        expected_length=len(expected),
-        total_diff=total_diff,
-    )
+    return dict(first_diff=first_diff, delta_length=delta_length, expected_length=len(expected), total_diff=total_diff)
 
 
 def get_numpy_discrepancy(array_a, array_b):
@@ -697,25 +657,11 @@ def _ort_io_binding_helper(sess, input_tensors, output_tensors, device="cuda:0")
             t = value.to(device) if value.device.type != ort_device else value
             t = t.contiguous()
         torch_refs.append(t)
-        bind.bind_input(
-            name,
-            ort_device,
-            ort_device_id,
-            ort_input_type[name],
-            list(t.shape),
-            t.data_ptr(),
-        )
+        bind.bind_input(name, ort_device, ort_device_id, ort_input_type[name], list(t.shape), t.data_ptr())
 
     for name, tensor in output_tensors.items():
         t = tensor.contiguous()
-        bind.bind_output(
-            name,
-            ort_device,
-            ort_device_id,
-            ort_output_type[name],
-            list(t.shape),
-            t.data_ptr(),
-        )
+        bind.bind_output(name, ort_device, ort_device_id, ort_output_type[name], list(t.shape), t.data_ptr())
 
     sess.run_with_iobinding(bind)
 
@@ -733,16 +679,7 @@ def results_to_dataframe(results: List[Dict[str, Any]]) -> str:
         df["%>0.1"] = df["%_gt_0.1"]
     if "%_gt_0.01" in df.columns:
         df["%>0.01"] = df["%_gt_0.01"]
-    for c in [
-        "genai_text",
-        "expected_text",
-        "expected_length",
-        "delta_length",
-        "dtype",
-        "shape",
-        "%_gt_0.1",
-        "%_gt_0.01",
-    ]:
+    for c in ["genai_text", "expected_text", "expected_length", "delta_length", "dtype", "shape", "%_gt_0.1", "%_gt_0.01"]:
         if c in df.columns:
             df = df.drop(c, axis=1)
     index = [c for c in ["model_id", "experiment", "precision", "provider", "input_type"] if c in df.columns]
@@ -787,49 +724,25 @@ def run_session_or_io_binding(
             }
             for i in range(num_hidden_layers):
                 torch_feed[f"past_key_values.{i}.key"] = torch.empty(
-                    batch_size,
-                    num_key_value_heads,
-                    0,
-                    head_size,
-                    dtype=get_input_torch_dtype(precision),
-                    device=device,
+                    batch_size, num_key_value_heads, 0, head_size, dtype=get_input_torch_dtype(precision), device=device
                 )
                 torch_feed[f"past_key_values.{i}.value"] = torch.empty(
-                    batch_size,
-                    num_key_value_heads,
-                    0,
-                    head_size,
-                    dtype=get_input_torch_dtype(precision),
-                    device=device,
+                    batch_size, num_key_value_heads, 0, head_size, dtype=get_input_torch_dtype(precision), device=device
                 )
             torch_feed = {k: v for k, v in torch_feed.items() if k in onnx_input_names}
 
             # Pre-allocate output tensors.
             # The builder upcasts bf16 logits to float32 for accuracy.
             ort_prefill_logits = torch.empty(
-                batch_size,
-                seq_len,
-                vocab_size,
-                dtype=onnx_dtype_to_torch_dtype(onnx_output_dtypes[onnx_output_names[0]]),
-                device=device,
+                batch_size, seq_len, vocab_size, dtype=onnx_dtype_to_torch_dtype(onnx_output_dtypes[onnx_output_names[0]]), device=device
             )
             torch_outputs = {"logits": ort_prefill_logits}
             for i in range(num_hidden_layers):
                 torch_outputs[f"present.{i}.key"] = torch.empty(
-                    batch_size,
-                    num_key_value_heads,
-                    seq_len,
-                    head_size,
-                    dtype=get_input_torch_dtype(precision),
-                    device=device,
+                    batch_size, num_key_value_heads, seq_len, head_size, dtype=get_input_torch_dtype(precision), device=device
                 )
                 torch_outputs[f"present.{i}.value"] = torch.empty(
-                    batch_size,
-                    num_key_value_heads,
-                    seq_len,
-                    head_size,
-                    dtype=get_input_torch_dtype(precision),
-                    device=device,
+                    batch_size, num_key_value_heads, seq_len, head_size, dtype=get_input_torch_dtype(precision), device=device
                 )
             _ort_io_binding_helper(sess, torch_feed, torch_outputs, device)
             # Extract float32 logits as numpy; keep KV cache as torch tensors
@@ -841,34 +754,19 @@ def run_session_or_io_binding(
         else:
             # The KV cache from prefill is already on CUDA as torch tensors.
             torch_feed = {
-                k: (torch.from_numpy(feed[k]).to(device) if isinstance(feed[k], np.ndarray) else feed[k].to(device))
-                for k in feed
+                k: (torch.from_numpy(feed[k]).to(device) if isinstance(feed[k], np.ndarray) else feed[k].to(device)) for k in feed
             }
             past_kv_len = results["present.0.key"].shape[2]
             ort_decode_logits = torch.empty(
-                batch_size,
-                1,
-                vocab_size,
-                dtype=onnx_dtype_to_torch_dtype(onnx_output_dtypes[onnx_output_names[0]]),
-                device=device,
+                batch_size, 1, vocab_size, dtype=onnx_dtype_to_torch_dtype(onnx_output_dtypes[onnx_output_names[0]]), device=device
             )
             torch_outputs = {"logits": ort_decode_logits}
             for i in range(num_hidden_layers):
                 torch_outputs[f"present.{i}.key"] = torch.empty(
-                    batch_size,
-                    num_key_value_heads,
-                    past_kv_len + 1,
-                    head_size,
-                    dtype=get_input_torch_dtype(precision),
-                    device=device,
+                    batch_size, num_key_value_heads, past_kv_len + 1, head_size, dtype=get_input_torch_dtype(precision), device=device
                 )
                 torch_outputs[f"present.{i}.value"] = torch.empty(
-                    batch_size,
-                    num_key_value_heads,
-                    past_kv_len + 1,
-                    head_size,
-                    dtype=get_input_torch_dtype(precision),
-                    device=device,
+                    batch_size, num_key_value_heads, past_kv_len + 1, head_size, dtype=get_input_torch_dtype(precision), device=device
                 )
             _ort_io_binding_helper(sess, torch_feed, torch_outputs, device)
             ort_logits_np = ort_decode_logits.detach().cpu().numpy()
@@ -890,9 +788,7 @@ def fill_with_empty_cache(onnx_feed, session, provider, batch_size=1):
         if inp.name in onnx_feed:
             continue
         shape = list(inp.shape)
-        assert (
-            len(shape) == 4
-        ), f"issue with shape={shape}, name={inp.name!r}, type={inp.type}, available={list(onnx_feed)}"
+        assert len(shape) == 4, f"issue with shape={shape}, name={inp.name!r}, type={inp.type}, available={list(onnx_feed)}"
         shape[2] = 0
         shape[0] = batch_size
         dtype = ort_dtype_to_np_dtype(inp.type)

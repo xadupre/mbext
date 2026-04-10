@@ -8,12 +8,7 @@ import unittest
 
 import numpy as np
 
-from modelbuilder.ext_test_case import (
-    ExtTestCase,
-    hide_stdout,
-    requires_cuda,
-    run_session_or_io_binding,
-)
+from modelbuilder.ext_test_case import ExtTestCase, hide_stdout, requires_cuda, run_session_or_io_binding
 
 _MODEL_NAME = "microsoft/Phi-3.5-MoE-instruct"
 
@@ -70,11 +65,7 @@ def _make_phimoe_config():
     )
     # Set rope_scaling directly to bypass version-specific constructor
     # validation.  Both transformers 4.x and 5.x accept attribute assignment.
-    config.rope_scaling = {
-        "type": "longrope",
-        "short_factor": [1.0] * _ROTARY_DIM_HALF,
-        "long_factor": [1.0] * _ROTARY_DIM_HALF,
-    }
+    config.rope_scaling = {"type": "longrope", "short_factor": [1.0] * _ROTARY_DIM_HALF, "long_factor": [1.0] * _ROTARY_DIM_HALF}
     # Override architectures so the builder dispatches to Phi3MoELongRoPEModel.
     # Done after rope_scaling is set to avoid version-specific validation.
     config.architectures = ["PhiMoEForCausalLM"]
@@ -223,10 +214,7 @@ def _make_phimoe_torch_model(config):
                 new_pkv.append(pkv)
             x = self.model.norm(x)
             logits = self.lm_head(x)
-            return CausalLMOutputWithPast(
-                logits=logits,
-                past_key_values=tuple(new_pkv),
-            )
+            return CausalLMOutputWithPast(logits=logits, past_key_values=tuple(new_pkv))
 
     return PhiMoEForCausalLM(config)
 
@@ -356,22 +344,15 @@ class TestPhiMoE(ExtTestCase):
             }
             for i in range(num_hidden_layers):
                 prefill_feed[f"past_key_values.{i}.key"] = np.zeros(
-                    (batch_size, _NUM_KV_HEADS, 0, head_size),
-                    dtype=self.get_input_np_dtype(precision),
+                    (batch_size, _NUM_KV_HEADS, 0, head_size), dtype=self.get_input_np_dtype(precision)
                 )
                 prefill_feed[f"past_key_values.{i}.value"] = np.zeros(
-                    (batch_size, _NUM_KV_HEADS, 0, head_size),
-                    dtype=self.get_input_np_dtype(precision),
+                    (batch_size, _NUM_KV_HEADS, 0, head_size), dtype=self.get_input_np_dtype(precision)
                 )
             prefill_feed = {k: v for k, v in prefill_feed.items() if k in onnx_input_names}
 
             prefill_results, prefill_logits = run_session_or_io_binding(
-                use_iobinding=False,
-                precision=precision,
-                provider="cuda",
-                feed=prefill_feed,
-                sess=sess,
-                vocab_size=config.vocab_size,
+                use_iobinding=False, precision=precision, provider="cuda", feed=prefill_feed, sess=sess, vocab_size=config.vocab_size
             )
             self.assertEqual(prefill_logits.shape, (batch_size, seq_len, config.vocab_size))
 

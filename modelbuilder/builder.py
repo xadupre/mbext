@@ -61,14 +61,10 @@ def check_extra_options(kv_pairs, execution_provider):
     if "exclude_lm_head" in kv_pairs and "include_hidden_states" in kv_pairs:
         # 'exclude_lm_head' is for when 'hidden_states' are outputted and 'logits' are not outputted
         # 'include_hidden_states' is for when 'hidden_states' are outputted and 'logits' are outputted
-        raise ValueError(
-            "Both 'exclude_lm_head' and 'include_hidden_states' cannot be used together. Please use only one of them at once."
-        )
+        raise ValueError("Both 'exclude_lm_head' and 'include_hidden_states' cannot be used together. Please use only one of them at once.")
 
     if kv_pairs.get("enable_webgpu_graph", False) and execution_provider != "webgpu":
-        print(
-            "WARNING: enable_webgpu_graph is only supported with WebGPU execution provider. Disabling enable_webgpu_graph."
-        )
+        print("WARNING: enable_webgpu_graph is only supported with WebGPU execution provider. Disabling enable_webgpu_graph.")
         kv_pairs["enable_webgpu_graph"] = False
 
 
@@ -108,9 +104,7 @@ def parse_hf_token(hf_token):
 def set_io_dtype(precision, execution_provider, extra_options) -> ir.DataType:
     int4_cpu = precision == "int4" and execution_provider == "cpu"
     fp32_webgpu = execution_provider == "webgpu" and extra_options.get("use_webgpu_fp32", False)
-    bf16_cuda = (
-        precision == "int4" and execution_provider in {"cuda", "trt-rtx"} and extra_options.get("use_cuda_bf16", False)
-    )
+    bf16_cuda = precision == "int4" and execution_provider in {"cuda", "trt-rtx"} and extra_options.get("use_cuda_bf16", False)
 
     if precision in {"int8", "fp32"} or int4_cpu or fp32_webgpu:
         # FP32 precision
@@ -128,24 +122,12 @@ def set_onnx_dtype(precision: str, extra_options: dict[str, Any]) -> ir.DataType
     if precision == "int4":
         return ir.DataType.INT4 if extra_options.get("int4_is_symmetric", True) else ir.DataType.UINT4
 
-    to_onnx_dtype = {
-        "fp32": ir.DataType.FLOAT,
-        "fp16": ir.DataType.FLOAT16,
-        "bf16": ir.DataType.BFLOAT16,
-    }
+    to_onnx_dtype = {"fp32": ir.DataType.FLOAT, "fp16": ir.DataType.FLOAT16, "bf16": ir.DataType.BFLOAT16}
     return to_onnx_dtype[precision]
 
 
 @torch.no_grad
-def create_model(
-    model_name,
-    input_path,
-    output_dir,
-    precision,
-    execution_provider,
-    cache_dir,
-    **extra_options,
-):
+def create_model(model_name, input_path, output_dir, precision, execution_provider, cache_dir, **extra_options):
     if execution_provider == "NvTensorRtRtx":
         execution_provider = "trt-rtx"
         extra_options["use_qdq"] = True
@@ -164,12 +146,7 @@ def create_model(
     if "adapter_path" in extra_options:
         from peft import PeftConfig
 
-        peft_config = PeftConfig.from_pretrained(
-            extra_options["adapter_path"],
-            token=hf_token,
-            trust_remote_code=hf_remote,
-            **extra_kwargs,
-        )
+        peft_config = PeftConfig.from_pretrained(extra_options["adapter_path"], token=hf_token, trust_remote_code=hf_remote, **extra_kwargs)
         config.update(peft_config.__dict__)
 
     # Set input/output precision of ONNX model
@@ -217,9 +194,7 @@ def create_model(
         print(
             "WARNING: This model loses accuracy with float16 precision. It is recommended to set `--precision bf16` or `--precision int4 --extra_options use_cuda_bf16=true` by default."
         )
-        print(
-            "WARNING: This is only generating the text component of the model. Setting `--extra_options exclude_embeds=true` by default."
-        )
+        print("WARNING: This is only generating the text component of the model. Setting `--extra_options exclude_embeds=true` by default.")
         extra_options["exclude_embeds"] = True
         from .builders.gemma import Gemma3Model
 
@@ -267,9 +242,7 @@ def create_model(
         )
         from .builders.mistral import Ministral3ConditionalGenerationModel
 
-        onnx_model = Ministral3ConditionalGenerationModel(
-            config, io_dtype, onnx_dtype, execution_provider, cache_dir, extra_options
-        )
+        onnx_model = Ministral3ConditionalGenerationModel(config, io_dtype, onnx_dtype, execution_provider, cache_dir, extra_options)
     elif config.architectures[0] == "MistralNeMoForCausalLM":
         from .builders.mistral import MistralNeMoModel
 
@@ -298,61 +271,40 @@ def create_model(
         from .builders.phi import PhiModel
 
         onnx_model = PhiModel(config, io_dtype, onnx_dtype, execution_provider, cache_dir, extra_options)
-    elif (
-        config.architectures[0] == "Phi3ForCausalLM"
-        and config.max_position_embeddings == config.original_max_position_embeddings
-    ):
+    elif config.architectures[0] == "Phi3ForCausalLM" and config.max_position_embeddings == config.original_max_position_embeddings:
         from .builders.phi import Phi3MiniModel
 
         onnx_model = Phi3MiniModel(config, io_dtype, onnx_dtype, execution_provider, cache_dir, extra_options)
-    elif (
-        config.architectures[0] == "Phi3ForCausalLM"
-        and config.max_position_embeddings != config.original_max_position_embeddings
-    ):
+    elif config.architectures[0] == "Phi3ForCausalLM" and config.max_position_embeddings != config.original_max_position_embeddings:
         from .builders.phi import Phi3MiniLongRoPEModel
 
         onnx_model = Phi3MiniLongRoPEModel(config, io_dtype, onnx_dtype, execution_provider, cache_dir, extra_options)
-    elif (
-        config.architectures[0] == "PhiMoEForCausalLM"
-        and config.max_position_embeddings != config.original_max_position_embeddings
-    ):
+    elif config.architectures[0] == "PhiMoEForCausalLM" and config.max_position_embeddings != config.original_max_position_embeddings:
         print(
             "WARNING: This model only works for CUDA currently because `MoE` is only supported for CUDA in ONNX Runtime. Setting `--execution_provider cuda` by default."
         )
-        print(
-            "WARNING: This model currently only supports the quantized version. Setting `--precision int4` by default."
-        )
+        print("WARNING: This model currently only supports the quantized version. Setting `--precision int4` by default.")
         from .builders.phi import Phi3MoELongRoPEModel
 
         execution_provider = "cuda"
         onnx_dtype = set_onnx_dtype("int4", extra_options)
         onnx_model = Phi3MoELongRoPEModel(config, io_dtype, onnx_dtype, execution_provider, cache_dir, extra_options)
-    elif (
-        config.architectures[0] == "Phi3SmallForCausalLM"
-        and config.max_position_embeddings == config.original_max_position_embeddings
-    ):
+    elif config.architectures[0] == "Phi3SmallForCausalLM" and config.max_position_embeddings == config.original_max_position_embeddings:
         from .builders.phi import Phi3SmallModel
 
         onnx_model = Phi3SmallModel(config, io_dtype, onnx_dtype, execution_provider, cache_dir, extra_options)
-    elif (
-        config.architectures[0] == "Phi3SmallForCausalLM"
-        and config.max_position_embeddings != config.original_max_position_embeddings
-    ):
+    elif config.architectures[0] == "Phi3SmallForCausalLM" and config.max_position_embeddings != config.original_max_position_embeddings:
         from .builders.phi import Phi3SmallLongRoPEModel
 
         onnx_model = Phi3SmallLongRoPEModel(config, io_dtype, onnx_dtype, execution_provider, cache_dir, extra_options)
     elif config.architectures[0] == "Phi3VForCausalLM":
-        print(
-            "WARNING: This is only generating the text component of the model. Setting `--extra_options exclude_embeds=true` by default."
-        )
+        print("WARNING: This is only generating the text component of the model. Setting `--extra_options exclude_embeds=true` by default.")
         extra_options["exclude_embeds"] = True
         from .builders.phi import Phi3VModel
 
         onnx_model = Phi3VModel(config, io_dtype, onnx_dtype, execution_provider, cache_dir, extra_options)
     elif config.architectures[0] == "Phi4MMForCausalLM":
-        print(
-            "WARNING: This is only generating the text component of the model. Setting `--extra_options exclude_embeds=true` by default."
-        )
+        print("WARNING: This is only generating the text component of the model. Setting `--extra_options exclude_embeds=true` by default.")
         extra_options["exclude_embeds"] = True
         from .builders.phi import Phi4MMModel
 
@@ -366,9 +318,7 @@ def create_model(
         for key in text_config:
             if not hasattr(config, key):
                 setattr(config, key, getattr(text_config, key))
-        print(
-            "WARNING: This is only generating the text component of the model. Setting `--extra_options exclude_embeds=true` by default."
-        )
+        print("WARNING: This is only generating the text component of the model. Setting `--extra_options exclude_embeds=true` by default.")
         extra_options["exclude_embeds"] = True
         from .builders.qwen import Qwen25VLTextModel
 
@@ -386,9 +336,7 @@ def create_model(
         for key in text_config:
             if not hasattr(config, key):
                 setattr(config, key, getattr(text_config, key))
-        print(
-            "WARNING: This is only generating the text component of the model. Setting `--extra_options exclude_embeds=true` by default."
-        )
+        print("WARNING: This is only generating the text component of the model. Setting `--extra_options exclude_embeds=true` by default.")
         extra_options["exclude_embeds"] = True
         from .builders.qwen import Qwen3VLTextModel
 
@@ -451,13 +399,7 @@ def get_args():
         help="Path to folder to store ONNX model and additional files (e.g. GenAI config, external data files, etc.)",
     )
 
-    parser.add_argument(
-        "-p",
-        "--precision",
-        required=True,
-        choices=["int4", "bf16", "fp16", "fp32"],
-        help="Precision of model",
-    )
+    parser.add_argument("-p", "--precision", required=True, choices=["int4", "bf16", "fp16", "fp32"], help="Precision of model")
 
     parser.add_argument(
         "-e",
@@ -567,12 +509,4 @@ def get_args():
 if __name__ == "__main__":
     args = get_args()
     extra_options = parse_extra_options(args.extra_options, args.execution_provider)
-    create_model(
-        args.model_name,
-        args.input,
-        args.output,
-        args.precision,
-        args.execution_provider,
-        args.cache_dir,
-        **extra_options,
-    )
+    create_model(args.model_name, args.input, args.output, args.precision, args.execution_provider, args.cache_dir, **extra_options)

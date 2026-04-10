@@ -47,10 +47,7 @@ class TestTrainedMinistral3BInstruct(ExtTestCase):
             onnx_path,
             model,
             dict(inputs_embeds=inputs_embeds, attention_mask=attention_mask),
-            dict(
-                inputs_embeds=inputs_embeds.detach().cpu().numpy(),
-                attention_mask=attention_mask.detach().cpu().numpy(),
-            ),
+            dict(inputs_embeds=inputs_embeds.detach().cpu().numpy(), attention_mask=attention_mask.detach().cpu().numpy()),
         )
 
     def _common_trained_discrepancies(self, precision, provider):
@@ -133,12 +130,7 @@ class TestTrainedMinistral3BInstruct(ExtTestCase):
         inputs = inputs.to("cuda")
         prompt_len = inputs["input_ids"].shape[1]
         with torch.no_grad():
-            pt_output = model.generate(
-                **inputs,
-                max_new_tokens=max_new_tokens,
-                do_sample=False,
-                pad_token_id=tokenizer.eos_token_id,
-            )
+            pt_output = model.generate(**inputs, max_new_tokens=max_new_tokens, do_sample=False, pad_token_id=tokenizer.eos_token_id)
         # Keep only the newly generated tokens (exclude the prompt).
         pt_tokens = pt_output[0][prompt_len:].tolist()
 
@@ -148,12 +140,7 @@ class TestTrainedMinistral3BInstruct(ExtTestCase):
         og_model = og.Model(os.path.dirname(onnx_path))
 
         params = og.GeneratorParams(og_model)
-        params.set_search_options(
-            do_sample=False,
-            max_length=prompt_len + max_new_tokens,
-            temperature=1.0,
-            top_k=1,
-        )
+        params.set_search_options(do_sample=False, max_length=prompt_len + max_new_tokens, temperature=1.0, top_k=1)
 
         generator = og.Generator(og_model, params)
         generator.append_tokens(inputs["input_ids"])
@@ -221,12 +208,7 @@ class TestTrainedMinistral3BInstruct(ExtTestCase):
         inputs = inputs.to("cuda")
         prompt_len = inputs["input_ids"].shape[1]
         with torch.no_grad():
-            pt_output = model.generate(
-                **inputs,
-                max_new_tokens=max_new_tokens,
-                do_sample=False,
-                pad_token_id=tokenizer.eos_token_id,
-            )
+            pt_output = model.generate(**inputs, max_new_tokens=max_new_tokens, do_sample=False, pad_token_id=tokenizer.eos_token_id)
         # Keep only the newly generated tokens (exclude the prompt).
         pt_tokens = pt_output[0][prompt_len:].tolist()
 
@@ -236,12 +218,7 @@ class TestTrainedMinistral3BInstruct(ExtTestCase):
         og_model = og.Model(os.path.dirname(onnx_path))
 
         params = og.GeneratorParams(og_model)
-        params.set_search_options(
-            do_sample=False,
-            max_length=prompt_len + max_new_tokens,
-            temperature=1.0,
-            top_k=1,
-        )
+        params.set_search_options(do_sample=False, max_length=prompt_len + max_new_tokens, temperature=1.0, top_k=1)
 
         generator = og.Generator(og_model, params)
         generator.append_tokens(inputs["input_ids"])

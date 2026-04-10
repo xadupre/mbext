@@ -9,9 +9,7 @@ import torch
 import transformers
 
 
-def _flatten_key_value_cache(
-    cache: transformers.cache_utils.DynamicCache,
-) -> Tuple[List[Any], torch.utils._pytree.Context]:
+def _flatten_key_value_cache(cache: transformers.cache_utils.DynamicCache) -> Tuple[List[Any], torch.utils._pytree.Context]:
     keys = [lay.keys for lay in cache.layers]
     values = [lay.values for lay in cache.layers]
     flat = list(itertools.chain.from_iterable(zip(keys, values)))
@@ -28,20 +26,14 @@ def _flatten_with_keys_cache(
     return [(torch.utils._pytree.MappingKey(k), v) for k, v in zip(context, values)], context
 
 
-def _unflatten_cache(
-    values: List[Any],
-    context: torch.utils._pytree.Context,
-    output_type=None,
-) -> transformers.cache_utils.DynamicCache:
+def _unflatten_cache(values: List[Any], context: torch.utils._pytree.Context, output_type=None) -> transformers.cache_utils.DynamicCache:
     """Restores a cache from python objects."""
     expected = list(itertools.chain.from_iterable((f"key_{i}", f"value_{i}") for i in range(len(values) // 2)))
     assert expected == context, f"Does not seem to be a dynamic cache {expected} != {context}"
     res = transformers.cache_utils.DynamicCache()
     for i in range(len(values) // 2):
         res.update(values[i * 2], values[i * 2 + i], layer_idx=i)
-    assert output_type is None or isinstance(
-        res, output_type
-    ), f"Type mismatch between {output_type} (expected) and {type(res)}"
+    assert output_type is None or isinstance(res, output_type), f"Type mismatch between {output_type} (expected) and {type(res)}"
     return res
 
 

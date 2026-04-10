@@ -8,12 +8,7 @@ import unittest
 
 import numpy as np
 
-from modelbuilder.ext_test_case import (
-    ExtTestCase,
-    run_session_or_io_binding,
-    hide_stdout,
-    requires_cuda,
-)
+from modelbuilder.ext_test_case import ExtTestCase, run_session_or_io_binding, hide_stdout, requires_cuda
 
 SMOLLM3_MODEL_NAME = "HuggingFaceTB/SmolLM3-3B"
 
@@ -54,10 +49,7 @@ class TestSmolLM3(ExtTestCase):
 
         vocab = {"<unk>": 0, "<s>": 1, "</s>": 2}
         tokenizer = PreTrainedTokenizerFast(
-            tokenizer_object=Tokenizer(WordLevel(vocab=vocab, unk_token="<unk>")),
-            bos_token="<s>",
-            eos_token="</s>",
-            unk_token="<unk>",
+            tokenizer_object=Tokenizer(WordLevel(vocab=vocab, unk_token="<unk>")), bos_token="<s>", eos_token="</s>", unk_token="<unk>"
         )
         tokenizer.save_pretrained(model_dir)
 
@@ -100,12 +92,10 @@ class TestSmolLM3(ExtTestCase):
             }
             for i in range(num_hidden_layers):
                 prefill_feed[f"past_key_values.{i}.key"] = np.zeros(
-                    (batch_size, config.num_key_value_heads, 0, head_size),
-                    dtype=self.get_input_np_dtype(precision),
+                    (batch_size, config.num_key_value_heads, 0, head_size), dtype=self.get_input_np_dtype(precision)
                 )
                 prefill_feed[f"past_key_values.{i}.value"] = np.zeros(
-                    (batch_size, config.num_key_value_heads, 0, head_size),
-                    dtype=self.get_input_np_dtype(precision),
+                    (batch_size, config.num_key_value_heads, 0, head_size), dtype=self.get_input_np_dtype(precision)
                 )
             prefill_feed = {k: v for k, v in prefill_feed.items() if k in onnx_input_names}
 
@@ -200,10 +190,7 @@ class TestSmolLM3(ExtTestCase):
 
         vocab = {"<unk>": 0, "<s>": 1, "</s>": 2}
         tokenizer = PreTrainedTokenizerFast(
-            tokenizer_object=Tokenizer(WordLevel(vocab=vocab, unk_token="<unk>")),
-            bos_token="<s>",
-            eos_token="</s>",
-            unk_token="<unk>",
+            tokenizer_object=Tokenizer(WordLevel(vocab=vocab, unk_token="<unk>")), bos_token="<s>", eos_token="</s>", unk_token="<unk>"
         )
         tokenizer.save_pretrained(model_dir)
 
@@ -230,12 +217,7 @@ class TestSmolLM3(ExtTestCase):
         prompt_ids = torch.randint(3, config.vocab_size, (batch_size, 5)).to(provider)
 
         with torch.no_grad():
-            pt_output = model.generate(
-                prompt_ids,
-                max_new_tokens=max_new_tokens,
-                do_sample=False,
-                pad_token_id=config.eos_token_id,
-            )
+            pt_output = model.generate(prompt_ids, max_new_tokens=max_new_tokens, do_sample=False, pad_token_id=config.eos_token_id)
         pt_tokens = pt_output[0].tolist()
 
         current_ids = prompt_ids.detach().cpu().numpy().astype(np.int64)
@@ -243,12 +225,10 @@ class TestSmolLM3(ExtTestCase):
         past_kv = {}
         for i in range(num_hidden_layers):
             past_kv[f"past_key_values.{i}.key"] = np.zeros(
-                (batch_size, config.num_key_value_heads, 0, head_size),
-                dtype=self.get_input_np_dtype(precision),
+                (batch_size, config.num_key_value_heads, 0, head_size), dtype=self.get_input_np_dtype(precision)
             )
             past_kv[f"past_key_values.{i}.value"] = np.zeros(
-                (batch_size, config.num_key_value_heads, 0, head_size),
-                dtype=self.get_input_np_dtype(precision),
+                (batch_size, config.num_key_value_heads, 0, head_size), dtype=self.get_input_np_dtype(precision)
             )
 
         onnx_tokens = current_ids[0].tolist()

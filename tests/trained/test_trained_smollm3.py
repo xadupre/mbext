@@ -40,14 +40,8 @@ class TestTrainedSmolLM3(ExtTestCase):
         return (
             onnx_path,
             model,
-            dict(
-                input_ids=inputs["input_ids"].to(provider),
-                attention_mask=inputs["attention_mask"].to(provider),
-            ),
-            dict(
-                input_ids=inputs["input_ids"].detach().cpu().numpy(),
-                attention_mask=inputs["attention_mask"].detach().cpu().numpy(),
-            ),
+            dict(input_ids=inputs["input_ids"].to(provider), attention_mask=inputs["attention_mask"].to(provider)),
+            dict(input_ids=inputs["input_ids"].detach().cpu().numpy(), attention_mask=inputs["attention_mask"].detach().cpu().numpy()),
             tokenizer,
         )
 
@@ -108,12 +102,7 @@ class TestTrainedSmolLM3(ExtTestCase):
         # ------------------------------------------------------------------
         prompt_len = torch_feed["input_ids"].shape[1]
         with torch.no_grad():
-            pt_output = model.generate(
-                **torch_feed,
-                max_new_tokens=max_new_tokens,
-                do_sample=False,
-                pad_token_id=tokenizer.eos_token_id,
-            )
+            pt_output = model.generate(**torch_feed, max_new_tokens=max_new_tokens, do_sample=False, pad_token_id=tokenizer.eos_token_id)
         # Keep only the newly generated tokens (exclude the prompt).
         pt_tokens = pt_output[0][prompt_len:].tolist()
 
@@ -123,12 +112,7 @@ class TestTrainedSmolLM3(ExtTestCase):
         og_model = og.Model(os.path.dirname(onnx_path))
 
         params = og.GeneratorParams(og_model)
-        params.set_search_options(
-            do_sample=False,
-            max_length=max_new_tokens,
-            temperature=1.0,
-            top_k=1,
-        )
+        params.set_search_options(do_sample=False, max_length=max_new_tokens, temperature=1.0, top_k=1)
 
         generator = og.Generator(og_model, params)
         generator.append_tokens(onnx_feed["input_ids"])

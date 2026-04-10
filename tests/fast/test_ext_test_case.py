@@ -10,12 +10,7 @@ import unittest
 
 import numpy as np
 
-from modelbuilder.ext_test_case import (
-    ExtTestCase,
-    _make_json_serializable,
-    _read_results,
-    results_to_dataframe,
-)
+from modelbuilder.ext_test_case import ExtTestCase, _make_json_serializable, _read_results, results_to_dataframe
 
 
 class TestResultsToMarkdown(unittest.TestCase):
@@ -53,10 +48,7 @@ class TestResultsToMarkdown(unittest.TestCase):
 
     def test_union_of_keys(self):
         """Columns should be the union of all keys across all rows."""
-        rows = [
-            {"a": 1, "b": 2, "provider": "cpu"},
-            {"b": 3, "c": 4, "provider": "cpu"},
-        ]
+        rows = [{"a": 1, "b": 2, "provider": "cpu"}, {"b": 3, "c": 4, "provider": "cpu"}]
         md = results_to_dataframe(rows).to_markdown()
         header = md.splitlines()[0]
         self.assertIn("a", header)
@@ -64,10 +56,7 @@ class TestResultsToMarkdown(unittest.TestCase):
         self.assertIn("c", header)
 
     def test_missing_value_rendered_as_empty(self):
-        rows = [
-            {"a": 1, "b": 2, "provider": "cpu"},
-            {"a": 3, "provider": "cpu"},
-        ]
+        rows = [{"a": 1, "b": 2, "provider": "cpu"}, {"a": 3, "provider": "cpu"}]
         md = results_to_dataframe(rows).to_markdown()
         last_row = md.splitlines()[-1]
         # The second row has no 'b' key – its cell should be empty.

@@ -10,12 +10,7 @@ import unittest
 
 import numpy as np
 
-from modelbuilder.ext_test_case import (
-    ExtTestCase,
-    hide_stdout,
-    requires_cuda,
-    run_session_or_io_binding,
-)
+from modelbuilder.ext_test_case import ExtTestCase, hide_stdout, requires_cuda, run_session_or_io_binding
 
 PHI3_SMALL_MODEL_NAME = "microsoft/Phi-3-small-8k-instruct"
 
@@ -438,10 +433,7 @@ class TestPhi3Small(ExtTestCase):
         # Minimal tokenizer (only BOS/EOS/UNK needed)
         vocab = {"<unk>": 0, "<s>": 1, "</s>": 2}
         tokenizer = PreTrainedTokenizerFast(
-            tokenizer_object=Tokenizer(WordLevel(vocab=vocab, unk_token="<unk>")),
-            bos_token="<s>",
-            eos_token="</s>",
-            unk_token="<unk>",
+            tokenizer_object=Tokenizer(WordLevel(vocab=vocab, unk_token="<unk>")), bos_token="<s>", eos_token="</s>", unk_token="<unk>"
         )
         tokenizer.save_pretrained(model_dir)
 
@@ -456,9 +448,7 @@ class TestPhi3Small(ExtTestCase):
         basename = f"test_discrepancies_phi3_small_{precision}_{provider}"
 
         torch.manual_seed(0)
-        model_dir, output_dir, cache_dir, model, config_obj = self._prepare_model_dir(
-            basename, num_hidden_layers=num_hidden_layers
-        )
+        model_dir, output_dir, cache_dir, model, config_obj = self._prepare_model_dir(basename, num_hidden_layers=num_hidden_layers)
         model = model.to(provider)
 
         create_model(
@@ -502,12 +492,10 @@ class TestPhi3Small(ExtTestCase):
             }
             for i in range(num_hidden_layers):
                 prefill_feed[f"past_key_values.{i}.key"] = np.zeros(
-                    (batch_size, config_obj.num_key_value_heads, 0, head_size),
-                    dtype=self.get_input_np_dtype(precision),
+                    (batch_size, config_obj.num_key_value_heads, 0, head_size), dtype=self.get_input_np_dtype(precision)
                 )
                 prefill_feed[f"past_key_values.{i}.value"] = np.zeros(
-                    (batch_size, config_obj.num_key_value_heads, 0, head_size),
-                    dtype=self.get_input_np_dtype(precision),
+                    (batch_size, config_obj.num_key_value_heads, 0, head_size), dtype=self.get_input_np_dtype(precision)
                 )
             prefill_feed = {k: v for k, v in prefill_feed.items() if k in onnx_input_names}
 
@@ -565,12 +553,7 @@ class TestPhi3Small(ExtTestCase):
             self.log_results({"step": "decode", **disc, **log_data})
             atol = {"fp16": 5e-2, "bf16": 5e-2, "fp32": 1e-2, "int4": 0.5}
             rtol = {"fp16": 10, "bf16": 10, "fp32": 1e-2, "int4": 10000}
-            np.testing.assert_allclose(
-                pt_decode_logits,
-                onnx_decode_logits,
-                atol=atol[precision],
-                rtol=rtol[precision],
-            )
+            np.testing.assert_allclose(pt_decode_logits, onnx_decode_logits, atol=atol[precision], rtol=rtol[precision])
 
     def common_phi3_small_greedy_generation(self, precision, provider):
         import torch
@@ -581,9 +564,7 @@ class TestPhi3Small(ExtTestCase):
         basename = f"test_generation_phi3_small_{precision}_{provider}"
 
         torch.manual_seed(42)
-        model_dir, output_dir, cache_dir, model, config_obj = self._prepare_model_dir(
-            basename, num_hidden_layers=num_hidden_layers
-        )
+        model_dir, output_dir, cache_dir, model, config_obj = self._prepare_model_dir(basename, num_hidden_layers=num_hidden_layers)
         model = model.to(provider)
 
         create_model(
@@ -629,12 +610,10 @@ class TestPhi3Small(ExtTestCase):
         past_kv = {}
         for i in range(num_hidden_layers):
             past_kv[f"past_key_values.{i}.key"] = np.zeros(
-                (batch_size, config_obj.num_key_value_heads, 0, head_size),
-                dtype=self.get_input_np_dtype(precision),
+                (batch_size, config_obj.num_key_value_heads, 0, head_size), dtype=self.get_input_np_dtype(precision)
             )
             past_kv[f"past_key_values.{i}.value"] = np.zeros(
-                (batch_size, config_obj.num_key_value_heads, 0, head_size),
-                dtype=self.get_input_np_dtype(precision),
+                (batch_size, config_obj.num_key_value_heads, 0, head_size), dtype=self.get_input_np_dtype(precision)
             )
 
         onnx_tokens = current_ids[0].tolist()
@@ -818,13 +797,7 @@ class TestPhi3Small(ExtTestCase):
                 return self._synthetic_weights
 
         onnx_builder = _Phi3SmallLongRoPEWithSyntheticWeights(
-            config_obj,
-            io_dtype,
-            onnx_dtype,
-            provider,
-            cache_dir,
-            extra_options,
-            synthetic_weights=model_for_onnx,
+            config_obj, io_dtype, onnx_dtype, provider, cache_dir, extra_options, synthetic_weights=model_for_onnx
         )
         onnx_builder.make_model(cache_dir)
         onnx_builder.save_model(output_dir)
@@ -853,12 +826,10 @@ class TestPhi3Small(ExtTestCase):
             }
             for i in range(num_hidden_layers):
                 prefill_feed[f"past_key_values.{i}.key"] = np.zeros(
-                    (batch_size, config_obj.num_key_value_heads, 0, head_size),
-                    dtype=self.get_input_np_dtype(precision),
+                    (batch_size, config_obj.num_key_value_heads, 0, head_size), dtype=self.get_input_np_dtype(precision)
                 )
                 prefill_feed[f"past_key_values.{i}.value"] = np.zeros(
-                    (batch_size, config_obj.num_key_value_heads, 0, head_size),
-                    dtype=self.get_input_np_dtype(precision),
+                    (batch_size, config_obj.num_key_value_heads, 0, head_size), dtype=self.get_input_np_dtype(precision)
                 )
             prefill_feed = {k: v for k, v in prefill_feed.items() if k in onnx_input_names}
 
@@ -911,12 +882,7 @@ class TestPhi3Small(ExtTestCase):
             self.log_results({"step": "decode", **disc, **log_data})
             atol = {"fp16": 5e-2, "bf16": 5e-2, "fp32": 1e-2, "int4": 0.5}
             rtol = {"fp16": 10, "bf16": 10, "fp32": 1e-2, "int4": 10000}
-            np.testing.assert_allclose(
-                pt_decode_logits,
-                onnx_decode_logits,
-                atol=atol[precision],
-                rtol=rtol[precision],
-            )
+            np.testing.assert_allclose(pt_decode_logits, onnx_decode_logits, atol=atol[precision], rtol=rtol[precision])
 
     @hide_stdout()
     def test_fast_discrepancy_phi3_small_longrope_fp32_cpu(self):

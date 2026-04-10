@@ -18,11 +18,7 @@ class TestWhisperModel(ExtTestCase):
         import torch
         from tokenizers import Tokenizer
         from tokenizers.models import WordLevel
-        from transformers import (
-            PreTrainedTokenizerFast,
-            WhisperConfig,
-            WhisperForConditionalGeneration,
-        )
+        from transformers import PreTrainedTokenizerFast, WhisperConfig, WhisperForConditionalGeneration
 
         from modelbuilder.builder import create_model
 
@@ -61,10 +57,7 @@ class TestWhisperModel(ExtTestCase):
 
         vocab = {"<unk>": 0, "<s>": 1, "</s>": 2}
         tokenizer = PreTrainedTokenizerFast(
-            tokenizer_object=Tokenizer(WordLevel(vocab=vocab, unk_token="<unk>")),
-            bos_token="<s>",
-            eos_token="</s>",
-            unk_token="<unk>",
+            tokenizer_object=Tokenizer(WordLevel(vocab=vocab, unk_token="<unk>")), bos_token="<s>", eos_token="</s>", unk_token="<unk>"
         )
         tokenizer.save_pretrained(model_dir)
 
@@ -127,12 +120,7 @@ class TestWhisperModel(ExtTestCase):
         self.log_results({"step": "encoder", **enc_disc, **log_data})
 
         atol_enc = {"fp32": 1e-4, "fp16": 5e-2, "int4": 0.5}
-        np.testing.assert_allclose(
-            pt_hidden.astype(np_dtype),
-            enc_results["hidden_states"],
-            atol=atol_enc[precision],
-            rtol=1e-3,
-        )
+        np.testing.assert_allclose(pt_hidden.astype(np_dtype), enc_results["hidden_states"], atol=atol_enc[precision], rtol=1e-3)
 
         # ------------------------------------------------------------------
         # Step 2: Run decoder prefill with cross-attention KV from encoder
@@ -156,22 +144,14 @@ class TestWhisperModel(ExtTestCase):
         # Compare decoder logits with PyTorch
         with torch.no_grad():
             pt_input_ids = torch.from_numpy(input_ids.astype(np.int64)).to(provider)
-            pt_dec_out = model.model.decoder(
-                input_ids=pt_input_ids,
-                encoder_hidden_states=pt_enc_out.last_hidden_state,
-            )
+            pt_dec_out = model.model.decoder(input_ids=pt_input_ids, encoder_hidden_states=pt_enc_out.last_hidden_state)
         pt_logits = model.proj_out(pt_dec_out.last_hidden_state).detach().cpu().numpy()
 
         dec_disc = self.get_numpy_discrepancy(pt_logits.astype(np_dtype), dec_results["logits"])
         self.log_results({"step": "decoder", **dec_disc, **log_data})
 
         atol_dec = {"fp32": 1e-3, "fp16": 5e-2, "int4": 0.5}
-        np.testing.assert_allclose(
-            pt_logits.astype(np_dtype),
-            dec_results["logits"],
-            atol=atol_dec[precision],
-            rtol=1e-3,
-        )
+        np.testing.assert_allclose(pt_logits.astype(np_dtype), dec_results["logits"], atol=atol_dec[precision], rtol=1e-3)
 
         # Verify KV cache shapes from decoder
         for i in range(num_decoder_layers):

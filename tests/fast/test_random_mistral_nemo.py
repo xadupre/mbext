@@ -9,13 +9,7 @@ import unittest
 
 import numpy as np
 
-from modelbuilder.ext_test_case import (
-    ExtTestCase,
-    run_session_or_io_binding,
-    hide_stdout,
-    requires_cuda,
-    requires_yobx,
-)
+from modelbuilder.ext_test_case import ExtTestCase, run_session_or_io_binding, hide_stdout, requires_cuda, requires_yobx
 
 MISTRAL_NEMO_MODEL_NAME = "mistralai/Mistral-Nemo-Instruct-2407"
 
@@ -25,11 +19,7 @@ class TestMistralNeMo(ExtTestCase):
         import torch
         from tokenizers import Tokenizer
         from tokenizers.models import WordLevel
-        from transformers import (
-            AutoModelForCausalLM,
-            MistralConfig,
-            PreTrainedTokenizerFast,
-        )
+        from transformers import AutoModelForCausalLM, MistralConfig, PreTrainedTokenizerFast
 
         from modelbuilder.builder import create_model
 
@@ -62,10 +52,7 @@ class TestMistralNeMo(ExtTestCase):
 
         vocab = {"<unk>": 0, "<s>": 1, "</s>": 2}
         tokenizer = PreTrainedTokenizerFast(
-            tokenizer_object=Tokenizer(WordLevel(vocab=vocab, unk_token="<unk>")),
-            bos_token="<s>",
-            eos_token="</s>",
-            unk_token="<unk>",
+            tokenizer_object=Tokenizer(WordLevel(vocab=vocab, unk_token="<unk>")), bos_token="<s>", eos_token="</s>", unk_token="<unk>"
         )
         tokenizer.save_pretrained(model_dir)
 
@@ -109,12 +96,10 @@ class TestMistralNeMo(ExtTestCase):
             }
             for i in range(num_hidden_layers):
                 prefill_feed[f"past_key_values.{i}.key"] = np.zeros(
-                    (batch_size, config.num_key_value_heads, 0, head_size),
-                    dtype=self.get_input_np_dtype(precision),
+                    (batch_size, config.num_key_value_heads, 0, head_size), dtype=self.get_input_np_dtype(precision)
                 )
                 prefill_feed[f"past_key_values.{i}.value"] = np.zeros(
-                    (batch_size, config.num_key_value_heads, 0, head_size),
-                    dtype=self.get_input_np_dtype(precision),
+                    (batch_size, config.num_key_value_heads, 0, head_size), dtype=self.get_input_np_dtype(precision)
                 )
             prefill_feed = {k: v for k, v in prefill_feed.items() if k in onnx_input_names}
 
@@ -137,12 +122,7 @@ class TestMistralNeMo(ExtTestCase):
             self.assertEqual(np_prefill.shape, ort_logits_np.shape)
             # Verify first-token logits are numerically close; subsequent positions
             # can diverge slightly in FP32 due to GQA kernel differences.
-            np.testing.assert_allclose(
-                np_prefill[:, :1, :],
-                ort_logits_np[:, :1, :],
-                atol=atol[precision],
-                rtol=1e-3,
-            )
+            np.testing.assert_allclose(np_prefill[:, :1, :], ort_logits_np[:, :1, :], atol=atol[precision], rtol=1e-3)
 
         with self.subTest(step="decode"):
             next_token = int(np.argmax(prefill_results["logits"][0, -1, :]))
@@ -183,11 +163,7 @@ class TestMistralNeMo(ExtTestCase):
         import torch
         from tokenizers import Tokenizer
         from tokenizers.models import WordLevel
-        from transformers import (
-            AutoModelForCausalLM,
-            MistralConfig,
-            PreTrainedTokenizerFast,
-        )
+        from transformers import AutoModelForCausalLM, MistralConfig, PreTrainedTokenizerFast
 
         from modelbuilder.builder import create_model
 
@@ -221,10 +197,7 @@ class TestMistralNeMo(ExtTestCase):
 
         vocab = {"<unk>": 0, "<s>": 1, "</s>": 2}
         tokenizer = PreTrainedTokenizerFast(
-            tokenizer_object=Tokenizer(WordLevel(vocab=vocab, unk_token="<unk>")),
-            bos_token="<s>",
-            eos_token="</s>",
-            unk_token="<unk>",
+            tokenizer_object=Tokenizer(WordLevel(vocab=vocab, unk_token="<unk>")), bos_token="<s>", eos_token="</s>", unk_token="<unk>"
         )
         tokenizer.save_pretrained(model_dir)
 
@@ -252,12 +225,7 @@ class TestMistralNeMo(ExtTestCase):
         prompt_ids = torch.randint(3, config.vocab_size, (batch_size, 5)).to(provider)
 
         with torch.no_grad():
-            pt_output = model.generate(
-                prompt_ids,
-                max_new_tokens=max_new_tokens,
-                do_sample=False,
-                pad_token_id=config.eos_token_id,
-            )
+            pt_output = model.generate(prompt_ids, max_new_tokens=max_new_tokens, do_sample=False, pad_token_id=config.eos_token_id)
         pt_tokens = pt_output[0].tolist()
 
         current_ids = prompt_ids.detach().cpu().numpy().astype(np.int64)
@@ -265,12 +233,10 @@ class TestMistralNeMo(ExtTestCase):
         past_kv = {}
         for i in range(num_hidden_layers):
             past_kv[f"past_key_values.{i}.key"] = np.zeros(
-                (batch_size, config.num_key_value_heads, 0, head_size),
-                dtype=self.get_input_np_dtype(precision),
+                (batch_size, config.num_key_value_heads, 0, head_size), dtype=self.get_input_np_dtype(precision)
             )
             past_kv[f"past_key_values.{i}.value"] = np.zeros(
-                (batch_size, config.num_key_value_heads, 0, head_size),
-                dtype=self.get_input_np_dtype(precision),
+                (batch_size, config.num_key_value_heads, 0, head_size), dtype=self.get_input_np_dtype(precision)
             )
 
         onnx_tokens = current_ids[0].tolist()
@@ -447,12 +413,7 @@ class TestMistralNeMo(ExtTestCase):
             def forward(self, input_ids, attention_mask, past_key, past_value):
                 cache = DynamicCache()
                 cache.update(past_key, past_value, layer_idx=0)
-                out = self.m(
-                    input_ids=input_ids,
-                    attention_mask=attention_mask,
-                    past_key_values=cache,
-                    use_cache=True,
-                )
+                out = self.m(input_ids=input_ids, attention_mask=attention_mask, past_key_values=cache, use_cache=True)
                 layer = out.past_key_values.layers[0]
                 return out.logits, layer.keys, layer.values
 
@@ -469,12 +430,7 @@ class TestMistralNeMo(ExtTestCase):
                 wrapper,
                 (input_ids, attention_mask, past_key, past_value),
                 onnx_path,
-                input_names=[
-                    "input_ids",
-                    "attention_mask",
-                    "past_key_values.0.key",
-                    "past_key_values.0.value",
-                ],
+                input_names=["input_ids", "attention_mask", "past_key_values.0.key", "past_key_values.0.value"],
                 output_names=["logits", "present.0.key", "present.0.value"],
                 dynamic_shapes={
                     "input_ids": {0: "batch_size", 1: "sequence_length"},
@@ -620,14 +576,7 @@ class TestMistralNeMo(ExtTestCase):
 
         # Export to ONNX using torch.onnx.export.
         with torch.no_grad(), register_flattening_functions(patch_transformers=True):
-            torch.onnx.export(
-                model,
-                (),
-                onnx_path,
-                kwargs=inputs,
-                dynamic_shapes=dynamic_shapes,
-                opset_version=22,
-            )
+            torch.onnx.export(model, (), onnx_path, kwargs=inputs, dynamic_shapes=dynamic_shapes, opset_version=22)
 
         self.assertExists(onnx_path)
         sess = self.check_ort(onnx_path)
@@ -661,20 +610,13 @@ class TestMistralNeMo(ExtTestCase):
             expected = model(
                 input_ids=decode_ids,
                 attention_mask=decode_mask,
-                past_key_values=make_dynamic_cache(
-                    [(torch.from_numpy(onnx_present_key), torch.from_numpy(onnx_present_value))]
-                ),
+                past_key_values=make_dynamic_cache([(torch.from_numpy(onnx_present_key), torch.from_numpy(onnx_present_value))]),
             )
 
         feeds = dict(
             zip(
                 [i.name for i in sess.get_inputs()],
-                [
-                    decode_ids.numpy().astype(np.int64),
-                    decode_mask.numpy().astype(np.int64),
-                    onnx_present_key,
-                    onnx_present_value,
-                ],
+                [decode_ids.numpy().astype(np.int64), decode_mask.numpy().astype(np.int64), onnx_present_key, onnx_present_value],
             )
         )
 
@@ -771,14 +713,7 @@ class TestMistralNeMo(ExtTestCase):
         # Export to ONNX using torch.onnx.export.
         registers_dynamic_cache()
         with torch.no_grad():
-            torch.onnx.export(
-                model,
-                (),
-                onnx_path,
-                kwargs=inputs,
-                dynamic_shapes=dynamic_shapes,
-                opset_version=22,
-            )
+            torch.onnx.export(model, (), onnx_path, kwargs=inputs, dynamic_shapes=dynamic_shapes, opset_version=22)
 
         self.assertExists(onnx_path)
         sess = self.check_ort(onnx_path)
@@ -816,12 +751,7 @@ class TestMistralNeMo(ExtTestCase):
         feeds = dict(
             zip(
                 [i.name for i in sess.get_inputs()],
-                [
-                    decode_ids.numpy().astype(np.int64),
-                    decode_mask.numpy().astype(np.int64),
-                    onnx_present_key,
-                    onnx_present_value,
-                ],
+                [decode_ids.numpy().astype(np.int64), decode_mask.numpy().astype(np.int64), onnx_present_key, onnx_present_value],
             )
         )
 
@@ -892,12 +822,7 @@ class TestMistralNeMo(ExtTestCase):
             def forward(self, input_ids, attention_mask, past_key, past_value):
                 cache = transformers.cache_utils.DynamicCache()
                 cache.update(past_key, past_value, layer_idx=0)
-                out = self.m(
-                    input_ids=input_ids,
-                    attention_mask=attention_mask,
-                    past_key_values=cache,
-                    use_cache=True,
-                )
+                out = self.m(input_ids=input_ids, attention_mask=attention_mask, past_key_values=cache, use_cache=True)
                 layer = out.past_key_values.layers[0]
                 return out.logits, layer.keys, layer.values
 
@@ -915,10 +840,7 @@ class TestMistralNeMo(ExtTestCase):
                 past_value=inputs["past_key_values"].layers[0].values,
             ),
             dynamic_shapes=dict(
-                input_ids={0: DYN, 1: DYN},
-                attention_mask={0: DYN, 1: DYN},
-                past_key={0: DYN, 2: DYN},
-                past_value={0: DYN, 2: DYN},
+                input_ids={0: DYN, 1: DYN}, attention_mask={0: DYN, 1: DYN}, past_key={0: DYN, 2: DYN}, past_value={0: DYN, 2: DYN}
             ),
         )
         with open(ep_path, "w") as f:
@@ -942,19 +864,13 @@ class TestMistralNeMo(ExtTestCase):
             values, context = _flatten_key_value_cache(cache)
             return [(torch.utils._pytree.MappingKey(k), v) for k, v in zip(context, values)], context
 
-        def _unflatten_cache(
-            values,
-            context,
-            output_type=None,
-        ):
+        def _unflatten_cache(values, context, output_type=None):
             expected = list(itertools.chain.from_iterable((f"key_{i}", f"value_{i}") for i in range(len(values) // 2)))
             assert expected == context, f"Does not seem to be a dynamic cache {expected} != {context}"
             res = transformers.cache_utils.DynamicCache()
             for i in range(len(values) // 2):
                 res.update(values[i * 2], values[i * 2 + 1], layer_idx=i)
-            assert output_type is None or isinstance(
-                res, output_type
-            ), f"Type mismatch between {output_type} (expected) and {type(res)}"
+            assert output_type is None or isinstance(res, output_type), f"Type mismatch between {output_type} (expected) and {type(res)}"
             return res
 
         def registers_dynamic_cache():
@@ -983,9 +899,7 @@ class TestMistralNeMo(ExtTestCase):
             (),
             kwargs=inputs,
             dynamic_shapes=dict(
-                input_ids={0: DYN, 1: DYN},
-                attention_mask={0: DYN, 1: DYN},
-                past_key_values=[{0: DYN, 2: DYN}, {0: DYN, 2: DYN}],
+                input_ids={0: DYN, 1: DYN}, attention_mask={0: DYN, 1: DYN}, past_key_values=[{0: DYN, 2: DYN}, {0: DYN, 2: DYN}]
             ),
         )
         with open(ep_flatten_path, "w") as f:
@@ -1022,11 +936,7 @@ class TestMistralNeMo(ExtTestCase):
         import torch
         from tokenizers import Tokenizer
         from tokenizers.models import WordLevel
-        from transformers import (
-            AutoModelForCausalLM,
-            MistralConfig,
-            PreTrainedTokenizerFast,
-        )
+        from transformers import AutoModelForCausalLM, MistralConfig, PreTrainedTokenizerFast
 
         from modelbuilder.builder import create_model
 
@@ -1062,10 +972,7 @@ class TestMistralNeMo(ExtTestCase):
 
         vocab = {"<unk>": 0, "<s>": 1, "</s>": 2}
         tokenizer = PreTrainedTokenizerFast(
-            tokenizer_object=Tokenizer(WordLevel(vocab=vocab, unk_token="<unk>")),
-            bos_token="<s>",
-            eos_token="</s>",
-            unk_token="<unk>",
+            tokenizer_object=Tokenizer(WordLevel(vocab=vocab, unk_token="<unk>")), bos_token="<s>", eos_token="</s>", unk_token="<unk>"
         )
         tokenizer.save_pretrained(model_dir)
 
@@ -1086,11 +993,7 @@ class TestMistralNeMo(ExtTestCase):
         # Verify that the ONNX KV-cache tensors use head_dim=48, not 64.
         kv_shapes = {inp.name: inp.shape for inp in sess.get_inputs() if inp.name.startswith("past_key_values")}
         for name, shape in kv_shapes.items():
-            self.assertEqual(
-                shape[3],
-                head_dim,
-                f"{name} has KV head size {shape[3]}, expected {head_dim}",
-            )
+            self.assertEqual(shape[3], head_dim, f"{name} has KV head size {shape[3]}, expected {head_dim}")
 
         batch_size = 1
         seq_len = 5
@@ -1103,14 +1006,8 @@ class TestMistralNeMo(ExtTestCase):
             "position_ids": np.arange(seq_len, dtype=np.int64).reshape(batch_size, seq_len),
         }
         for i in range(num_hidden_layers):
-            prefill_feed[f"past_key_values.{i}.key"] = np.zeros(
-                (batch_size, config.num_key_value_heads, 0, head_dim),
-                dtype=np.float32,
-            )
-            prefill_feed[f"past_key_values.{i}.value"] = np.zeros(
-                (batch_size, config.num_key_value_heads, 0, head_dim),
-                dtype=np.float32,
-            )
+            prefill_feed[f"past_key_values.{i}.key"] = np.zeros((batch_size, config.num_key_value_heads, 0, head_dim), dtype=np.float32)
+            prefill_feed[f"past_key_values.{i}.value"] = np.zeros((batch_size, config.num_key_value_heads, 0, head_dim), dtype=np.float32)
         prefill_feed = {k: v for k, v in prefill_feed.items() if k in onnx_input_names}
 
         onnx_out = sess.run(None, prefill_feed)
@@ -1121,12 +1018,7 @@ class TestMistralNeMo(ExtTestCase):
         np_logits = pt_out.logits.detach().cpu().numpy()
 
         self.assertEqual(np_logits.shape, ort_logits.shape)
-        np.testing.assert_allclose(
-            np_logits[:, :1, :],
-            ort_logits[:, :1, :],
-            atol=1e-3,
-            rtol=1e-3,
-        )
+        np.testing.assert_allclose(np_logits[:, :1, :], ort_logits[:, :1, :], atol=1e-3, rtol=1e-3)
 
     def test_dequantize_fp8_weights_no_op_when_no_fp8(self):
         """_dequantize_fp8_weights leaves normal float32 weights unchanged."""

@@ -46,14 +46,8 @@ class TestTrainedQwen3(ExtTestCase):
         return (
             onnx_path,
             model,
-            dict(
-                input_ids=inputs["input_ids"].to(provider),
-                attention_mask=inputs["attention_mask"].to(provider),
-            ),
-            dict(
-                input_ids=inputs["input_ids"].detach().cpu().numpy(),
-                attention_mask=inputs["attention_mask"].detach().cpu().numpy(),
-            ),
+            dict(input_ids=inputs["input_ids"].to(provider), attention_mask=inputs["attention_mask"].to(provider)),
+            dict(input_ids=inputs["input_ids"].detach().cpu().numpy(), attention_mask=inputs["attention_mask"].detach().cpu().numpy()),
             tokenizer,
         )
 
@@ -62,9 +56,7 @@ class TestTrainedQwen3(ExtTestCase):
 
         dtype = self.get_input_torch_dtype(precision)
 
-        onnx_path, model, torch_feed, onnx_feed, tokenizer = self._common_part(
-            model_id, precision, dtype, provider=provider
-        )
+        onnx_path, model, torch_feed, onnx_feed, tokenizer = self._common_part(model_id, precision, dtype, provider=provider)
         sess = self._check_with_ort(onnx_path, cpu=provider == "cpu")
         self.fill_with_empty_cache(onnx_feed, sess, provider)
 
@@ -112,9 +104,7 @@ class TestTrainedQwen3(ExtTestCase):
 
         dtype = self.get_input_torch_dtype(precision)
 
-        onnx_path, model, torch_feed, onnx_feed, tokenizer = self._common_part(
-            model_id, precision, dtype, provider=provider
-        )
+        onnx_path, model, torch_feed, onnx_feed, tokenizer = self._common_part(model_id, precision, dtype, provider=provider)
 
         max_new_tokens = 20
 
@@ -123,12 +113,7 @@ class TestTrainedQwen3(ExtTestCase):
         # ------------------------------------------------------------------
         prompt_len = torch_feed["input_ids"].shape[1]
         with torch.no_grad():
-            pt_output = model.generate(
-                **torch_feed,
-                max_new_tokens=max_new_tokens,
-                do_sample=False,
-                pad_token_id=tokenizer.eos_token_id,
-            )
+            pt_output = model.generate(**torch_feed, max_new_tokens=max_new_tokens, do_sample=False, pad_token_id=tokenizer.eos_token_id)
         # Keep only the newly generated tokens (exclude the prompt).
         pt_tokens = pt_output[0][prompt_len:].tolist()
 
@@ -138,12 +123,7 @@ class TestTrainedQwen3(ExtTestCase):
         og_model = og.Model(os.path.dirname(onnx_path))
 
         params = og.GeneratorParams(og_model)
-        params.set_search_options(
-            do_sample=False,
-            max_length=max_new_tokens,
-            temperature=1.0,
-            top_k=1,
-        )
+        params.set_search_options(do_sample=False, max_length=max_new_tokens, temperature=1.0, top_k=1)
 
         generator = og.Generator(og_model, params)
         generator.append_tokens(onnx_feed["input_ids"])

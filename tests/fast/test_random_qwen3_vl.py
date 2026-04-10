@@ -8,13 +8,7 @@ import unittest
 
 import numpy as np
 
-from modelbuilder.ext_test_case import (
-    ExtTestCase,
-    run_session_or_io_binding,
-    hide_stdout,
-    requires_cuda,
-    requires_transformers,
-)
+from modelbuilder.ext_test_case import ExtTestCase, run_session_or_io_binding, hide_stdout, requires_cuda, requires_transformers
 
 QWEN3_VL_MODEL_NAME = "Qwen/Qwen3-VL-4B-Instruct"
 
@@ -25,11 +19,7 @@ class TestRandomQwen3VL(ExtTestCase):
         import torch
         from tokenizers import Tokenizer
         from tokenizers.models import WordLevel
-        from transformers import (
-            Qwen3VLConfig,
-            Qwen3VLForConditionalGeneration,
-            PreTrainedTokenizerFast,
-        )
+        from transformers import Qwen3VLConfig, Qwen3VLForConditionalGeneration, PreTrainedTokenizerFast
         from transformers.models.qwen3_vl.configuration_qwen3_vl import Qwen3VLTextConfig
 
         from modelbuilder.builder import create_model
@@ -48,11 +38,7 @@ class TestRandomQwen3VL(ExtTestCase):
             max_position_embeddings=2048,
             vocab_size=32000,
             rms_norm_eps=1e-6,
-            rope_parameters={
-                "rope_type": "default",
-                "rope_theta": 10000.0,
-                "mrope_section": [12, 10, 10],
-            },
+            rope_parameters={"rope_type": "default", "rope_theta": 10000.0, "mrope_section": [12, 10, 10]},
             pad_token_id=0,
         )
         config = Qwen3VLConfig(text_config=text_config)
@@ -71,10 +57,7 @@ class TestRandomQwen3VL(ExtTestCase):
 
         vocab = {"<unk>": 0, "<s>": 1, "</s>": 2}
         tokenizer = PreTrainedTokenizerFast(
-            tokenizer_object=Tokenizer(WordLevel(vocab=vocab, unk_token="<unk>")),
-            bos_token="<s>",
-            eos_token="</s>",
-            unk_token="<unk>",
+            tokenizer_object=Tokenizer(WordLevel(vocab=vocab, unk_token="<unk>")), bos_token="<s>", eos_token="</s>", unk_token="<unk>"
         )
         tokenizer.save_pretrained(model_dir)
 
@@ -129,14 +112,8 @@ class TestRandomQwen3VL(ExtTestCase):
                 "position_ids": position_ids,
             }
             for i in range(num_hidden_layers):
-                prefill_feed[f"past_key_values.{i}.key"] = np.zeros(
-                    (batch_size, num_kv_heads, 0, head_size),
-                    dtype=np_dtype,
-                )
-                prefill_feed[f"past_key_values.{i}.value"] = np.zeros(
-                    (batch_size, num_kv_heads, 0, head_size),
-                    dtype=np_dtype,
-                )
+                prefill_feed[f"past_key_values.{i}.key"] = np.zeros((batch_size, num_kv_heads, 0, head_size), dtype=np_dtype)
+                prefill_feed[f"past_key_values.{i}.value"] = np.zeros((batch_size, num_kv_heads, 0, head_size), dtype=np_dtype)
             prefill_feed = {k: v for k, v in prefill_feed.items() if k in onnx_input_names}
 
             prefill_results, ort_logits_np = run_session_or_io_binding(
@@ -190,10 +167,7 @@ class TestRandomQwen3VL(ExtTestCase):
 
             with torch.no_grad():
                 pt_past_kv = pt_prefill.past_key_values
-                pt_decode = model(
-                    input_ids=next_token_tensor,
-                    past_key_values=pt_past_kv,
-                )
+                pt_decode = model(input_ids=next_token_tensor, past_key_values=pt_past_kv)
                 pt_decode_logits = pt_decode.logits.detach().cpu().numpy()
 
             disc = self.get_numpy_discrepancy(pt_decode_logits, onnx_decode_logits)

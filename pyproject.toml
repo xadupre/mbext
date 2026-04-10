@@ -36,11 +36,12 @@ dev = [
 ]
 
 [tool.black]
-line-length = 120
+line-length = 140
 target-version = ["py38", "py39", "py310", "py311", "py312"]
+skip-magic-trailing-comma = true
 
 [tool.ruff]
-line-length = 120
+line-length = 140
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I"]
