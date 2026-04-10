@@ -126,7 +126,9 @@ class TestNemotronH(ExtTestCase):
             )
 
             with torch.no_grad():
-                pt_prefill = model(input_ids)
+                # use_cache=False avoids has_previous_state error when NemotronH
+                # creates a DynamicCache internally (attention-only config).
+                pt_prefill = model(input_ids, use_cache=False)
 
             np_prefill = pt_prefill.logits.detach().cpu().numpy()
             disc = self.get_numpy_discrepancy(np_prefill, ort_logits_np)
