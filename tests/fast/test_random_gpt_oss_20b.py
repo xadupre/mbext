@@ -5,6 +5,7 @@
 # --------------------------------------------------------------------------
 import os
 import unittest
+from unittest.mock import patch
 
 import numpy as np
 
@@ -340,13 +341,12 @@ class TestGptOss20b(ExtTestCase):
         self.common_fast_gpt_oss_20b_random_weights("fp16", "cuda")
 
     def common_moe_decomposed_random_weights(self, precision, ort_provider):
-        """Build a GPT-OSS-20B ONNX model using ``execution_provider="dml"`` so that
-        ``make_moe_decomposed`` is called instead of ``make_moe_fused``, then verify the
-        resulting ONNX graph and run inference with the CPU ORT provider.
+        """Build a GPT-OSS-20B ONNX model with ``execution_provider="cpu"`` while
+        patching ``GPTOSSModel.make_moe`` to always call ``make_moe_decomposed``, then
+        verify the resulting ONNX graph and run inference with the ORT provider.
 
-        ``make_moe`` dispatches to ``make_moe_decomposed`` for any EP outside
-        ``{"cpu", "cuda", "trt-rtx", "webgpu"}``.  Using ``"dml"`` here triggers the
-        decomposed code path on every platform without requiring a real DirectML device.
+        Patching ``make_moe`` lets us test the decomposed code path with standard CPU
+        attention ops and without requiring any non-standard execution environment.
         """
         import onnx
         import torch
@@ -355,6 +355,7 @@ class TestGptOss20b(ExtTestCase):
         from transformers import AutoModelForCausalLM, GptOssConfig, PreTrainedTokenizerFast
 
         from modelbuilder.builder import create_model
+        from modelbuilder.builders.gptoss import GPTOSSModel
 
         num_hidden_layers = 2
 
@@ -389,16 +390,20 @@ class TestGptOss20b(ExtTestCase):
         )
         tokenizer.save_pretrained(model_dir)
 
-        # "dml" is outside {"cpu","cuda","trt-rtx","webgpu"} so GPTOSSModel.make_moe
-        # calls make_moe_decomposed rather than make_moe_fused.
-        create_model(
-            model_name=MODEL_NAME,
-            input_path=model_dir,
-            output_dir=output_dir,
-            precision=precision,
-            execution_provider="dml",
-            cache_dir=cache_dir,
-        )
+        # Patch make_moe to always call the decomposed path so we test
+        # make_moe_decomposed while still using the standard CPU execution provider.
+        def _force_decomposed(self_model, layer_id, mlp, root_input):
+            self_model.make_moe_decomposed(layer_id, mlp, root_input)
+
+        with patch.object(GPTOSSModel, "make_moe", _force_decomposed):
+            create_model(
+                model_name=MODEL_NAME,
+                input_path=model_dir,
+                output_dir=output_dir,
+                precision=precision,
+                execution_provider=ort_provider,
+                cache_dir=cache_dir,
+            )
 
         onnx_path = os.path.join(output_dir, "model.onnx")
         self.assertExists(onnx_path)
@@ -413,8 +418,6 @@ class TestGptOss20b(ExtTestCase):
         for expected_op in ("TopK", "Gather", "ReduceSum", "Squeeze", "Softmax"):
             self.assertIn(expected_op, node_op_types, f"Decomposed MoE subgraph must contain {expected_op}")
 
-        # The decomposed graph uses only standard ONNX / ORT ops, so the CPU EP
-        # can execute it even though it was built for DML.
         sess = self.check_ort(onnx_path, provider=ort_provider)
 
         batch_size = 1
@@ -487,11 +490,11 @@ class TestGptOss20b(ExtTestCase):
             np.testing.assert_allclose(pt_decode_logits, onnx_decode_logits, atol=atol, rtol=rtol)
 
     @hide_stdout()
-    def test_moe_decomposed_fp32_dml_cpu(self):
+    def test_moe_decomposed_fp32_cpu(self):
         self.common_moe_decomposed_random_weights("fp32", "cpu")
 
     @hide_stdout()
-    def test_moe_decomposed_fp16_dml_cpu(self):
+    def test_moe_decomposed_fp16_cpu(self):
         self.common_moe_decomposed_random_weights("fp16", "cpu")
 
     @hide_stdout()
