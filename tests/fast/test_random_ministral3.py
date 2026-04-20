@@ -116,8 +116,7 @@ class TestMinistral3(ExtTestCase):
             next_token = int(np.argmax(prefill_results["logits"][0, -1, :]))
 
             decode_feed = self.make_decode_feed(
-                next_token, seq_len, prefill_results, num_hidden_layers,
-                batch_size=batch_size, onnx_input_names=onnx_input_names,
+                next_token, seq_len, prefill_results, num_hidden_layers, batch_size=batch_size, onnx_input_names=onnx_input_names
             )
 
             prefill_results, onnx_decode_logits = run_session_or_io_binding(
@@ -386,13 +385,7 @@ class TestMinistral3(ExtTestCase):
         * The text decoder produces output when fed ``inputs_embeds``.
         """
         import torch
-        from transformers import (
-            Ministral3Config,
-            Mistral3Config,
-            Mistral3ForConditionalGeneration,
-            PixtralVisionConfig,
-            PreTrainedTokenizerFast,
-        )
+        from transformers import Ministral3Config, Mistral3Config, Mistral3ForConditionalGeneration, PixtralVisionConfig
 
         from modelbuilder.builder import create_model
 

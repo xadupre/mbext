@@ -407,6 +407,227 @@ class ExtTestCase(unittest.TestCase):
     def fill_with_empty_cache(self, onnx_feed, session, provider, batch_size=1):
         return fill_with_empty_cache(onnx_feed, session, provider=provider, batch_size=batch_size)
 
+    def make_word_level_tokenizer(
+        self,
+        model_dir: str,
+        vocab: Optional[Dict[str, int]] = None,
+        bos_token: str = "<s>",
+        eos_token: str = "</s>",
+        unk_token: str = "<unk>",
+    ):
+        """Create and save a minimal :class:`~transformers.PreTrainedTokenizerFast`.
+
+        The tokenizer uses a :class:`~tokenizers.models.WordLevel` model backed
+        by *vocab* (or a small default vocabulary when *vocab* is ``None``).
+        It is saved to *model_dir* via ``save_pretrained``.
+
+        Args:
+            model_dir: Directory where the tokenizer files will be written.
+            vocab: Optional mapping ``{token: id}``.  Defaults to
+                ``{"<unk>": 0, "<s>": 1, "</s>": 2}``.
+            bos_token: Beginning-of-sequence token string.
+            eos_token: End-of-sequence token string.
+            unk_token: Unknown-token string.
+
+        Returns:
+            The saved :class:`~transformers.PreTrainedTokenizerFast` instance.
+        """
+        from tokenizers import Tokenizer
+        from tokenizers.models import WordLevel
+        from transformers import PreTrainedTokenizerFast
+
+        if vocab is None:
+            vocab = {unk_token: 0, bos_token: 1, eos_token: 2}
+        tokenizer = PreTrainedTokenizerFast(
+            tokenizer_object=Tokenizer(WordLevel(vocab=vocab, unk_token=unk_token)),
+            bos_token=bos_token,
+            eos_token=eos_token,
+            unk_token=unk_token,
+        )
+        tokenizer.save_pretrained(model_dir)
+        return tokenizer
+
+    def make_prefill_feed(
+        self,
+        input_ids: "np.ndarray",
+        num_hidden_layers: int,
+        num_key_value_heads: int,
+        head_size: int,
+        np_dtype,
+        onnx_input_names: Optional[List[str]] = None,
+    ) -> Dict[str, "np.ndarray"]:
+        """Build the ONNX input feed dict for the **prefill** step.
+
+        Creates ``input_ids``, ``attention_mask``, ``position_ids``, and
+        zero-initialised ``past_key_values.{i}.key / .value`` tensors.  When
+        *onnx_input_names* is provided the dict is filtered to only the keys
+        declared by the session.
+
+        Args:
+            input_ids: Integer array of shape ``(batch, seq_len)``.
+            num_hidden_layers: Number of transformer layers (KV-cache depth).
+            num_key_value_heads: Number of key/value attention heads.
+            head_size: Per-head hidden dimension.
+            np_dtype: NumPy dtype for the KV-cache tensors (use
+                :meth:`get_input_np_dtype` to obtain this from a precision string).
+            onnx_input_names: Optional list of input names accepted by the
+                session; extra keys are dropped when provided.
+
+        Returns:
+            Dict mapping input name → NumPy array.
+        """
+        batch_size, seq_len = input_ids.shape
+        feed: Dict[str, np.ndarray] = {
+            "input_ids": input_ids.astype(np.int64),
+            "attention_mask": np.ones((batch_size, seq_len), dtype=np.int64),
+            "position_ids": np.arange(seq_len, dtype=np.int64).reshape(batch_size, seq_len),
+        }
+        for i in range(num_hidden_layers):
+            feed[f"past_key_values.{i}.key"] = np.zeros((batch_size, num_key_value_heads, 0, head_size), dtype=np_dtype)
+            feed[f"past_key_values.{i}.value"] = np.zeros((batch_size, num_key_value_heads, 0, head_size), dtype=np_dtype)
+        if onnx_input_names is not None:
+            feed = {k: v for k, v in feed.items() if k in onnx_input_names}
+        return feed
+
+    def make_decode_feed(
+        self,
+        next_token: int,
+        seq_len: int,
+        prefill_results: Dict[str, "np.ndarray"],
+        num_hidden_layers: int,
+        batch_size: int = 1,
+        onnx_input_names: Optional[List[str]] = None,
+    ) -> Dict[str, "np.ndarray"]:
+        """Build the ONNX input feed dict for a single **decode** step.
+
+        Creates a single-token ``input_ids``, an extended ``attention_mask``
+        (length ``seq_len + 1``), a ``position_ids`` pointing at position
+        ``seq_len``, and ``past_key_values`` populated from *prefill_results*.
+        When *onnx_input_names* is provided the dict is filtered to only the
+        keys declared by the session.
+
+        Args:
+            next_token: The token ID produced by the previous step.
+            seq_len: Number of tokens processed in the prefill step (used to
+                size ``attention_mask`` and ``position_ids``).
+            prefill_results: Output dict from the preceding
+                :func:`~modelbuilder.ext_test_case.run_session_or_io_binding`
+                call; must contain ``present.{i}.key`` and ``present.{i}.value``
+                entries.
+            num_hidden_layers: Number of transformer layers (KV-cache depth).
+            batch_size: Batch size (default ``1``).
+            onnx_input_names: Optional list of input names accepted by the
+                session; extra keys are dropped when provided.
+
+        Returns:
+            Dict mapping input name → NumPy array.
+        """
+        feed: Dict[str, Any] = {
+            "input_ids": np.array([[next_token]], dtype=np.int64),
+            "attention_mask": np.ones((batch_size, seq_len + 1), dtype=np.int64),
+            "position_ids": np.array([[seq_len]], dtype=np.int64),
+        }
+        for i in range(num_hidden_layers):
+            feed[f"past_key_values.{i}.key"] = prefill_results[f"present.{i}.key"]
+            feed[f"past_key_values.{i}.value"] = prefill_results[f"present.{i}.value"]
+        if onnx_input_names is not None:
+            feed = {k: v for k, v in feed.items() if k in onnx_input_names}
+        return feed
+
+    def run_onnx_greedy_generation(
+        self,
+        sess: "onnxruntime.InferenceSession",  # noqa: F821
+        precision: str,
+        provider: str,
+        initial_ids: "np.ndarray",
+        num_hidden_layers: int,
+        num_key_value_heads: int,
+        head_size: int,
+        vocab_size: int,
+        eos_token_id: int,
+        max_new_tokens: int = 10,
+        input_names: Optional["set"] = None,  # noqa: F821
+    ) -> List[int]:
+        """Run a greedy auto-regressive decoding loop with an ONNX session.
+
+        Starts from *initial_ids*, feeds the model one token at a time
+        (prefilling the full prompt on the first step), and continues until
+        *max_new_tokens* tokens have been generated or the ``eos_token_id``
+        is produced.
+
+        Args:
+            sess: OnnxRuntime :class:`~onnxruntime.InferenceSession`.
+            precision: Precision string (``"fp32"``, ``"fp16"``, ``"bf16"``,
+                ``"int4"``).
+            provider: Execution provider (``"cpu"`` or ``"cuda"``).
+            initial_ids: Integer array of shape ``(batch, prompt_len)`` with
+                the prompt token IDs (NumPy, dtype ``int64``).
+            num_hidden_layers: Number of transformer layers (KV-cache depth).
+            num_key_value_heads: Number of key/value attention heads.
+            head_size: Per-head hidden dimension.
+            vocab_size: Vocabulary size; passed to
+                :func:`~modelbuilder.ext_test_case.run_session_or_io_binding`.
+            eos_token_id: Token ID that signals end-of-sequence; generation
+                stops early when this token is produced.
+            max_new_tokens: Maximum number of new tokens to generate.
+            input_names: Optional set of input names accepted by *sess*; extra
+                keys are dropped at each step.  When ``None`` all feed keys are
+                passed.
+
+        Returns:
+            List of integer token IDs (prompt tokens + generated tokens).
+        """
+        batch_size = initial_ids.shape[0]
+        np_dtype = self.get_input_np_dtype(precision)
+        if input_names is None:
+            input_names = {inp.name for inp in sess.get_inputs()}
+
+        past_kv: Dict[str, Any] = {}
+        for i in range(num_hidden_layers):
+            past_kv[f"past_key_values.{i}.key"] = np.zeros((batch_size, num_key_value_heads, 0, head_size), dtype=np_dtype)
+            past_kv[f"past_key_values.{i}.value"] = np.zeros((batch_size, num_key_value_heads, 0, head_size), dtype=np_dtype)
+
+        current_ids = initial_ids
+        onnx_tokens = current_ids[0].tolist()
+        results = None
+        for _ in range(max_new_tokens):
+            past_len = past_kv["past_key_values.0.key"].shape[2]
+            cur_len = current_ids.shape[1]
+
+            feed: Dict[str, Any] = {
+                "input_ids": current_ids,
+                "attention_mask": np.ones((batch_size, past_len + cur_len), dtype=np.int64),
+                "position_ids": np.arange(past_len, past_len + cur_len, dtype=np.int64).reshape(batch_size, cur_len),
+            }
+            for i in range(num_hidden_layers):
+                feed[f"past_key_values.{i}.key"] = past_kv[f"past_key_values.{i}.key"]
+                feed[f"past_key_values.{i}.value"] = past_kv[f"past_key_values.{i}.value"]
+            feed = {k: v for k, v in feed.items() if k in input_names}
+
+            results, _ = run_session_or_io_binding(
+                use_iobinding=precision == "bf16",
+                precision=precision,
+                provider=provider,
+                feed=feed,
+                sess=sess,
+                vocab_size=vocab_size,
+                results=results,
+            )
+
+            next_token = int(np.argmax(results["logits"][0, -1, :]))
+            onnx_tokens.append(next_token)
+
+            for i in range(num_hidden_layers):
+                past_kv[f"past_key_values.{i}.key"] = results[f"present.{i}.key"]
+                past_kv[f"past_key_values.{i}.value"] = results[f"present.{i}.value"]
+
+            current_ids = np.array([[next_token]], dtype=np.int64)
+
+            if next_token == eos_token_id:
+                break
+
+        return onnx_tokens
+
 
 def get_input_np_dtype(precision):
     if precision == "bf16":

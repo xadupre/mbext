@@ -392,10 +392,6 @@ class TestPhi3Small(ExtTestCase):
         config_obj) for use in the test."""
         import json
 
-        from tokenizers import Tokenizer
-        from tokenizers.models import WordLevel
-        from transformers import PreTrainedTokenizerFast
-
         model_dir = self.get_model_dir(basename)
         output_dir, cache_dir = self.get_dirs(basename)
 
@@ -431,11 +427,7 @@ class TestPhi3Small(ExtTestCase):
             json.dump(cfg_dict, fh, indent=2)
 
         # Minimal tokenizer (only BOS/EOS/UNK needed)
-        vocab = {"<unk>": 0, "<s>": 1, "</s>": 2}
-        tokenizer = PreTrainedTokenizerFast(
-            tokenizer_object=Tokenizer(WordLevel(vocab=vocab, unk_token="<unk>")), bos_token="<s>", eos_token="</s>", unk_token="<unk>"
-        )
-        tokenizer.save_pretrained(model_dir)
+        self.make_word_level_tokenizer(model_dir)
 
         return model_dir, output_dir, cache_dir, model, config_obj
 

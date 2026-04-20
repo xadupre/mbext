@@ -119,8 +119,7 @@ class TestInternLM2(ExtTestCase):
             next_token = int(np.argmax(prefill_results["logits"][0, -1, :]))
 
             decode_feed = self.make_decode_feed(
-                next_token, seq_len, prefill_results, num_hidden_layers,
-                batch_size=batch_size, onnx_input_names=onnx_input_names,
+                next_token, seq_len, prefill_results, num_hidden_layers, batch_size=batch_size, onnx_input_names=onnx_input_names
             )
 
             prefill_results, onnx_decode_logits = run_session_or_io_binding(
