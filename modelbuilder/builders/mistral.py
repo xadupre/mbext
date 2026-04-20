@@ -89,7 +89,7 @@ class Ministral3TextModel(MistralModel):
             json.dump(genai_config, f, indent=4)
 
 
-class Ministral3VisionEncoderModel(Model):
+class Ministral3VisionEncoderModel:
     """Direct ``onnx_ir`` graph builder for the Pixtral vision encoder + multimodal projector.
 
     Builds the ONNX graph manually (analogous to other model builders in this
