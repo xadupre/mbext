@@ -85,6 +85,3 @@ You can see the results in ``stats/end2end_results.json``. Example:
 {'first_diff': 0, 'delta_length': 4, 'expected_length': 16, 'total_diff': 16, 'precision': 'fp32', 'model_id': 'HuggingFaceTB/SmolLM3-3B', 'experiment': 'generate', 'provider': 'cpu'}
 {'max_abs_err': 1.6875, '%_gt_0.1': np.float64(0.5278832959081836), '%_gt_0.01': np.float64(0.962624750499002), 'avg_abs_discrepancy': 0.1749267578125, 'shape': (1, 5, 128256), 'dtype': dtype('float16'), 'precision': 'fp16', 'model_id': 'HuggingFaceTB/SmolLM3-3B', 'experiment': 'forward'}
 ```
-
-Or in markdown:
-
