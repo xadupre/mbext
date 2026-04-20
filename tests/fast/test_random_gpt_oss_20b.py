@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 import numpy as np
 
-from modelbuilder.ext_test_case import ExtTestCase, hide_stdout, requires_cuda, run_session_or_io_binding
+from modelbuilder.ext_test_case import ExtTestCase, hide_stdout, requires_cuda, requires_genai, run_session_or_io_binding
 
 MODEL_NAME = "openai/gpt-oss-20b"
 
@@ -299,6 +299,7 @@ class TestGptOss20b(ExtTestCase):
         self.common_moe_decomposed_random_weights("fp16", "cpu")
 
     @hide_stdout()
+    @requires_genai()
     def test_gpt_oss_20b_fp32_cpu_genai_generate(self):
         """
         Verify that ``onnxruntime-genai`` can load the fp32/CPU ONNX model
@@ -311,11 +312,6 @@ class TestGptOss20b(ExtTestCase):
         The test is skipped automatically when ``onnxruntime-genai`` is not
         installed.
         """
-        try:
-            import onnxruntime_genai as og
-        except ImportError:
-            raise unittest.SkipTest("onnxruntime-genai is not installed; skipping genai comparison test.")
-
         import torch
         from tokenizers import Tokenizer
         from tokenizers.models import WordLevel
@@ -378,8 +374,6 @@ class TestGptOss20b(ExtTestCase):
         max_new_tokens = 5
         # Start from token ID 3 to avoid accidentally hitting BOS/EOS/PAD.
         prompt_ids = torch.randint(3, config.vocab_size, (batch_size, 4))
-        prompt_len = prompt_ids.shape[1]
-
         # ------------------------------------------------------------------
         # transformers greedy generation (reference)
         # ------------------------------------------------------------------
@@ -387,24 +381,9 @@ class TestGptOss20b(ExtTestCase):
             pt_output = model.generate(prompt_ids, max_new_tokens=max_new_tokens, do_sample=False, pad_token_id=config.eos_token_id)
         pt_tokens = pt_output[0].tolist()
 
-        # ------------------------------------------------------------------
-        # onnxruntime-genai greedy generation
-        # ------------------------------------------------------------------
-        og_model = og.Model(output_dir)
-
-        params = og.GeneratorParams(og_model)
-        params.set_search_options(do_sample=False, max_length=prompt_len + max_new_tokens, temperature=1.0, top_k=1)
-
-        generator = og.Generator(og_model, params)
-        generator.append_tokens(prompt_ids.numpy().astype(np.int64))
-
-        og_tokens = prompt_ids[0].tolist()
-        while not generator.is_done():
-            generator.generate_next_token()
-            og_tokens.append(int(generator.get_next_tokens()[0]))
-
         # Greedy decoding is deterministic: both backends must produce the
         # exact same token sequence (prompt + all generated tokens).
+        og_tokens = self.run_genai_generation(output_dir, prompt_ids, max_new_tokens)
         self.assertEqual(pt_tokens, og_tokens)
 
 

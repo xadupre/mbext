@@ -107,6 +107,15 @@ def requires_transformers(version: str = "", msg: str = "") -> Callable:
     return lambda x: x
 
 
+def requires_genai(msg: str = "") -> Callable:
+    """Skips a test if ``onnxruntime_genai`` is not installed."""
+    try:
+        import onnxruntime_genai  # noqa: F401
+    except ImportError:
+        return unittest.skip(msg or "onnxruntime-genai is not installed")
+    return lambda x: x
+
+
 def has_cuda() -> bool:
     """Returns ``torch.cuda.device_count() > 0``."""
     if not has_torch():
@@ -786,6 +795,41 @@ class ExtTestCase(unittest.TestCase):
             half_prec_slice=half_prec_slice,
             pt_tokens=pt_tokens,
         )
+
+    def run_genai_generation(self, output_dir: str, prompt_ids, max_new_tokens: int = 5) -> List[int]:
+        """Run greedy generation with ``onnxruntime-genai`` and return all tokens.
+
+        This helper encapsulates the boilerplate shared by every
+        ``test_*_genai_generate`` test method:
+
+        1. Load the ONNX model from *output_dir* via ``og.Model``.
+        2. Create ``GeneratorParams`` with greedy (argmax) search options.
+        3. Feed *prompt_ids* and iterate until generation is complete.
+        4. Return the full token sequence (prompt tokens + generated tokens).
+
+        The test is expected to be decorated with :func:`requires_genai` so that
+        it is skipped automatically when ``onnxruntime-genai`` is not installed.
+
+        :param output_dir: directory that contains ``model.onnx`` and
+            ``genai_config.json`` (the output of :func:`modelbuilder.builder.create_model`).
+        :param prompt_ids: 2-D integer tensor of shape ``(1, prompt_len)``.
+        :param max_new_tokens: maximum number of new tokens to generate.
+        :return: list of all token ids (prompt + generated).
+        """
+        import numpy as np
+        import onnxruntime_genai as og
+
+        prompt_len = prompt_ids.shape[1]
+        og_model = og.Model(output_dir)
+        params = og.GeneratorParams(og_model)
+        params.set_search_options(do_sample=False, max_length=prompt_len + max_new_tokens, temperature=1.0, top_k=1)
+        generator = og.Generator(og_model, params)
+        generator.append_tokens(prompt_ids.numpy().astype(np.int64))
+        og_tokens = prompt_ids[0].tolist()
+        while not generator.is_done():
+            generator.generate_next_token()
+            og_tokens.append(int(generator.get_next_tokens()[0]))
+        return og_tokens
 
 
 def get_input_np_dtype(precision):

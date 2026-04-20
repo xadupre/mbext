@@ -6,9 +6,8 @@
 import os
 import unittest
 
-import numpy as np
 
-from modelbuilder.ext_test_case import ExtTestCase, hide_stdout, requires_cuda
+from modelbuilder.ext_test_case import ExtTestCase, hide_stdout, requires_cuda, requires_genai
 
 MODEL_NAME = "arnir0/Tiny-LLM"
 
@@ -154,12 +153,8 @@ class TestRandomTinyLLM(ExtTestCase):
         self.common_tiny_llm_greedy_generation("bf16", "cuda")
 
     @hide_stdout()
+    @requires_genai()
     def test_tiny_llm_fp32_cpu_genai_generate(self):
-        try:
-            import onnxruntime_genai as og
-        except ImportError:
-            raise unittest.SkipTest("onnxruntime-genai is not installed; skipping genai comparison test.")
-
         import torch
         from tokenizers import Tokenizer
         from tokenizers.models import WordLevel
@@ -219,24 +214,11 @@ class TestRandomTinyLLM(ExtTestCase):
         batch_size = 1
         max_new_tokens = 5
         prompt_ids = torch.randint(3, config.vocab_size, (batch_size, 4))
-        prompt_len = prompt_ids.shape[1]
-
         with torch.no_grad():
             pt_output = model.generate(prompt_ids, max_new_tokens=max_new_tokens, do_sample=False, pad_token_id=config.eos_token_id)
         pt_tokens = pt_output[0].tolist()
 
-        og_model = og.Model(output_dir)
-        params = og.GeneratorParams(og_model)
-        params.set_search_options(do_sample=False, max_length=prompt_len + max_new_tokens, temperature=1.0, top_k=1)
-
-        generator = og.Generator(og_model, params)
-        generator.append_tokens(prompt_ids.numpy().astype(np.int64))
-
-        og_tokens = prompt_ids[0].tolist()
-        while not generator.is_done():
-            generator.generate_next_token()
-            og_tokens.append(int(generator.get_next_tokens()[0]))
-
+        og_tokens = self.run_genai_generation(output_dir, prompt_ids, max_new_tokens)
         self.assertEqual(pt_tokens, og_tokens)
 
 
