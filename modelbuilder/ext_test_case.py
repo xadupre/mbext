@@ -107,6 +107,15 @@ def requires_transformers(version: str = "", msg: str = "") -> Callable:
     return lambda x: x
 
 
+def requires_genai(msg: str = "") -> Callable:
+    """Skips a test if ``onnxruntime_genai`` is not installed."""
+    try:
+        import onnxruntime_genai  # noqa: F401
+    except ImportError:
+        return unittest.skip(msg or "onnxruntime-genai is not installed")
+    return lambda x: x
+
+
 def has_cuda() -> bool:
     """Returns ``torch.cuda.device_count() > 0``."""
     if not has_torch():
@@ -709,6 +718,118 @@ class ExtTestCase(unittest.TestCase):
             atol=atol,
             rtol=rtol,
         )
+
+    def run_greedy_generation_test(
+        self,
+        model,
+        tokenizer,
+        model_name: str,
+        basename: str,
+        precision: str,
+        provider: str,
+        num_hidden_layers: int,
+        num_key_value_heads: int,
+        head_size: int,
+        vocab_size: int,
+        eos_token_id: int,
+        create_model_kwargs: Optional[Dict] = None,
+        half_prec_slice=None,
+        pt_tokens=None,
+    ):
+        """Build and export a model to ONNX, then run end-to-end greedy generation.
+
+        This helper encapsulates the boilerplate shared by most
+        ``common_*_greedy_generation`` test methods:
+
+        1. Save the PyTorch *model* and *tokenizer* to the checkpoint directory.
+        2. Export the model to ONNX via :func:`modelbuilder.builder.create_model`.
+        3. Assert that ``model.onnx`` was produced.
+        4. Load an OnnxRuntime :class:`InferenceSession`.
+        5. Run :meth:`run_greedy_generation_check` to compare token sequences.
+        """
+        from modelbuilder.builder import create_model
+
+        model_dir = self.get_model_dir(basename)
+        output_dir, cache_dir = self.get_dirs(basename)
+
+        model.save_pretrained(model_dir)
+        if tokenizer is not None:
+            tokenizer.save_pretrained(model_dir)
+
+        create_kwargs: Dict = dict(
+            model_name=model_name,
+            input_path=model_dir,
+            output_dir=output_dir,
+            precision=precision,
+            execution_provider=provider,
+            cache_dir=cache_dir,
+        )
+        if create_model_kwargs:
+            create_kwargs.update(create_model_kwargs)
+        create_model(**create_kwargs)
+
+        onnx_path = os.path.join(output_dir, "model.onnx")
+        self.assertExists(onnx_path)
+        sess = self.check_ort(onnx_path, provider=provider)
+
+        log_data = dict(
+            precision=precision,
+            model_id=model_name,
+            experiment="generate",
+            provider=provider,
+            test=basename,
+            input_type="text",
+            kind="fast",
+        )
+        self.run_greedy_generation_check(
+            model=model,
+            sess=sess,
+            num_hidden_layers=num_hidden_layers,
+            num_key_value_heads=num_key_value_heads,
+            head_size=head_size,
+            vocab_size=vocab_size,
+            eos_token_id=eos_token_id,
+            precision=precision,
+            provider=provider,
+            log_data=log_data,
+            half_prec_slice=half_prec_slice,
+            pt_tokens=pt_tokens,
+        )
+
+    def run_genai_generation(self, output_dir: str, prompt_ids, max_new_tokens: int = 5) -> List[int]:
+        """Run greedy generation with ``onnxruntime-genai`` and return all tokens.
+
+        This helper encapsulates the boilerplate shared by every
+        ``test_*_genai_generate`` test method:
+
+        1. Load the ONNX model from *output_dir* via ``og.Model``.
+        2. Create ``GeneratorParams`` with greedy (argmax) search options.
+        3. Feed *prompt_ids* and iterate until generation is complete.
+        4. Return the full token sequence (prompt tokens + generated tokens).
+
+        The test is expected to be decorated with :func:`requires_genai` so that
+        it is skipped automatically when ``onnxruntime-genai`` is not installed.
+
+        :param output_dir: directory that contains ``model.onnx`` and
+            ``genai_config.json`` (the output of :func:`modelbuilder.builder.create_model`).
+        :param prompt_ids: 2-D integer tensor of shape ``(1, prompt_len)``.
+        :param max_new_tokens: maximum number of new tokens to generate.
+        :return: list of all token ids (prompt + generated).
+        """
+        import numpy as np
+        import onnxruntime_genai as og
+
+        prompt_len = prompt_ids.shape[1]
+        og_model = og.Model(output_dir)
+        params = og.GeneratorParams(og_model)
+        params.set_search_options(do_sample=False, max_length=prompt_len + max_new_tokens, temperature=1.0, top_k=1)
+        generator = og.Generator(og_model, params)
+        generator.append_tokens(prompt_ids.numpy().astype(np.int64))
+        og_tokens = prompt_ids[0].tolist()
+        while not generator.is_done():
+            generator.generate_next_token()
+            og_tokens.append(int(generator.get_next_tokens()[0]))
+        return og_tokens
 
 
 def get_input_np_dtype(precision):
