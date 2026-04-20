@@ -8,7 +8,7 @@ import unittest
 
 import numpy as np
 
-from modelbuilder.ext_test_case import ExtTestCase, hide_stdout, requires_cuda, requires_genai, requires_transformers
+from modelbuilder.ext_test_case import ExtTestCase, hide_stdout, long_test, requires_cuda, requires_genai, requires_transformers
 
 MINISTRAL3_MODEL_NAME = "mistralai/Ministral-3-3B-Instruct-2512"
 
@@ -516,6 +516,7 @@ class TestMinistral3(ExtTestCase):
         # Logits shape: [batch_size, total_seq_len, vocab_size]
         self.assertEqual(onnx_outputs[0].shape, (batch_size, total_seq_len, text_config.vocab_size))
 
+    @long_test()
     @hide_stdout()
     def test_ministral3_two_images_and_text_fp32_cpu_genai(self):
         """
