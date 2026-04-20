@@ -261,9 +261,8 @@ class Model:
         }
         if hasattr(config, "rope_scaling") and config.rope_scaling is not None:
             self.make_rope_init(config)
-        # Apply any additional rope_attrs that can be inferred from config attributes
-        # that fall outside the standard rope_scaling dict (e.g. compression_ratio).
-        self._apply_config_rope_attrs(config)
+        if hasattr(config, "compression_ratio") and config.compression_ratio != 1.0:
+            self.rope_attrs["rescale_factors"] = 1.0 / config.compression_ratio
 
         # Attention-specific variables (MHA, GQA, GQA + Rot.Emb., etc.)
         attn_softcap = (
@@ -461,28 +460,6 @@ class Model:
             if theta is not None:
                 return theta
         return default
-
-    def _apply_config_rope_attrs(self, config):
-        """Update ``self.rope_attrs`` from config attributes that live outside
-        ``rope_scaling``.
-
-        This method is called unconditionally from ``__init__`` after
-        ``rope_attrs`` has been populated and ``make_rope_init`` has run.
-        Subclasses may override it to add model-specific handling while still
-        calling ``super()._apply_config_rope_attrs(config)`` so that the
-        generic logic below continues to apply.
-
-        Currently handled attributes
-        ----------------------------
-        ``config.compression_ratio``
-            Some models (e.g. Ernie) scale position ids by
-            ``1 / compression_ratio``, which is equivalent to multiplying
-            ``inv_freq`` by ``1 / compression_ratio``.  When present and
-            different from 1, the reciprocal is stored in
-            ``self.rope_attrs["rescale_factors"]``.
-        """
-        if hasattr(config, "compression_ratio") and config.compression_ratio != 1.0:
-            self.rope_attrs["rescale_factors"] = 1.0 / config.compression_ratio
 
     def make_rope_init(self, config):
         # Some models (e.g. SmolLM3) store rope_theta inside rope_scaling
