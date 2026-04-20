@@ -569,6 +569,160 @@ class TestMinistral3(ExtTestCase):
         # Logits shape: [batch_size, total_seq_len, vocab_size]
         self.assertEqual(onnx_outputs[0].shape, (batch_size, total_seq_len, text_config.vocab_size))
 
+    @hide_stdout()
+    def test_ministral3_two_images_and_text_fp32_cpu_genai(self):
+        """
+        Verify that the multimodal Ministral3 export works end-to-end with
+        ``onnxruntime-genai`` when the prompt contains two images and text.
+
+        The test uses a randomly-initialised ``Mistral3ForConditionalGeneration``
+        model (same tiny configuration as
+        ``test_ministral3_two_images_and_text_fp32_cpu_random_weights``) and
+        verifies the following onnxruntime-genai API flow:
+
+        1. Load ``vision_encoder.onnx`` + ``model.onnx`` via ``og.Model``.
+        2. Provide ``pixel_values`` for the first image via
+           ``og.NamedTensors`` / ``generator.set_inputs``.
+        3. Run ``generator.append_tokens`` with a short token sequence.
+        4. Run ``generator.generate_next_token`` and verify at least one token
+           is produced.
+        5. Repeat steps 2–4 for the second image.
+
+        The test is skipped when ``onnxruntime-genai`` is not installed **or**
+        when the installed version does not yet support the ``vision_encoder``
+        section in ``genai_config.json`` (i.e. the genai runtime raises a
+        ``RuntimeError`` mentioning ``vision_encoder`` or ``Unknown value``).
+        This lets the test serve as a forward-compatibility check: once genai
+        ships the vision-encoder support, the test will pass automatically.
+        """
+        try:
+            import onnxruntime_genai as og
+        except ImportError:
+            raise unittest.SkipTest("onnxruntime-genai is not installed; skipping genai multimodal test.")
+
+        from tokenizers import Tokenizer
+        from tokenizers.models import WordLevel
+        from transformers import (
+            Ministral3Config,
+            Mistral3Config,
+            Mistral3ForConditionalGeneration,
+            PixtralVisionConfig,
+            PreTrainedTokenizerFast,
+        )
+
+        from modelbuilder.builder import create_model
+
+        num_hidden_layers = 1
+        image_size = 56
+        patch_size = 14
+        spatial_merge_size = 2
+
+        vision_config = PixtralVisionConfig(
+            hidden_size=64,
+            intermediate_size=128,
+            num_hidden_layers=1,
+            num_attention_heads=4,
+            head_dim=16,
+            image_size=image_size,
+            patch_size=patch_size,
+        )
+        text_config = Ministral3Config(
+            bos_token_id=1,
+            eos_token_id=2,
+            hidden_act="silu",
+            hidden_size=512,
+            intermediate_size=1376,
+            max_position_embeddings=1024,
+            num_attention_heads=8,
+            num_hidden_layers=num_hidden_layers,
+            num_key_value_heads=4,
+            head_dim=64,
+            rms_norm_eps=1e-05,
+            sliding_window=None,
+            vocab_size=32000,
+        )
+        config = Mistral3Config(text_config=text_config, vision_config=vision_config, spatial_merge_size=spatial_merge_size)
+        config.architectures = ["Mistral3ForConditionalGeneration"]
+
+        basename = "test_ministral3_two_images_and_text_fp32_cpu_genai"
+        model_dir = self.get_model_dir(basename)
+        output_dir, cache_dir = self.get_dirs(basename)
+
+        model = Mistral3ForConditionalGeneration(config)
+        model.eval()
+        model.save_pretrained(model_dir)
+
+        vocab = {"<unk>": 0, "<s>": 1, "</s>": 2}
+        tokenizer = PreTrainedTokenizerFast(
+            tokenizer_object=Tokenizer(WordLevel(vocab=vocab, unk_token="<unk>")), bos_token="<s>", eos_token="</s>", unk_token="<unk>"
+        )
+        tokenizer.save_pretrained(model_dir)
+
+        create_model(
+            model_name=MINISTRAL3_MODEL_NAME,
+            input_path=model_dir,
+            output_dir=output_dir,
+            precision="fp32",
+            execution_provider="cpu",
+            cache_dir=cache_dir,
+            num_hidden_layers=num_hidden_layers,
+        )
+
+        # Try to load the multimodal model with onnxruntime-genai.
+        # Versions that do not yet support the `vision_encoder` config section
+        # will raise a RuntimeError; in that case we skip the test.
+        try:
+            og_model = og.Model(output_dir)
+        except RuntimeError as exc:
+            msg = str(exc)
+            if "vision_encoder" in msg or "Unknown value" in msg:
+                raise unittest.SkipTest(
+                    f"onnxruntime-genai {og.__version__} does not support the "
+                    "vision_encoder configuration format; skipping genai multimodal test."
+                )
+            raise
+
+        max_new_tokens = 3
+        prompt_len = 3
+
+        # --- Image 1: provide pixel_values and generate a token ---
+        pixel_values_1 = np.zeros((1, vision_config.num_channels, image_size, image_size), dtype=np.float32)
+        named_tensors_1 = og.NamedTensors()
+        named_tensors_1["pixel_values"] = pixel_values_1
+
+        params = og.GeneratorParams(og_model)
+        params.set_search_options(do_sample=False, max_length=prompt_len + max_new_tokens, temperature=1.0, top_k=1)
+
+        generator = og.Generator(og_model, params)
+        generator.set_inputs(named_tensors_1)
+        generator.append_tokens(np.array([1, 100, 200], dtype=np.int64))
+
+        tokens_after_image1 = []
+        while not generator.is_done():
+            generator.generate_next_token()
+            tokens_after_image1.append(int(generator.get_next_tokens()[0]))
+
+        self.assertGreater(len(tokens_after_image1), 0)
+
+        # --- Image 2: provide pixel_values and generate a token in a new run ---
+        pixel_values_2 = np.ones((1, vision_config.num_channels, image_size, image_size), dtype=np.float32) * 0.5
+        named_tensors_2 = og.NamedTensors()
+        named_tensors_2["pixel_values"] = pixel_values_2
+
+        params2 = og.GeneratorParams(og_model)
+        params2.set_search_options(do_sample=False, max_length=prompt_len + max_new_tokens, temperature=1.0, top_k=1)
+
+        generator2 = og.Generator(og_model, params2)
+        generator2.set_inputs(named_tensors_2)
+        generator2.append_tokens(np.array([1, 100, 200], dtype=np.int64))
+
+        tokens_after_image2 = []
+        while not generator2.is_done():
+            generator2.generate_next_token()
+            tokens_after_image2.append(int(generator2.get_next_tokens()[0]))
+
+        self.assertGreater(len(tokens_after_image2), 0)
+
     def test_dequantize_fp8_weights_no_op_when_no_fp8(self):
         """_dequantize_fp8_weights leaves normal float32 weights unchanged."""
         import torch
