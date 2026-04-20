@@ -8,7 +8,7 @@ import unittest
 
 import numpy as np
 
-from modelbuilder.ext_test_case import ExtTestCase, hide_stdout, requires_cuda, requires_transformers
+from modelbuilder.ext_test_case import ExtTestCase, hide_stdout, long_test, requires_cuda, requires_transformers
 
 MINISTRAL3_MODEL_NAME = "mistralai/Ministral-3-3B-Instruct-2512"
 
@@ -569,6 +569,7 @@ class TestMinistral3(ExtTestCase):
         # Logits shape: [batch_size, total_seq_len, vocab_size]
         self.assertEqual(onnx_outputs[0].shape, (batch_size, total_seq_len, text_config.vocab_size))
 
+    @long_test()
     @hide_stdout()
     def test_ministral3_two_images_and_text_fp32_cpu_genai(self):
         """
@@ -588,17 +589,11 @@ class TestMinistral3(ExtTestCase):
            is produced.
         5. Repeat steps 2–4 for the second image.
 
-        The test is skipped when ``onnxruntime-genai`` is not installed **or**
-        when the installed version does not yet support the ``vision_encoder``
-        section in ``genai_config.json`` (i.e. the genai runtime raises a
-        ``RuntimeError`` mentioning ``vision_encoder`` or ``Unknown value``).
-        This lets the test serve as a forward-compatibility check: once genai
-        ships the vision-encoder support, the test will pass automatically.
+        The test requires ``onnxruntime-genai`` to be installed and to support
+        the ``vision_encoder`` section in ``genai_config.json``.  Run with
+        ``LONGTEST=1`` to enable it.
         """
-        try:
-            import onnxruntime_genai as og
-        except ImportError:
-            raise unittest.SkipTest("onnxruntime-genai is not installed; skipping genai multimodal test.")
+        import onnxruntime_genai as og
 
         from tokenizers import Tokenizer
         from tokenizers.models import WordLevel
