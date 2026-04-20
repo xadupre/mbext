@@ -15,11 +15,7 @@ MODEL_NAME = "GraniteForCausalLM"
 
 class TestGranite(ExtTestCase):
     def common_fast_granite_random_weights(self, precision, provider):
-        from tokenizers import Tokenizer
-        from tokenizers.models import WordLevel
-        from transformers import AutoModelForCausalLM, GraniteConfig, PreTrainedTokenizerFast
-
-        from modelbuilder.builder import create_model
+        from transformers import AutoModelForCausalLM, GraniteConfig
 
         num_hidden_layers = 1
 
@@ -44,53 +40,20 @@ class TestGranite(ExtTestCase):
             attention_multiplier=1.0,
         )
 
-        basename = f"test_discrepancies_granite_{precision}_{provider}"
-        model_dir = self.get_model_dir(basename)
-        output_dir, cache_dir = self.get_dirs(basename)
-
         model = AutoModelForCausalLM.from_config(config)
         model.eval().to(provider)
-        model.save_pretrained(model_dir)
-
-        vocab = {"<unk>": 0, "<s>": 1, "</s>": 2}
-        tokenizer = PreTrainedTokenizerFast(
-            tokenizer_object=Tokenizer(WordLevel(vocab=vocab, unk_token="<unk>")), bos_token="<s>", eos_token="</s>", unk_token="<unk>"
-        )
-        tokenizer.save_pretrained(model_dir)
-
-        create_model(
-            model_name=MODEL_NAME,
-            input_path=model_dir,
-            output_dir=output_dir,
-            precision=precision,
-            execution_provider=provider,
-            cache_dir=cache_dir,
-        )
-
-        log_data = dict(
-            precision=precision,
-            model_id=MODEL_NAME,
-            experiment="forward",
-            provider=provider,
-            test=basename,
-            input_type="text",
-            kind="random",
-        )
-
-        onnx_path = os.path.join(output_dir, "model.onnx")
-        self.assertExists(onnx_path)
-        sess = self.check_ort(onnx_path, provider=provider)
-
-        self.run_prefill_and_decode_check(
+        tokenizer = self.make_word_level_tokenizer()
+        self.run_random_weights_test(
             model=model,
-            sess=sess,
+            tokenizer=tokenizer,
+            model_name=MODEL_NAME,
+            basename=f"test_discrepancies_granite_{precision}_{provider}",
+            precision=precision,
+            provider=provider,
             num_hidden_layers=num_hidden_layers,
             num_key_value_heads=config.num_key_value_heads,
             head_size=config.hidden_size // config.num_attention_heads,
             vocab_size=config.vocab_size,
-            precision=precision,
-            provider=provider,
-            log_data=log_data,
         )
 
     def common_granite_greedy_generation(self, precision, provider):

@@ -475,85 +475,20 @@ class TestPhi3Small(ExtTestCase):
         self.assertExists(onnx_path)
         sess = self._check_with_ort(onnx_path, cpu=provider == "cpu")
 
-        batch_size = 1
-        seq_len = 5
-        head_size = config_obj.hidden_size // config_obj.num_attention_heads
-
-        torch.manual_seed(1)
-        input_ids = torch.randint(0, config_obj.vocab_size, (batch_size, seq_len)).to(provider)
-        onnx_input_names = [i.name for i in sess.get_inputs()]
-
-        prefill_results = None
-        with self.subTest(step="prefill"):
-            prefill_feed = {
-                "input_ids": input_ids.cpu().numpy().astype(np.int64),
-                "attention_mask": np.ones((batch_size, seq_len), dtype=np.int64),
-                "position_ids": np.arange(seq_len, dtype=np.int64).reshape(batch_size, seq_len),
-            }
-            for i in range(num_hidden_layers):
-                prefill_feed[f"past_key_values.{i}.key"] = np.zeros(
-                    (batch_size, config_obj.num_key_value_heads, 0, head_size), dtype=self.get_input_np_dtype(precision)
-                )
-                prefill_feed[f"past_key_values.{i}.value"] = np.zeros(
-                    (batch_size, config_obj.num_key_value_heads, 0, head_size), dtype=self.get_input_np_dtype(precision)
-                )
-            prefill_feed = {k: v for k, v in prefill_feed.items() if k in onnx_input_names}
-
-            prefill_results, ort_logits_np = run_session_or_io_binding(
-                use_iobinding=precision == "bf16",
-                precision=precision,
-                provider=provider,
-                feed=prefill_feed,
-                sess=sess,
-                vocab_size=config_obj.vocab_size,
-            )
-
-            with torch.no_grad():
-                pt_prefill = model(input_ids)
-
-            np_prefill = pt_prefill.logits.detach().cpu().numpy()
-            disc = self.get_numpy_discrepancy(np_prefill, ort_logits_np)
-            self.log_results({"step": "prefill", **disc, **log_data})
-            # gegelu and mup scaling introduce moderate numerical differences
-            atol = {"fp16": 5e-2, "bf16": 5e-2, "fp32": 1e-2, "int4": 0.5}
-            np.testing.assert_allclose(np_prefill, ort_logits_np, atol=atol[precision], rtol=1e-3)
-
-        with self.subTest(step="decode"):
-            if prefill_results is None:
-                raise unittest.SkipTest("prefill failed")
-            next_token = int(np.argmax(prefill_results["logits"][0, -1, :]))
-
-            decode_feed = {
-                "input_ids": np.array([[next_token]], dtype=np.int64),
-                "attention_mask": np.ones((batch_size, seq_len + 1), dtype=np.int64),
-                "position_ids": np.array([[seq_len]], dtype=np.int64),
-            }
-            for i in range(num_hidden_layers):
-                decode_feed[f"past_key_values.{i}.key"] = prefill_results[f"present.{i}.key"]
-                decode_feed[f"past_key_values.{i}.value"] = prefill_results[f"present.{i}.value"]
-            decode_feed = {k: v for k, v in decode_feed.items() if k in onnx_input_names}
-
-            prefill_results, onnx_decode_logits = run_session_or_io_binding(
-                use_iobinding=precision == "bf16",
-                precision=precision,
-                provider=provider,
-                feed=decode_feed,
-                sess=sess,
-                vocab_size=config_obj.vocab_size,
-                results=prefill_results,
-            )
-
-            with torch.no_grad():
-                pt_past_kv = pt_prefill.past_key_values
-                next_token_tensor = torch.tensor([[next_token]], dtype=torch.long).to(provider)
-                pt_decode = model(next_token_tensor, past_key_values=pt_past_kv)
-                pt_decode_logits = pt_decode.logits.detach().cpu().numpy()
-
-            disc = self.get_numpy_discrepancy(pt_decode_logits, onnx_decode_logits)
-            self.log_results({"step": "decode", **disc, **log_data})
-            atol = {"fp16": 5e-2, "bf16": 5e-2, "fp32": 1e-2, "int4": 0.5}
-            rtol = {"fp16": 10, "bf16": 10, "fp32": 1e-2, "int4": 10000}
-            np.testing.assert_allclose(pt_decode_logits, onnx_decode_logits, atol=atol[precision], rtol=rtol[precision])
+        # gegelu and mup scaling introduce moderate numerical differences
+        self.run_prefill_and_decode_check(
+            model=model,
+            sess=sess,
+            num_hidden_layers=num_hidden_layers,
+            num_key_value_heads=config_obj.num_key_value_heads,
+            head_size=config_obj.hidden_size // config_obj.num_attention_heads,
+            vocab_size=config_obj.vocab_size,
+            precision=precision,
+            provider=provider,
+            log_data=log_data,
+            atol={"fp16": 5e-2, "bf16": 5e-2, "fp32": 1e-2, "int4": 0.5},
+            rtol={"fp16": 10, "bf16": 10, "fp32": 1e-2, "int4": 10000},
+        )
 
     def common_phi3_small_greedy_generation(self, precision, provider):
         import torch

@@ -610,6 +610,106 @@ class ExtTestCase(unittest.TestCase):
     def fill_with_empty_cache(self, onnx_feed, session, provider, batch_size=1):
         return fill_with_empty_cache(onnx_feed, session, provider=provider, batch_size=batch_size)
 
+    def make_word_level_tokenizer(
+        self, bos_token: str = "<s>", bos_token_id: int = 1, eos_token: str = "</s>", eos_token_id: int = 2
+    ) -> "PreTrainedTokenizerFast":  # noqa: F821
+        """Create a minimal ``PreTrainedTokenizerFast`` backed by a ``WordLevel`` model.
+
+        The vocabulary contains exactly three tokens: ``<unk>`` at id 0, plus the
+        given *bos* and *eos* tokens at their respective ids.  This covers both the
+        standard convention (bos_token_id=1, eos_token_id=2) and the Gemma-style
+        convention (bos_token_id=2, eos_token_id=1).
+        """
+        from tokenizers import Tokenizer
+        from tokenizers.models import WordLevel
+        from transformers import PreTrainedTokenizerFast
+
+        vocab = {"<unk>": 0, bos_token: bos_token_id, eos_token: eos_token_id}
+        return PreTrainedTokenizerFast(
+            tokenizer_object=Tokenizer(WordLevel(vocab=vocab, unk_token="<unk>")),
+            bos_token=bos_token,
+            eos_token=eos_token,
+            unk_token="<unk>",
+        )
+
+    def run_random_weights_test(
+        self,
+        model,
+        tokenizer,
+        model_name: str,
+        basename: str,
+        precision: str,
+        provider: str,
+        num_hidden_layers: int,
+        num_key_value_heads: int,
+        head_size: int,
+        vocab_size: int,
+        create_model_kwargs: Optional[Dict] = None,
+        atol: Optional[Dict] = None,
+        rtol: Optional[Dict] = None,
+        input_type: str = "text",
+        kind: str = "random",
+    ):
+        """Build and export a random-weight model to ONNX and compare PyTorch vs ONNX.
+
+        This helper encapsulates the boilerplate shared by most
+        ``common_fast_*_random_weights`` test methods:
+
+        1. Set up output and cache directories.
+        2. Save the PyTorch *model* and *tokenizer* to the checkpoint directory.
+        3. Export the model to ONNX via :func:`modelbuilder.builder.create_model`.
+        4. Assert that ``model.onnx`` was produced.
+        5. Load an OnnxRuntime :class:`InferenceSession`.
+        6. Run :meth:`run_prefill_and_decode_check` to compare logits.
+        """
+        from modelbuilder.builder import create_model
+
+        model_dir = self.get_model_dir(basename)
+        output_dir, cache_dir = self.get_dirs(basename)
+
+        model.save_pretrained(model_dir)
+        tokenizer.save_pretrained(model_dir)
+
+        create_kwargs: Dict = dict(
+            model_name=model_name,
+            input_path=model_dir,
+            output_dir=output_dir,
+            precision=precision,
+            execution_provider=provider,
+            cache_dir=cache_dir,
+        )
+        if create_model_kwargs:
+            create_kwargs.update(create_model_kwargs)
+        create_model(**create_kwargs)
+
+        log_data = dict(
+            precision=precision,
+            model_id=model_name,
+            experiment="forward",
+            provider=provider,
+            test=basename,
+            input_type=input_type,
+            kind=kind,
+        )
+
+        onnx_path = os.path.join(output_dir, "model.onnx")
+        self.assertExists(onnx_path)
+        sess = self.check_ort(onnx_path, provider=provider)
+
+        self.run_prefill_and_decode_check(
+            model=model,
+            sess=sess,
+            num_hidden_layers=num_hidden_layers,
+            num_key_value_heads=num_key_value_heads,
+            head_size=head_size,
+            vocab_size=vocab_size,
+            precision=precision,
+            provider=provider,
+            log_data=log_data,
+            atol=atol,
+            rtol=rtol,
+        )
+
 
 def get_input_np_dtype(precision):
     if precision == "bf16":
