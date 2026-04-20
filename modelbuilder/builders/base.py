@@ -46,25 +46,6 @@ def parse_hf_token(hf_token):
     return hf_token
 
 
-def _make_search_section(config, context_length, extra_options, past_present_share_buffer):
-    """Build the ``search`` section of ``genai_config.json``.
-
-    Starts from :data:`GENAI_SEARCH_DEFAULTS` so that every field is always
-    initialized to a valid value.  Any attribute that exists on *config* and
-    is not ``None`` overrides the corresponding default, which is the correct
-    behaviour for both transformers < 5 (where attributes carry concrete
-    values) and transformers >= 5 (where they may be ``None``).
-    """
-    search = dict(GENAI_SEARCH_DEFAULTS)
-    for key in GENAI_SEARCH_DEFAULTS:
-        val = getattr(config, key, None)
-        if val is not None:
-            search[key] = val
-    search["max_length"] = context_length
-    search["past_present_share_buffer"] = False if "config_only" in extra_options else past_present_share_buffer
-    return search
-
-
 class Model:
     def __init__(self, config, io_dtype, onnx_dtype, ep, cache_dir, extra_options):
         self.context_length = config.seq_length if hasattr(config, "seq_length") else config.max_position_embeddings
@@ -588,6 +569,24 @@ class Model:
 
         self.past_present_share_buffer = self.attention_attrs["op_type"] == "GroupQueryAttention"
 
+    def _make_search_section(self, config, context_length, extra_options, past_present_share_buffer):
+        """Build the ``search`` section of ``genai_config.json``.
+
+        Starts from :data:`GENAI_SEARCH_DEFAULTS` so that every field is always
+        initialized to a valid value.  Any attribute that exists on *config* and
+        is not ``None`` overrides the corresponding default, which is the correct
+        behaviour for both transformers < 5 (where attributes carry concrete
+        values) and transformers >= 5 (where they may be ``None``).
+        """
+        search = dict(GENAI_SEARCH_DEFAULTS)
+        for key in GENAI_SEARCH_DEFAULTS:
+            val = getattr(config, key, None)
+            if val is not None:
+                search[key] = val
+        search["max_length"] = context_length
+        search["past_present_share_buffer"] = False if "config_only" in extra_options else past_present_share_buffer
+        return search
+
     def make_genai_config(self, model_name_or_path, extra_kwargs, out_dir):
         # Create config with attributes from config.json and generation_config.json (if latter file exists)
         config = AutoConfig.from_pretrained(model_name_or_path, token=self.hf_token, trust_remote_code=self.hf_remote, **extra_kwargs)
@@ -664,7 +663,7 @@ class Model:
                 "type": self.model_type[: self.model_type.find("For") if "For" in self.model_type else len(self.model_type)].lower(),
                 "vocab_size": self.vocab_size,
             },
-            "search": _make_search_section(config, self.context_length, self.extra_options, self.past_present_share_buffer),
+            "search": self._make_search_section(config, self.context_length, self.extra_options, self.past_present_share_buffer),
         }
 
         if self.ep == "trt-rtx" and self.window_size is not None and self.window_size > 0:
