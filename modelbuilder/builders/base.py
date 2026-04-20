@@ -26,8 +26,6 @@ from onnxruntime.quantization.matmul_nbits_quantizer import (
 from tqdm import tqdm
 from transformers import AutoConfig, AutoModelForCausalLM, AutoModelForSpeechSeq2Seq, AutoTokenizer, GenerationConfig
 
-from ..genai_config_utils import GENAI_SEARCH_DEFAULTS
-
 
 def parse_hf_token(hf_token):
     """
@@ -578,6 +576,25 @@ class Model:
         behaviour for both transformers < 5 (where attributes carry concrete
         values) and transformers >= 5 (where they may be ``None``).
         """
+        # Search-section defaults for onnxruntime-genai.  In transformers >= 5,
+        # GenerationConfig attributes default to None instead of concrete values,
+        # which can produce null entries in genai_config.json that
+        # onnxruntime-genai does not accept.
+        GENAI_SEARCH_DEFAULTS = {
+            "diversity_penalty": 0.0,
+            "do_sample": False,
+            "early_stopping": True,
+            "length_penalty": 1.0,
+            "min_length": 0,
+            "no_repeat_ngram_size": 0,
+            "num_beams": 1,
+            "num_return_sequences": 1,
+            "repetition_penalty": 1.0,
+            "temperature": 1.0,
+            "top_k": 50,
+            "top_p": 1.0,
+        }
+
         search = dict(GENAI_SEARCH_DEFAULTS)
         for key in GENAI_SEARCH_DEFAULTS:
             val = getattr(config, key, None)
