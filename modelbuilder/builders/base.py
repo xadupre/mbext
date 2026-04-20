@@ -442,7 +442,7 @@ class Model:
 
     @staticmethod
     def _rope_theta_from_config(config, default=10000):
-        """Return the RoPE base frequency from *config*, trying all standard attribute locations.
+        """Return the RoPE base frequency from ``config``, trying all standard attribute locations.
 
         The lookup order is:
         1. ``config.rope_theta`` – the standard HuggingFace attribute.
@@ -450,7 +450,7 @@ class Model:
         3. ``config.rope_parameters["rope_theta"]`` – a flat dict used by models
            such as Ernie 4.5 that store all RoPE hyper-parameters together under
            ``rope_parameters`` rather than as individual top-level attributes.
-        4. *default* (10 000) if none of the above is present.
+        4. ``default`` (10000) if none of the above is present.
         """
         if hasattr(config, "rope_theta"):
             return config.rope_theta
