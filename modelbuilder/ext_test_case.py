@@ -395,12 +395,10 @@ class ExtTestCase(unittest.TestCase):
             }
             for i in range(num_hidden_layers):
                 prefill_feed[f"past_key_values.{i}.key"] = np.zeros(
-                    (batch_size, num_key_value_heads, 0, head_size),
-                    dtype=self.get_input_np_dtype(precision),
+                    (batch_size, num_key_value_heads, 0, head_size), dtype=self.get_input_np_dtype(precision)
                 )
                 prefill_feed[f"past_key_values.{i}.value"] = np.zeros(
-                    (batch_size, num_key_value_heads, 0, head_size),
-                    dtype=self.get_input_np_dtype(precision),
+                    (batch_size, num_key_value_heads, 0, head_size), dtype=self.get_input_np_dtype(precision)
                 )
             prefill_feed = {k: v for k, v in prefill_feed.items() if k in onnx_input_names}
 
@@ -454,9 +452,7 @@ class ExtTestCase(unittest.TestCase):
 
             disc = self.get_numpy_discrepancy(pt_decode_logits, onnx_decode_logits)
             self.log_results({"step": "decode", **disc, **log_data})
-            np.testing.assert_allclose(
-                pt_decode_logits, onnx_decode_logits, atol=atol[precision], rtol=rtol[precision]
-            )
+            np.testing.assert_allclose(pt_decode_logits, onnx_decode_logits, atol=atol[precision], rtol=rtol[precision])
 
     def run_greedy_generation_check(
         self,
@@ -497,12 +493,7 @@ class ExtTestCase(unittest.TestCase):
 
         if pt_tokens is None:
             with torch.no_grad():
-                pt_output = model.generate(
-                    prompt_ids,
-                    max_new_tokens=max_new_tokens,
-                    do_sample=False,
-                    pad_token_id=eos_token_id,
-                )
+                pt_output = model.generate(prompt_ids, max_new_tokens=max_new_tokens, do_sample=False, pad_token_id=eos_token_id)
             pt_tokens = pt_output[0].tolist()
 
         current_ids = prompt_ids.detach().cpu().numpy().astype(np.int64)
@@ -510,12 +501,10 @@ class ExtTestCase(unittest.TestCase):
         past_kv = {}
         for i in range(num_hidden_layers):
             past_kv[f"past_key_values.{i}.key"] = np.zeros(
-                (batch_size, num_key_value_heads, 0, head_size),
-                dtype=self.get_input_np_dtype(precision),
+                (batch_size, num_key_value_heads, 0, head_size), dtype=self.get_input_np_dtype(precision)
             )
             past_kv[f"past_key_values.{i}.value"] = np.zeros(
-                (batch_size, num_key_value_heads, 0, head_size),
-                dtype=self.get_input_np_dtype(precision),
+                (batch_size, num_key_value_heads, 0, head_size), dtype=self.get_input_np_dtype(precision)
             )
 
         onnx_tokens = current_ids[0].tolist()
@@ -527,9 +516,7 @@ class ExtTestCase(unittest.TestCase):
             feed = {
                 "input_ids": current_ids,
                 "attention_mask": np.ones((batch_size, past_len + cur_len), dtype=np.int64),
-                "position_ids": np.arange(past_len, past_len + cur_len, dtype=np.int64).reshape(
-                    batch_size, cur_len
-                ),
+                "position_ids": np.arange(past_len, past_len + cur_len, dtype=np.int64).reshape(batch_size, cur_len),
             }
             for i in range(num_hidden_layers):
                 feed[f"past_key_values.{i}.key"] = past_kv[f"past_key_values.{i}.key"]
