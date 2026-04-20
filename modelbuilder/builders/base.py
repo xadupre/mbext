@@ -2542,17 +2542,47 @@ class Model:
             raise NotImplementedError(f"The {op_type} op is not currently supported.")
 
     def make_packed_attention(self, name, **kwargs):
+        past_k = kwargs.get("past_k", "")
+        past_v = kwargs.get("past_v", "")
+        present_k = kwargs.get("present_k", "")
+        present_v = kwargs.get("present_v", "")
+
+        # If past K and V are provided as separate tensors, combine them into the packed format
+        # expected by com.microsoft.Attention: (batch_size, 2, num_heads, past_sequence_length, head_size)
+        past_kv = kwargs.get("past_key_values", "")
+        if not past_kv and past_k and past_v:
+            past_k_unsqueeze_name = f"{name}/past_k/Unsqueeze"
+            self.make_unsqueeze(past_k_unsqueeze_name, [past_k, "/model/constants/INT64/[1]"], dtype=self.io_dtype, shape=None)
+            past_v_unsqueeze_name = f"{name}/past_v/Unsqueeze"
+            self.make_unsqueeze(past_v_unsqueeze_name, [past_v, "/model/constants/INT64/[1]"], dtype=self.io_dtype, shape=None)
+            past_kv_concat_name = f"{name}/past_kv/Concat"
+            self.make_concat(
+                past_kv_concat_name,
+                [f"{past_k_unsqueeze_name}/output_0", f"{past_v_unsqueeze_name}/output_0"],
+                dtype=self.io_dtype,
+                shape=None,
+                axis=1,
+            )
+            past_kv = f"{past_kv_concat_name}/output_0"
+
+        # If present K and V are needed as separate outputs, use a named intermediate for the combined KV
+        # output of com.microsoft.Attention: (batch_size, 2, num_heads, total_sequence_length, head_size)
+        present_kv = kwargs.get("present_key_values", "")
+        need_split_present = bool((present_k or present_v) and not present_kv)
+        if need_split_present:
+            present_kv = f"{name}/present_kv"
+
         inputs = [
             kwargs["root_input"],
             self.attention_attrs["weights"],
             self.attention_attrs["bias"],
             kwargs.get("mask_index", ""),
-            kwargs.get("past_key_values", ""),
+            past_kv,
             kwargs.get("attention_bias", ""),
             kwargs.get("past_sequence_length", ""),
         ]
         output = f"{name}/output_0"
-        outputs = [output, kwargs.get("present_key_values", "")]
+        outputs = [output, present_kv]
         self.make_node(
             "Attention",
             inputs=inputs,
@@ -2569,6 +2599,20 @@ class Model:
             unidirectional=self.attention_attrs["unidirectional"],
         )
         self.make_value(output, self.io_dtype, shape=["batch_size", "sequence_length", self.head_size * self.num_attn_heads])
+
+        # Split the combined present KV output into separate present_k and present_v tensors.
+        # Gather at axis=1 with a scalar index drops that dimension:
+        #   (batch_size, 2, num_heads, total_sequence_length, head_size)
+        #     -> (batch_size, num_heads, total_sequence_length, head_size)
+        if need_split_present:
+            if present_k:
+                self.make_node(
+                    "Gather", inputs=[present_kv, "/model/constants/INT64/0"], outputs=[present_k], name=f"{name}/present_k/Gather", axis=1
+                )
+            if present_v:
+                self.make_node(
+                    "Gather", inputs=[present_kv, "/model/constants/INT64/1"], outputs=[present_v], name=f"{name}/present_v/Gather", axis=1
+                )
 
     def make_multi_head_attention(self, name, **kwargs):
         inputs = [

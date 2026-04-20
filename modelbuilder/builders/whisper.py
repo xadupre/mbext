@@ -45,6 +45,11 @@ class WhisperEncoder(Model):
         # GQA is not supported in Whisper since there is no attention mask input
         return False
 
+    def is_packed_attn_supported(self):
+        # Packed Attention is not supported in the encoder: the com.microsoft.Attention
+        # op crashes on CPU/float32 for bidirectional (non-causal) attention without KV cache.
+        return False
+
     def make_inputs_and_outputs(self):
         # Set input dicts
         self.input_names = {"audio_features": "audio_features"}
@@ -260,6 +265,12 @@ class WhisperDecoder(Model):
 
     def is_gqa_supported(self):
         # GQA is not supported in the decoder since there is no attention mask input
+        return False
+
+    def is_packed_attn_supported(self):
+        # Packed Attention is not supported in the decoder: the com.microsoft.Attention
+        # op does not support autoregressive (growing) KV caches on CPU/float32 and
+        # crashes at runtime even when the graph structure is correct.
         return False
 
     def make_inputs_and_outputs(self):
@@ -494,21 +505,36 @@ class WhisperDecoder(Model):
         self.attention_attrs["k_path"] = self.input_names["past_key_cross"][layer_id]
         self.attention_attrs["v_path"] = self.input_names["past_value_cross"][layer_id]
 
-        # Make attention node (e.g. MultiHeadAttention, GroupQueryAttention, etc.)
-        attn_name = f"/model/layers.{layer_id}/cross_attn/{self.attention_attrs['op_type']}"
+        # Make attention node - cross-attention always uses MultiHeadAttention when packed
+        # Attention is selected, because K and V come from static encoder outputs and cannot
+        # be projected from the decoder input as the packed Attention op requires.
+        cross_attn_op = "MultiHeadAttention" if self.attention_attrs["op_type"] == "Attention" else self.attention_attrs["op_type"]
+        attn_name = f"/model/layers.{layer_id}/cross_attn/{cross_attn_op}"
         attn_output = f"{attn_name}/output_0"
-        self.make_attention_op(
-            attn_name,
-            root_input=root_input,
-            q_path=self.attention_attrs["q_path"],
-            k_path=self.attention_attrs["k_path"],
-            v_path=self.attention_attrs["v_path"],
-            past_k="",
-            past_v="",
-            present_k="",
-            present_v="",
-            **kwargs,
-        )
+        if self.attention_attrs["op_type"] == "Attention":
+            self.make_multi_head_attention(
+                attn_name,
+                q_path=self.attention_attrs["q_path"],
+                k_path=self.attention_attrs["k_path"],
+                v_path=self.attention_attrs["v_path"],
+                past_k="",
+                past_v="",
+                present_k="",
+                present_v="",
+            )
+        else:
+            self.make_attention_op(
+                attn_name,
+                root_input=root_input,
+                q_path=self.attention_attrs["q_path"],
+                k_path=self.attention_attrs["k_path"],
+                v_path=self.attention_attrs["v_path"],
+                past_k="",
+                past_v="",
+                present_k="",
+                present_v="",
+                **kwargs,
+            )
 
         # Make output projection
         o_matmul_basename = f"/model/layers.{layer_id}/cross_attn/o_proj/MatMul"
