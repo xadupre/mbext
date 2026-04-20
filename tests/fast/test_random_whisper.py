@@ -16,9 +16,7 @@ WHISPER_MODEL_NAME = "openai/whisper-tiny"
 class TestWhisperModel(ExtTestCase):
     def common_fast_whisper_random_weights(self, precision, provider):
         import torch
-        from tokenizers import Tokenizer
-        from tokenizers.models import WordLevel
-        from transformers import PreTrainedTokenizerFast, WhisperConfig, WhisperForConditionalGeneration
+        from transformers import WhisperConfig, WhisperForConditionalGeneration
 
         from modelbuilder.builder import create_model
 
@@ -55,11 +53,7 @@ class TestWhisperModel(ExtTestCase):
         model.eval().to(provider)
         model.save_pretrained(model_dir)
 
-        vocab = {"<unk>": 0, "<s>": 1, "</s>": 2}
-        tokenizer = PreTrainedTokenizerFast(
-            tokenizer_object=Tokenizer(WordLevel(vocab=vocab, unk_token="<unk>")), bos_token="<s>", eos_token="</s>", unk_token="<unk>"
-        )
-        tokenizer.save_pretrained(model_dir)
+        self.make_word_level_tokenizer(model_dir)
 
         create_model(
             model_name=WHISPER_MODEL_NAME,

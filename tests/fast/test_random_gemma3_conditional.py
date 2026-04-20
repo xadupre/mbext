@@ -48,9 +48,7 @@ class TestRandomGemma3Conditional(ExtTestCase):
 
     def common_fast_gemma3_conditional_random_weights(self, precision, provider):
         import torch
-        from tokenizers import Tokenizer
-        from tokenizers.models import WordLevel
-        from transformers import Gemma3ForConditionalGeneration, PreTrainedTokenizerFast
+        from transformers import Gemma3ForConditionalGeneration
 
         from modelbuilder.builder import create_model
 
@@ -66,11 +64,7 @@ class TestRandomGemma3Conditional(ExtTestCase):
         model.eval().to(provider)
         model.save_pretrained(model_dir)
 
-        vocab = {"<unk>": 0, "</s>": 1, "<bos>": 2}
-        tokenizer = PreTrainedTokenizerFast(
-            tokenizer_object=Tokenizer(WordLevel(vocab=vocab, unk_token="<unk>")), bos_token="<bos>", eos_token="</s>", unk_token="<unk>"
-        )
-        tokenizer.save_pretrained(model_dir)
+        self.make_word_level_tokenizer(model_dir, vocab={"<unk>": 0, "</s>": 1, "<bos>": 2}, bos_token="<bos>")
 
         # create_model detects Gemma3ForConditionalGeneration and automatically
         # sets exclude_embeds=True so the ONNX model takes ``inputs_embeds``.
@@ -189,9 +183,7 @@ class TestRandomGemma3Conditional(ExtTestCase):
 
     def common_gemma3_conditional_greedy_generation(self, precision, provider):
         import torch
-        from tokenizers import Tokenizer
-        from tokenizers.models import WordLevel
-        from transformers import Gemma3ForConditionalGeneration, PreTrainedTokenizerFast
+        from transformers import Gemma3ForConditionalGeneration
 
         from modelbuilder.builder import create_model
 
@@ -207,11 +199,7 @@ class TestRandomGemma3Conditional(ExtTestCase):
         model.eval().to(provider)
         model.save_pretrained(model_dir)
 
-        vocab = {"<unk>": 0, "</s>": 1, "<bos>": 2}
-        tokenizer = PreTrainedTokenizerFast(
-            tokenizer_object=Tokenizer(WordLevel(vocab=vocab, unk_token="<unk>")), bos_token="<bos>", eos_token="</s>", unk_token="<unk>"
-        )
-        tokenizer.save_pretrained(model_dir)
+        self.make_word_level_tokenizer(model_dir, vocab={"<unk>": 0, "</s>": 1, "<bos>": 2}, bos_token="<bos>")
 
         create_model(
             model_name=MODEL_NAME,

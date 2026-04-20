@@ -17,9 +17,7 @@ QWEN3_VL_MODEL_NAME = "Qwen/Qwen3-VL-4B-Instruct"
 class TestRandomQwen3VL(ExtTestCase):
     def common_fast_qwen3_vl_random_weights(self, precision, provider):
         import torch
-        from tokenizers import Tokenizer
-        from tokenizers.models import WordLevel
-        from transformers import Qwen3VLConfig, Qwen3VLForConditionalGeneration, PreTrainedTokenizerFast
+        from transformers import Qwen3VLConfig, Qwen3VLForConditionalGeneration
         from transformers.models.qwen3_vl.configuration_qwen3_vl import Qwen3VLTextConfig
 
         from modelbuilder.builder import create_model
@@ -55,11 +53,7 @@ class TestRandomQwen3VL(ExtTestCase):
         model.eval().to(provider)
         model.save_pretrained(model_dir)
 
-        vocab = {"<unk>": 0, "<s>": 1, "</s>": 2}
-        tokenizer = PreTrainedTokenizerFast(
-            tokenizer_object=Tokenizer(WordLevel(vocab=vocab, unk_token="<unk>")), bos_token="<s>", eos_token="</s>", unk_token="<unk>"
-        )
-        tokenizer.save_pretrained(model_dir)
+        self.make_word_level_tokenizer(model_dir)
 
         create_model(
             model_name=QWEN3_VL_MODEL_NAME,

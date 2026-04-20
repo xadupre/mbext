@@ -17,9 +17,7 @@ PHI3V_MODEL_NAME = "microsoft/Phi-3-vision-128k-instruct"
 class TestRandomPhi3V(ExtTestCase):
     def common_fast_phi3v_random_weights(self, precision, provider):
         import torch
-        from tokenizers import Tokenizer
-        from tokenizers.models import WordLevel
-        from transformers import Phi3Config, Phi3ForCausalLM, PreTrainedTokenizerFast
+        from transformers import Phi3Config, Phi3ForCausalLM
 
         from modelbuilder.builder import create_model
 
@@ -65,11 +63,7 @@ class TestRandomPhi3V(ExtTestCase):
         with open(config_path, "w") as f:
             json.dump(saved_cfg, f, indent=2)
 
-        vocab = {"<unk>": 0, "<s>": 1, "</s>": 2}
-        tokenizer = PreTrainedTokenizerFast(
-            tokenizer_object=Tokenizer(WordLevel(vocab=vocab, unk_token="<unk>")), bos_token="<s>", eos_token="</s>", unk_token="<unk>"
-        )
-        tokenizer.save_pretrained(model_dir)
+        self.make_word_level_tokenizer(model_dir)
 
         # Phi3VForCausalLM is automatically built with exclude_embeds=True by
         # create_model, so the ONNX model takes `inputs_embeds` rather than
@@ -212,9 +206,7 @@ class TestRandomPhi3V(ExtTestCase):
 
     def common_phi3v_greedy_generation(self, precision, provider):
         import torch
-        from tokenizers import Tokenizer
-        from tokenizers.models import WordLevel
-        from transformers import Phi3Config, Phi3ForCausalLM, PreTrainedTokenizerFast
+        from transformers import Phi3Config, Phi3ForCausalLM
 
         from modelbuilder.builder import create_model
 
@@ -252,11 +244,7 @@ class TestRandomPhi3V(ExtTestCase):
         with open(config_path, "w") as f:
             json.dump(saved_cfg, f, indent=2)
 
-        vocab = {"<unk>": 0, "<s>": 1, "</s>": 2}
-        tokenizer = PreTrainedTokenizerFast(
-            tokenizer_object=Tokenizer(WordLevel(vocab=vocab, unk_token="<unk>")), bos_token="<s>", eos_token="</s>", unk_token="<unk>"
-        )
-        tokenizer.save_pretrained(model_dir)
+        self.make_word_level_tokenizer(model_dir)
 
         create_model(
             model_name=PHI3V_MODEL_NAME,
@@ -405,9 +393,7 @@ class TestRandomPhi3V(ExtTestCase):
             raise unittest.SkipTest("onnxruntime-genai is not installed; skipping genai comparison test.")
 
         import torch
-        from tokenizers import Tokenizer
-        from tokenizers.models import WordLevel
-        from transformers import Phi3Config, Phi3ForCausalLM, PreTrainedTokenizerFast
+        from transformers import Phi3Config, Phi3ForCausalLM
 
         from modelbuilder.builder import create_model
 
@@ -443,11 +429,7 @@ class TestRandomPhi3V(ExtTestCase):
         with open(config_path, "w") as f:
             json.dump(saved_cfg, f, indent=2)
 
-        vocab = {"<unk>": 0, "<s>": 1, "</s>": 2}
-        tokenizer = PreTrainedTokenizerFast(
-            tokenizer_object=Tokenizer(WordLevel(vocab=vocab, unk_token="<unk>")), bos_token="<s>", eos_token="</s>", unk_token="<unk>"
-        )
-        tokenizer.save_pretrained(model_dir)
+        self.make_word_level_tokenizer(model_dir)
 
         output_dir, cache_dir = self.get_dirs(prefix, clean=False)
 

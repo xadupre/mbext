@@ -17,9 +17,7 @@ MINISTRAL3_MODEL_NAME = "mistralai/Ministral-3-3B-Instruct-2512"
 class TestMinistral3(ExtTestCase):
     def common_fast_ministral3_random_weights(self, precision, provider):
         import torch
-        from tokenizers import Tokenizer
-        from tokenizers.models import WordLevel
-        from transformers import AutoModelForCausalLM, Ministral3Config, PreTrainedTokenizerFast
+        from transformers import AutoModelForCausalLM, Ministral3Config
 
         from modelbuilder.builder import create_model
 
@@ -49,11 +47,7 @@ class TestMinistral3(ExtTestCase):
         model.eval().to(provider)
         model.save_pretrained(model_dir)
 
-        vocab = {"<unk>": 0, "<s>": 1, "</s>": 2}
-        tokenizer = PreTrainedTokenizerFast(
-            tokenizer_object=Tokenizer(WordLevel(vocab=vocab, unk_token="<unk>")), bos_token="<s>", eos_token="</s>", unk_token="<unk>"
-        )
-        tokenizer.save_pretrained(model_dir)
+        self.make_word_level_tokenizer(model_dir)
 
         create_model(
             model_name=MINISTRAL3_MODEL_NAME,
@@ -88,19 +82,14 @@ class TestMinistral3(ExtTestCase):
         onnx_input_names = [i.name for i in sess.get_inputs()]
 
         with self.subTest(step="prefill"):
-            prefill_feed = {
-                "input_ids": input_ids.cpu().numpy().astype(np.int64),
-                "attention_mask": np.ones((batch_size, seq_len), dtype=np.int64),
-                "position_ids": np.arange(seq_len, dtype=np.int64).reshape(batch_size, seq_len),
-            }
-            for i in range(num_hidden_layers):
-                prefill_feed[f"past_key_values.{i}.key"] = np.zeros(
-                    (batch_size, config.num_key_value_heads, 0, head_size), dtype=self.get_input_np_dtype(precision)
-                )
-                prefill_feed[f"past_key_values.{i}.value"] = np.zeros(
-                    (batch_size, config.num_key_value_heads, 0, head_size), dtype=self.get_input_np_dtype(precision)
-                )
-            prefill_feed = {k: v for k, v in prefill_feed.items() if k in onnx_input_names}
+            prefill_feed = self.make_prefill_feed(
+                input_ids.cpu().numpy(),
+                num_hidden_layers,
+                config.num_key_value_heads,
+                head_size,
+                self.get_input_np_dtype(precision),
+                onnx_input_names,
+            )
 
             prefill_results, ort_logits_np = run_session_or_io_binding(
                 use_iobinding=precision == "bf16",
@@ -126,15 +115,10 @@ class TestMinistral3(ExtTestCase):
         with self.subTest(step="decode"):
             next_token = int(np.argmax(prefill_results["logits"][0, -1, :]))
 
-            decode_feed = {
-                "input_ids": np.array([[next_token]], dtype=np.int64),
-                "attention_mask": np.ones((batch_size, seq_len + 1), dtype=np.int64),
-                "position_ids": np.array([[seq_len]], dtype=np.int64),
-            }
-            for i in range(num_hidden_layers):
-                decode_feed[f"past_key_values.{i}.key"] = prefill_results[f"present.{i}.key"]
-                decode_feed[f"past_key_values.{i}.value"] = prefill_results[f"present.{i}.value"]
-            decode_feed = {k: v for k, v in decode_feed.items() if k in onnx_input_names}
+            decode_feed = self.make_decode_feed(
+                next_token, seq_len, prefill_results, num_hidden_layers,
+                batch_size=batch_size, onnx_input_names=onnx_input_names,
+            )
 
             prefill_results, onnx_decode_logits = run_session_or_io_binding(
                 use_iobinding=precision == "bf16",
@@ -160,9 +144,7 @@ class TestMinistral3(ExtTestCase):
 
     def common_ministral3_greedy_generation(self, precision, provider):
         import torch
-        from tokenizers import Tokenizer
-        from tokenizers.models import WordLevel
-        from transformers import AutoModelForCausalLM, Ministral3Config, PreTrainedTokenizerFast
+        from transformers import AutoModelForCausalLM, Ministral3Config
 
         from modelbuilder.builder import create_model
 
@@ -193,11 +175,7 @@ class TestMinistral3(ExtTestCase):
         model.eval().to(provider)
         model.save_pretrained(model_dir)
 
-        vocab = {"<unk>": 0, "<s>": 1, "</s>": 2}
-        tokenizer = PreTrainedTokenizerFast(
-            tokenizer_object=Tokenizer(WordLevel(vocab=vocab, unk_token="<unk>")), bos_token="<s>", eos_token="</s>", unk_token="<unk>"
-        )
-        tokenizer.save_pretrained(model_dir)
+        self.make_word_level_tokenizer(model_dir)
 
         create_model(
             model_name=MINISTRAL3_MODEL_NAME,
@@ -228,52 +206,19 @@ class TestMinistral3(ExtTestCase):
 
         current_ids = prompt_ids.detach().cpu().numpy().astype(np.int64)
 
-        past_kv = {}
-        for i in range(num_hidden_layers):
-            past_kv[f"past_key_values.{i}.key"] = np.zeros(
-                (batch_size, config.num_key_value_heads, 0, head_size), dtype=self.get_input_np_dtype(precision)
-            )
-            past_kv[f"past_key_values.{i}.value"] = np.zeros(
-                (batch_size, config.num_key_value_heads, 0, head_size), dtype=self.get_input_np_dtype(precision)
-            )
-
-        onnx_tokens = current_ids[0].tolist()
-        results = None
-        for _ in range(max_new_tokens):
-            past_len = past_kv["past_key_values.0.key"].shape[2]
-            cur_len = current_ids.shape[1]
-
-            feed = {
-                "input_ids": current_ids,
-                "attention_mask": np.ones((batch_size, past_len + cur_len), dtype=np.int64),
-                "position_ids": np.arange(past_len, past_len + cur_len, dtype=np.int64).reshape(batch_size, cur_len),
-            }
-            for i in range(num_hidden_layers):
-                feed[f"past_key_values.{i}.key"] = past_kv[f"past_key_values.{i}.key"]
-                feed[f"past_key_values.{i}.value"] = past_kv[f"past_key_values.{i}.value"]
-            feed = {k: v for k, v in feed.items() if k in input_names}
-
-            results, _ = run_session_or_io_binding(
-                use_iobinding=precision == "bf16",
-                precision=precision,
-                provider=provider,
-                feed=feed,
-                sess=sess,
-                vocab_size=config.vocab_size,
-                results=results,
-            )
-
-            next_token = int(np.argmax(results["logits"][0, -1, :]))
-            onnx_tokens.append(next_token)
-
-            for i in range(num_hidden_layers):
-                past_kv[f"past_key_values.{i}.key"] = results[f"present.{i}.key"]
-                past_kv[f"past_key_values.{i}.value"] = results[f"present.{i}.value"]
-
-            current_ids = np.array([[next_token]], dtype=np.int64)
-
-            if next_token == config.eos_token_id:
-                break
+        onnx_tokens = self.run_onnx_greedy_generation(
+            sess=sess,
+            precision=precision,
+            provider=provider,
+            initial_ids=current_ids,
+            num_hidden_layers=num_hidden_layers,
+            num_key_value_heads=config.num_key_value_heads,
+            head_size=head_size,
+            vocab_size=config.vocab_size,
+            eos_token_id=config.eos_token_id,
+            max_new_tokens=max_new_tokens,
+            input_names=input_names,
+        )
 
         diff = self.first_token_diff(pt_tokens, onnx_tokens)
         diff.update(
@@ -341,9 +286,7 @@ class TestMinistral3(ExtTestCase):
             raise unittest.SkipTest("onnxruntime-genai is not installed; skipping genai comparison test.")
 
         import torch
-        from tokenizers import Tokenizer
-        from tokenizers.models import WordLevel
-        from transformers import AutoModelForCausalLM, Ministral3Config, PreTrainedTokenizerFast
+        from transformers import AutoModelForCausalLM, Ministral3Config
 
         from modelbuilder.builder import create_model
 
@@ -372,11 +315,7 @@ class TestMinistral3(ExtTestCase):
         model.eval()
         model.save_pretrained(model_dir)
 
-        vocab = {"<unk>": 0, "<s>": 1, "</s>": 2}
-        tokenizer = PreTrainedTokenizerFast(
-            tokenizer_object=Tokenizer(WordLevel(vocab=vocab, unk_token="<unk>")), bos_token="<s>", eos_token="</s>", unk_token="<unk>"
-        )
-        tokenizer.save_pretrained(model_dir)
+        self.make_word_level_tokenizer(model_dir)
 
         output_dir, cache_dir = self.get_dirs(prefix, clean=False)
 
@@ -447,8 +386,6 @@ class TestMinistral3(ExtTestCase):
         * The text decoder produces output when fed ``inputs_embeds``.
         """
         import torch
-        from tokenizers import Tokenizer
-        from tokenizers.models import WordLevel
         from transformers import (
             Ministral3Config,
             Mistral3Config,
@@ -500,11 +437,7 @@ class TestMinistral3(ExtTestCase):
         model.eval()
         model.save_pretrained(model_dir)
 
-        vocab = {"<unk>": 0, "<s>": 1, "</s>": 2}
-        tokenizer = PreTrainedTokenizerFast(
-            tokenizer_object=Tokenizer(WordLevel(vocab=vocab, unk_token="<unk>")), bos_token="<s>", eos_token="</s>", unk_token="<unk>"
-        )
-        tokenizer.save_pretrained(model_dir)
+        self.make_word_level_tokenizer(model_dir)
 
         create_model(
             model_name=MINISTRAL3_MODEL_NAME,
