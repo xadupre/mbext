@@ -61,11 +61,7 @@ class TestErnie4_5(ExtTestCase):
 
     def common_ernie4_5_greedy_generation(self, precision, provider):
         import torch
-        from tokenizers import Tokenizer
-        from tokenizers.models import WordLevel
-        from transformers import AutoModelForCausalLM, Ernie4_5Config, PreTrainedTokenizerFast
-
-        from modelbuilder.builder import create_model
+        from transformers import AutoModelForCausalLM, Ernie4_5Config
 
         num_hidden_layers = 1
 
@@ -87,55 +83,23 @@ class TestErnie4_5(ExtTestCase):
             vocab_size=32000,
         )
 
-        basename = f"test_generation_ernie4_5_{precision}_{provider}"
-        model_dir = self.get_model_dir(basename)
-        output_dir, cache_dir = self.get_dirs(basename)
-
         torch.manual_seed(42)
         model = AutoModelForCausalLM.from_config(config)
         model.eval().to(provider)
-        model.save_pretrained(model_dir)
-
-        vocab = {"<unk>": 0, "<s>": 1, "</s>": 2}
-        tokenizer = PreTrainedTokenizerFast(
-            tokenizer_object=Tokenizer(WordLevel(vocab=vocab, unk_token="<unk>")), bos_token="<s>", eos_token="</s>", unk_token="<unk>"
-        )
-        tokenizer.save_pretrained(model_dir)
-
-        create_model(
-            model_name=ERNIE_MODEL_NAME,
-            input_path=model_dir,
-            output_dir=output_dir,
-            precision=precision,
-            execution_provider=provider,
-            cache_dir=cache_dir,
-            num_hidden_layers=num_hidden_layers,
-        )
-
-        onnx_path = os.path.join(output_dir, "model.onnx")
-        self.assertExists(onnx_path)
-        sess = self._check_with_ort(onnx_path, cpu=provider == "cpu")
-
-        log_data = dict(
-            precision=precision,
-            model_id=ERNIE_MODEL_NAME,
-            experiment="generate",
-            provider=provider,
-            test=basename,
-            input_type="text",
-            kind="fast",
-        )
-        self.run_greedy_generation_check(
+        tokenizer = self.make_word_level_tokenizer()
+        self.run_greedy_generation_test(
             model=model,
-            sess=sess,
+            tokenizer=tokenizer,
+            model_name=ERNIE_MODEL_NAME,
+            basename=f"test_generation_ernie4_5_{precision}_{provider}",
+            precision=precision,
+            provider=provider,
             num_hidden_layers=num_hidden_layers,
             num_key_value_heads=config.num_key_value_heads,
             head_size=config.head_dim,
             vocab_size=config.vocab_size,
             eos_token_id=config.eos_token_id,
-            precision=precision,
-            provider=provider,
-            log_data=log_data,
+            create_model_kwargs={"num_hidden_layers": num_hidden_layers},
         )
 
     @hide_stdout()
