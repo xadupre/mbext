@@ -15,7 +15,7 @@ MODEL_NAME = "nvidia/Minitron-4B-Base"
 
 class TestNemotron(ExtTestCase):
     def common_fast_nemotron_random_weights(self, precision, provider):
-        from transformers import AutoModelForCausalLM, PreTrainedTokenizerFast
+        from transformers import AutoModelForCausalLM
         from transformers.models.nemotron import NemotronConfig
 
         num_hidden_layers = 1

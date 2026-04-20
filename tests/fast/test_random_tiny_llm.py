@@ -8,14 +8,13 @@ import unittest
 
 import numpy as np
 
-from modelbuilder.ext_test_case import ExtTestCase, run_session_or_io_binding, hide_stdout, requires_cuda
+from modelbuilder.ext_test_case import ExtTestCase, hide_stdout, requires_cuda
 
 MODEL_NAME = "arnir0/Tiny-LLM"
 
 
 class TestRandomTinyLLM(ExtTestCase):
     def common_fast_tiny_llm_random_weights(self, precision, provider):
-        import torch
         from transformers import AutoModelForCausalLM, LlamaConfig
 
         # Config matching the arnir0/Tiny-LLM architecture (LlamaForCausalLM)

@@ -611,11 +611,7 @@ class ExtTestCase(unittest.TestCase):
         return fill_with_empty_cache(onnx_feed, session, provider=provider, batch_size=batch_size)
 
     def make_word_level_tokenizer(
-        self,
-        bos_token: str = "<s>",
-        bos_token_id: int = 1,
-        eos_token: str = "</s>",
-        eos_token_id: int = 2,
+        self, bos_token: str = "<s>", bos_token_id: int = 1, eos_token: str = "</s>", eos_token_id: int = 2
     ) -> "PreTrainedTokenizerFast":  # noqa: F821
         """Create a minimal ``PreTrainedTokenizerFast`` backed by a ``WordLevel`` model.
 
