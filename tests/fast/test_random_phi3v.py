@@ -396,6 +396,99 @@ class TestRandomPhi3V(ExtTestCase):
     def test_phi3v_bf16_cuda_greedy_generation(self):
         self.common_phi3v_greedy_generation("bf16", "cuda")
 
+    @hide_stdout()
+    def test_phi3v_fp32_cpu_genai_generate(self):
+        try:
+            import onnxruntime_genai as og
+        except ImportError:
+            raise unittest.SkipTest("onnxruntime-genai is not installed; skipping genai comparison test.")
+
+        import torch
+        from tokenizers import Tokenizer
+        from tokenizers.models import WordLevel
+        from transformers import Phi3Config, Phi3ForCausalLM, PreTrainedTokenizerFast
+
+        from modelbuilder.builder import create_model
+
+        prefix = "test_phi3v_fp32_cpu_genai_generate"
+        num_hidden_layers = 1
+        head_size = 64
+        config = Phi3Config(
+            architectures=["Phi3VForCausalLM"],
+            bos_token_id=1,
+            eos_token_id=2,
+            hidden_act="silu",
+            hidden_size=512,
+            intermediate_size=1376,
+            max_position_embeddings=8192,
+            original_max_position_embeddings=4096,
+            num_attention_heads=8,
+            num_hidden_layers=num_hidden_layers,
+            num_key_value_heads=4,
+            rms_norm_eps=1e-05,
+            rope_scaling={"type": "longrope", "short_factor": [1.0] * (head_size // 2), "long_factor": [1.0] * (head_size // 2)},
+            vocab_size=32064,
+        )
+
+        model_dir = self.get_model_dir(prefix, clean=False)
+        torch.manual_seed(42)
+        model = Phi3ForCausalLM(config)
+        model.eval()
+        model.save_pretrained(model_dir)
+        config_path = os.path.join(model_dir, "config.json")
+        with open(config_path) as f:
+            saved_cfg = json.load(f)
+        saved_cfg["architectures"] = ["Phi3VForCausalLM"]
+        with open(config_path, "w") as f:
+            json.dump(saved_cfg, f, indent=2)
+
+        vocab = {"<unk>": 0, "<s>": 1, "</s>": 2}
+        tokenizer = PreTrainedTokenizerFast(
+            tokenizer_object=Tokenizer(WordLevel(vocab=vocab, unk_token="<unk>")), bos_token="<s>", eos_token="</s>", unk_token="<unk>"
+        )
+        tokenizer.save_pretrained(model_dir)
+
+        output_dir, cache_dir = self.get_dirs(prefix, clean=False)
+
+        create_model(
+            model_name=PHI3V_MODEL_NAME,
+            input_path=model_dir,
+            output_dir=output_dir,
+            precision="fp32",
+            execution_provider="cpu",
+            cache_dir=cache_dir,
+            num_hidden_layers=num_hidden_layers,
+        )
+
+        onnx_path = os.path.join(output_dir, "model.onnx")
+        self.assertExists(onnx_path)
+        genai_config_path = os.path.join(output_dir, "genai_config.json")
+        self.assertExists(genai_config_path)
+
+        torch.manual_seed(0)
+        batch_size = 1
+        max_new_tokens = 5
+        prompt_ids = torch.randint(3, config.vocab_size, (batch_size, 4))
+        prompt_len = prompt_ids.shape[1]
+
+        with torch.no_grad():
+            pt_output = model.generate(prompt_ids, max_new_tokens=max_new_tokens, do_sample=False, pad_token_id=config.eos_token_id)
+        pt_tokens = pt_output[0].tolist()
+
+        og_model = og.Model(output_dir)
+        params = og.GeneratorParams(og_model)
+        params.set_search_options(do_sample=False, max_length=prompt_len + max_new_tokens, temperature=1.0, top_k=1)
+
+        generator = og.Generator(og_model, params)
+        generator.append_tokens(prompt_ids.numpy().astype(np.int64))
+
+        og_tokens = prompt_ids[0].tolist()
+        while not generator.is_done():
+            generator.generate_next_token()
+            og_tokens.append(int(generator.get_next_tokens()[0]))
+
+        self.assertEqual(pt_tokens, og_tokens)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
