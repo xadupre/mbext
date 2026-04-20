@@ -8,7 +8,14 @@ import unittest
 
 import numpy as np
 
-from modelbuilder.ext_test_case import ExtTestCase, has_transformers, hide_stdout, requires_cuda, requires_transformers, run_session_or_io_binding
+from modelbuilder.ext_test_case import (
+    ExtTestCase,
+    has_transformers,
+    hide_stdout,
+    requires_cuda,
+    requires_transformers,
+    run_session_or_io_binding,
+)
 
 MODEL_NAME = "google/gemma-3-4b-it"
 
@@ -341,7 +348,10 @@ class TestRandomGemma3(ExtTestCase):
         self.common_fast_gemma3_random_weights("fp16", "cuda")
 
     @requires_transformers("4.57")
-    @unittest.skipIf(has_transformers("5.5"), "RuntimeError: Load model from dump_models/test_gemma3_fp32_cpu_genai_generate/output/ failed:Protobuf parsing failed.")
+    @unittest.skipIf(
+        has_transformers("5.5"),
+        "RuntimeError: Load model from dump_models/test_gemma3_fp32_cpu_genai_generate/output/ failed:Protobuf parsing failed.",
+    )
     @hide_stdout()
     def test_gemma3_fp32_cpu_genai_generate(self):
         try:
