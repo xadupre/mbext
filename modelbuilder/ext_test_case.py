@@ -774,7 +774,7 @@ def get_pytorch_discrepancy(tensor_a, tensor_b):
     # 5. Average Absolute Discrepancy (Mean Absolute Error)
     avg_disc = torch.mean(diff).item()
 
-    n = torch.prod(a.shape)
+    n = a.numel()
     return {
         "max_abs_err": float(max_disc),
         "%_gt_0.1": mismatches_01 / n,
