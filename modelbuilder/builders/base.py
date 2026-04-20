@@ -2550,7 +2550,7 @@ class Model:
         # If past K and V are provided as separate tensors, combine them into the packed format
         # expected by com.microsoft.Attention: (batch_size, 2, num_heads, past_sequence_length, head_size)
         past_kv = kwargs.get("past_key_values", "")
-        if not past_kv and past_k and past_v:
+        if past_kv == "" and past_k and past_v:
             past_k_unsqueeze_name = f"{name}/past_k/Unsqueeze"
             self.make_unsqueeze(past_k_unsqueeze_name, [past_k, "/model/constants/INT64/[1]"], dtype=self.io_dtype, shape=None)
             past_v_unsqueeze_name = f"{name}/past_v/Unsqueeze"
@@ -2568,7 +2568,7 @@ class Model:
         # If present K and V are needed as separate outputs, use a named intermediate for the combined KV
         # output of com.microsoft.Attention: (batch_size, 2, num_heads, total_sequence_length, head_size)
         present_kv = kwargs.get("present_key_values", "")
-        need_split_present = bool((present_k or present_v) and not present_kv)
+        need_split_present = (bool(present_k) or bool(present_v)) and present_kv == ""
         if need_split_present:
             present_kv = f"{name}/present_kv"
 

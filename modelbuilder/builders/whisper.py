@@ -508,8 +508,10 @@ class WhisperDecoder(Model):
         # Make attention node - cross-attention always uses MultiHeadAttention when packed
         # Attention is selected, because K and V come from static encoder outputs and cannot
         # be projected from the decoder input as the packed Attention op requires.
-        cross_attn_op = "MultiHeadAttention" if self.attention_attrs["op_type"] == "Attention" else self.attention_attrs["op_type"]
-        attn_name = f"/model/layers.{layer_id}/cross_attn/{cross_attn_op}"
+        cross_attention_op_type = (
+            "MultiHeadAttention" if self.attention_attrs["op_type"] == "Attention" else self.attention_attrs["op_type"]
+        )
+        attn_name = f"/model/layers.{layer_id}/cross_attn/{cross_attention_op_type}"
         attn_output = f"{attn_name}/output_0"
         if self.attention_attrs["op_type"] == "Attention":
             self.make_multi_head_attention(
