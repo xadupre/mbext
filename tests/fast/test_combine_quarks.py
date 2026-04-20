@@ -258,6 +258,65 @@ class TestCombineQuarks(ExtTestCase):
         torch.testing.assert_close(result[0], bias_for_0)
         torch.testing.assert_close(result[1], bias_for_1)
 
+    # ------------------------------------------------------------------
+    # Discrepancy checks – independently-built reference vs method output
+    # ------------------------------------------------------------------
+
+    @hide_stdout()
+    def test_discrepancy_combine_gate_up_biases_fused(self):
+        """No discrepancy between method output and a hand-built reference (fused path)."""
+        n_experts, out_dim = 3, 6
+        torch.manual_seed(0)
+        biases = [torch.randn(out_dim) for _ in range(n_experts)]
+
+        experts = _MockQuarkExperts({i: _fused_expert(out_dim, bias=biases[i]) for i in range(n_experts)})
+        result = self.model.combine_quark_gate_up_biases_from_experts(experts)
+
+        # Reference: simply stack the bias tensors in sorted expert order.
+        reference = torch.stack(biases, dim=0)
+
+        disc = self.get_pytorch_discrepancy(result, reference)
+        self.assertEqual(disc["max_abs_err"], 0.0, f"Unexpected discrepancy: {disc}")
+
+    @hide_stdout()
+    def test_discrepancy_combine_gate_up_biases_separate(self):
+        """No discrepancy between method output and a hand-built reference (separate path)."""
+        n_experts, n = 4, 4
+        torch.manual_seed(1)
+        gate_biases = [torch.randn(n) for _ in range(n_experts)]
+        up_biases = [torch.randn(n) for _ in range(n_experts)]
+
+        experts = _MockQuarkExperts({i: _separate_expert(n, n, gate_bias=gate_biases[i], up_bias=up_biases[i]) for i in range(n_experts)})
+        result = self.model.combine_quark_gate_up_biases_from_experts(experts)
+
+        # Reference: manually interleave gate (even) and up (odd) for each expert.
+        reference = torch.zeros(n_experts, n + n)
+        for i in range(n_experts):
+            reference[i, ::2] = gate_biases[i]
+            reference[i, 1::2] = up_biases[i]
+
+        disc = self.get_pytorch_discrepancy(result, reference)
+        self.assertEqual(disc["max_abs_err"], 0.0, f"Unexpected discrepancy: {disc}")
+
+    @hide_stdout()
+    def test_discrepancy_combine_down_biases(self):
+        """No discrepancy between method output and a hand-built reference."""
+        n_experts, out_dim = 4, 8
+        torch.manual_seed(2)
+        down_biases = [torch.randn(out_dim) for _ in range(n_experts)]
+
+        experts = _MockQuarkExperts({i: _fused_expert(out_dim, bias=None) for i in range(n_experts)})
+        for i in range(n_experts):
+            experts._experts[i].down_proj.bias = down_biases[i]
+
+        result = self.model.combine_quark_down_biases_from_experts(experts)
+
+        # Reference: simply stack the per-expert down biases in sorted order.
+        reference = torch.stack(down_biases, dim=0)
+
+        disc = self.get_pytorch_discrepancy(result, reference)
+        self.assertEqual(disc["max_abs_err"], 0.0, f"Unexpected discrepancy: {disc}")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
