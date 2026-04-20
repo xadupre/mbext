@@ -26,7 +26,7 @@ from onnxruntime.quantization.matmul_nbits_quantizer import (
 from tqdm import tqdm
 from transformers import AutoConfig, AutoModelForCausalLM, AutoModelForSpeechSeq2Seq, AutoTokenizer, GenerationConfig
 
-from ..genai_config_utils import fix_genai_config
+from ..genai_config_utils import GENAI_SEARCH_DEFAULTS
 
 
 def parse_hf_token(hf_token):
@@ -44,6 +44,25 @@ def parse_hf_token(hf_token):
 
     # Return user-provided token as string
     return hf_token
+
+
+def _make_search_section(config, context_length, extra_options, past_present_share_buffer):
+    """Build the ``search`` section of ``genai_config.json``.
+
+    Starts from :data:`GENAI_SEARCH_DEFAULTS` so that every field is always
+    initialised to a valid value.  Any attribute that exists on *config* and
+    is not ``None`` overrides the corresponding default, which is the correct
+    behaviour for both transformers < 5 (where attributes carry concrete
+    values) and transformers >= 5 (where they may be ``None``).
+    """
+    search = dict(GENAI_SEARCH_DEFAULTS)
+    for key in GENAI_SEARCH_DEFAULTS:
+        val = getattr(config, key, None)
+        if val is not None:
+            search[key] = val
+    search["max_length"] = context_length
+    search["past_present_share_buffer"] = False if "config_only" in extra_options else past_present_share_buffer
+    return search
 
 
 class Model:
@@ -648,22 +667,7 @@ class Model:
                 "type": self.model_type[: self.model_type.find("For") if "For" in self.model_type else len(self.model_type)].lower(),
                 "vocab_size": self.vocab_size,
             },
-            "search": {
-                "diversity_penalty": config.diversity_penalty if hasattr(config, "diversity_penalty") else 0.0,
-                "do_sample": config.do_sample if hasattr(config, "do_sample") else False,
-                "early_stopping": True,
-                "length_penalty": config.length_penalty if hasattr(config, "length_penalty") else 1.0,
-                "max_length": self.context_length,
-                "min_length": 0,
-                "no_repeat_ngram_size": config.no_repeat_ngram_size if hasattr(config, "no_repeat_ngram_size") else 0,
-                "num_beams": config.num_beams if hasattr(config, "num_beams") else 1,
-                "num_return_sequences": config.num_return_sequences if hasattr(config, "num_return_sequences") else 1,
-                "past_present_share_buffer": False if "config_only" in self.extra_options else self.past_present_share_buffer,
-                "repetition_penalty": config.repetition_penalty if hasattr(config, "repetition_penalty") else 1.0,
-                "temperature": config.temperature if hasattr(config, "temperature") else 1.0,
-                "top_k": config.top_k if hasattr(config, "top_k") and config.top_k is not None else 50,
-                "top_p": config.top_p if hasattr(config, "top_p") and config.top_p is not None else 1.0,
-            },
+            "search": _make_search_section(config, self.context_length, self.extra_options, self.past_present_share_buffer),
         }
 
         if self.ep == "trt-rtx" and self.window_size is not None and self.window_size > 0:
@@ -682,7 +686,6 @@ class Model:
             ep_options = {ep_name: self.ep_attrs[self.ep]}
             genai_config["model"]["decoder"]["session_options"]["provider_options"].append(ep_options)
 
-        fix_genai_config(genai_config)
         print(f"Saving GenAI config in {out_dir}")
         with open(os.path.join(out_dir, "genai_config.json"), "w") as f:
             json.dump(genai_config, f, indent=4)

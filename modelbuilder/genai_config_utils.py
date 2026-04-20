@@ -15,7 +15,7 @@ from __future__ import annotations
 # GenerationConfig attributes default to None instead of concrete values,
 # which can produce null entries in genai_config.json that
 # onnxruntime-genai does not accept.
-_GENAI_SEARCH_DEFAULTS = {
+GENAI_SEARCH_DEFAULTS = {
     "diversity_penalty": 0.0,
     "do_sample": False,
     "early_stopping": True,
@@ -49,7 +49,7 @@ def fix_genai_config(genai_config):
     :return: the modified *genai_config* dict.
     """
     search = genai_config.get("search", {})
-    for key, default_val in _GENAI_SEARCH_DEFAULTS.items():
+    for key, default_val in GENAI_SEARCH_DEFAULTS.items():
         if search.get(key) is None:
             search[key] = default_val
     return genai_config
