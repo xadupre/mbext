@@ -314,8 +314,11 @@ class ExtTestCase(unittest.TestCase):
         if not full.startswith(prefix):
             raise AssertionError(f"prefix={prefix!r} does not start string {full!r}.")
 
-    def check_ort(self, onx: Union["onnx.ModelProto", str]) -> "onnxruntime.InferenceSession":  # noqa: F821  # noqa: F821
-        return self._check_with_ort(onx, cpu=True)
+    def check_ort(
+        self, onx: Union["onnx.ModelProto", str], provider: str = "cpu"
+    ) -> "onnxruntime.InferenceSession":  # noqa: F821  # noqa: F821
+        assert provider in {"cpu", "cuda"}, f"provider={provider!r} is not implemented"
+        return self._check_with_ort(onx, cpu=provider == "cpu")
 
     def _check_with_ort(
         self, proto: Union["onnx.ModelProto", str], cpu: bool = False  # noqa: F821
