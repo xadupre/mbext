@@ -244,11 +244,7 @@ class Model:
         position_scale = config.rope_position_scale if hasattr(config, "rope_position_scale") else 1
         partial_rotary_factor = config.partial_rotary_factor if hasattr(config, "partial_rotary_factor") else 1.0
         rotemb_dim = int(self.head_size * partial_rotary_factor) if partial_rotary_factor != 1.0 else 0
-        rope_theta = (
-            config.rope_theta
-            if hasattr(config, "rope_theta")
-            else (config.rope_embedding_base if hasattr(config, "rope_embedding_base") else 10000)
-        )
+        rope_theta = self._rope_theta_from_config(config)
         self.rope_attrs = {
             "create_caches": True,  # Create cos/sin caches for rotary embeddings
             "save_caches": True,  # Auto-save cos/sin caches for rotary embeddings after creation
@@ -265,6 +261,9 @@ class Model:
         }
         if hasattr(config, "rope_scaling") and config.rope_scaling is not None:
             self.make_rope_init(config)
+        # Apply any additional rope_attrs that can be inferred from config attributes
+        # that fall outside the standard rope_scaling dict (e.g. compression_ratio).
+        self._apply_config_rope_attrs(config)
 
         # Attention-specific variables (MHA, GQA, GQA + Rot.Emb., etc.)
         attn_softcap = (
@@ -440,6 +439,50 @@ class Model:
 
         if self.exclude_lm_head:
             del self.output_names["logits"]
+
+    @staticmethod
+    def _rope_theta_from_config(config, default=10000):
+        """Return the RoPE base frequency from *config*, trying all standard attribute locations.
+
+        The lookup order is:
+        1. ``config.rope_theta`` – the standard HuggingFace attribute.
+        2. ``config.rope_embedding_base`` – used by some older models.
+        3. ``config.rope_parameters["rope_theta"]`` – a flat dict used by models
+           such as Ernie 4.5 that store all RoPE hyper-parameters together under
+           ``rope_parameters`` rather than as individual top-level attributes.
+        4. *default* (10 000) if none of the above is present.
+        """
+        if hasattr(config, "rope_theta"):
+            return config.rope_theta
+        if hasattr(config, "rope_embedding_base"):
+            return config.rope_embedding_base
+        if hasattr(config, "rope_parameters") and isinstance(config.rope_parameters, dict):
+            theta = config.rope_parameters.get("rope_theta")
+            if theta is not None:
+                return theta
+        return default
+
+    def _apply_config_rope_attrs(self, config):
+        """Update ``self.rope_attrs`` from config attributes that live outside
+        ``rope_scaling``.
+
+        This method is called unconditionally from ``__init__`` after
+        ``rope_attrs`` has been populated and ``make_rope_init`` has run.
+        Subclasses may override it to add model-specific handling while still
+        calling ``super()._apply_config_rope_attrs(config)`` so that the
+        generic logic below continues to apply.
+
+        Currently handled attributes
+        ----------------------------
+        ``config.compression_ratio``
+            Some models (e.g. Ernie) scale position ids by
+            ``1 / compression_ratio``, which is equivalent to multiplying
+            ``inv_freq`` by ``1 / compression_ratio``.  When present and
+            different from 1, the reciprocal is stored in
+            ``self.rope_attrs["rescale_factors"]``.
+        """
+        if hasattr(config, "compression_ratio") and config.compression_ratio != 1.0:
+            self.rope_attrs["rescale_factors"] = 1.0 / config.compression_ratio
 
     def make_rope_init(self, config):
         # Some models (e.g. SmolLM3) store rope_theta inside rope_scaling
