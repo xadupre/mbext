@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 import numpy as np
 
-from modelbuilder.ext_test_case import ExtTestCase, hide_stdout, requires_cuda
+from modelbuilder.ext_test_case import ExtTestCase, hide_stdout, requires_cuda, run_session_or_io_binding
 
 MODEL_NAME = "openai/gpt-oss-20b"
 
