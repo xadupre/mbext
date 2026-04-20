@@ -24,9 +24,7 @@ MODEL_NAME = "nvidia/NVIDIA-Nemotron-3-Nano-4B-BF16"
 class TestNemotronH(ExtTestCase):
     def common_fast_nemotron_h_random_weights(self, precision, provider):
         import torch
-        from tokenizers import Tokenizer
-        from tokenizers.models import WordLevel
-        from transformers import AutoModelForCausalLM, PreTrainedTokenizerFast
+        from transformers import AutoModelForCausalLM
         from transformers.models.nemotron_h import NemotronHConfig
 
         from modelbuilder.builder import create_model
@@ -58,10 +56,7 @@ class TestNemotronH(ExtTestCase):
         model.eval().to(provider)
         model.save_pretrained(model_dir)
 
-        vocab = {"<unk>": 0, "<s>": 1, "</s>": 2}
-        tokenizer = PreTrainedTokenizerFast(
-            tokenizer_object=Tokenizer(WordLevel(vocab=vocab, unk_token="<unk>")), bos_token="<s>", eos_token="</s>", unk_token="<unk>"
-        )
+        tokenizer = self.make_word_level_tokenizer()
         tokenizer.save_pretrained(model_dir)
 
         create_model(
