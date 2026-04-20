@@ -494,10 +494,7 @@ class Model:
                 # HuggingFace YaRN formula:
                 # final_mscale = yarn_get_mscale(factor, mscale) / yarn_get_mscale(factor, mscale_all_dim)
                 # where yarn_get_mscale(s, m) = 0.1 * m * log(s) + 1 if s > 1 else 1
-                def _yarn_get_mscale(s, m):
-                    return (0.1 * m * float(np.log(s)) + 1.0) if s > 1.0 else 1.0
-
-                self.rope_attrs["mscale"] = _yarn_get_mscale(factor, mscale_param) / _yarn_get_mscale(factor, mscale_all_dim)
+                self.rope_attrs["mscale"] = self.make_mscale_yarn(factor, mscale_param) / self.make_mscale_yarn(factor, mscale_all_dim)
             else:
                 self.rope_attrs["mscale"] = self.make_mscale(factor)
             self.rope_attrs["rescale_inv_freq"] = {
@@ -1651,10 +1648,13 @@ class Model:
             return 1.0
         return np.sqrt(1 + np.log(mscale) / np.log(self.original_context_length))
 
-    def make_mscale_yarn(self, mscale):
+    def make_mscale_yarn(self, mscale, alpha=1.0):
+        # Computes the YaRN magnitude scaling factor:
+        # yarn_get_mscale(s, alpha) = 0.1 * alpha * log(s) + 1 if s > 1 else 1
+        # alpha is the optional mscale multiplier from rope_scaling config (default 1.0).
         if mscale <= 1.0:
             return 1.0
-        return 0.1 * np.log(mscale) + 1.0
+        return 0.1 * alpha * np.log(mscale) + 1.0
 
     def make_mscale(self, mscale):
         if self.rope_attrs["mscale_policy"] in {"su", "longrope"}:
