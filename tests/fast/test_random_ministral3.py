@@ -414,6 +414,161 @@ class TestMinistral3(ExtTestCase):
         onnx_outputs = text_sess.run(None, onnx_feed)
         self.assertIsNotNone(onnx_outputs[0])
 
+    @hide_stdout()
+    def test_ministral3_two_images_and_text_fp32_cpu_random_weights(self):
+        """
+        Build a randomly-initialised Mistral3ForConditionalGeneration model,
+        export it to fp32 ONNX on CPU, then run an end-to-end forward pass
+        that interleaves two image encodings with text token embeddings.
+
+        The flow mirrors how ``onnxruntime-genai`` processes a multimodal
+        prompt that contains two inline images:
+
+        1. ``vision_encoder.onnx`` is invoked **once per image** to produce
+           ``image_features`` of shape ``[num_merged_patches, text_hidden_size]``.
+        2. The two image-feature tensors plus regular text-token embeddings are
+           concatenated along the sequence dimension to form ``inputs_embeds``
+           of shape ``[1, 2*num_merged_patches + text_seq_len, text_hidden_size]``.
+        3. ``model.onnx`` (text decoder, built with ``exclude_embeds=True``) is
+           invoked with these combined ``inputs_embeds``.
+
+        Assertions:
+        * Both ONNX files exist and load correctly.
+        * Vision encoder produces the expected shape for each of the two images.
+        * Text decoder produces output (non-None logits) when fed the combined
+          ``inputs_embeds`` that mixes two image encodings with text embeddings.
+        """
+        import torch
+        from tokenizers import Tokenizer
+        from tokenizers.models import WordLevel
+        from transformers import (
+            Ministral3Config,
+            Mistral3Config,
+            Mistral3ForConditionalGeneration,
+            PixtralVisionConfig,
+            PreTrainedTokenizerFast,
+        )
+
+        from modelbuilder.builder import create_model
+
+        num_hidden_layers = 1
+        # 56×56 image with patch_size=14 → 4×4=16 patches;
+        # spatial_merge_size=2 → 4 merged patches per image.
+        image_size = 56
+        patch_size = 14
+        spatial_merge_size = 2
+
+        vision_config = PixtralVisionConfig(
+            hidden_size=64,
+            intermediate_size=128,
+            num_hidden_layers=1,
+            num_attention_heads=4,
+            head_dim=16,
+            image_size=image_size,
+            patch_size=patch_size,
+        )
+        text_config = Ministral3Config(
+            bos_token_id=1,
+            eos_token_id=2,
+            hidden_act="silu",
+            hidden_size=512,
+            intermediate_size=1376,
+            max_position_embeddings=1024,
+            num_attention_heads=8,
+            num_hidden_layers=num_hidden_layers,
+            num_key_value_heads=4,
+            head_dim=64,
+            rms_norm_eps=1e-05,
+            sliding_window=None,
+            vocab_size=32000,
+        )
+        config = Mistral3Config(text_config=text_config, vision_config=vision_config, spatial_merge_size=spatial_merge_size)
+        config.architectures = ["Mistral3ForConditionalGeneration"]
+
+        basename = "test_ministral3_two_images_and_text_fp32_cpu_random_weights"
+        model_dir = self.get_model_dir(basename)
+        output_dir, cache_dir = self.get_dirs(basename)
+
+        model = Mistral3ForConditionalGeneration(config)
+        model.eval()
+        model.save_pretrained(model_dir)
+
+        vocab = {"<unk>": 0, "<s>": 1, "</s>": 2}
+        tokenizer = PreTrainedTokenizerFast(
+            tokenizer_object=Tokenizer(WordLevel(vocab=vocab, unk_token="<unk>")), bos_token="<s>", eos_token="</s>", unk_token="<unk>"
+        )
+        tokenizer.save_pretrained(model_dir)
+
+        create_model(
+            model_name=MINISTRAL3_MODEL_NAME,
+            input_path=model_dir,
+            output_dir=output_dir,
+            precision="fp32",
+            execution_provider="cpu",
+            cache_dir=cache_dir,
+            num_hidden_layers=num_hidden_layers,
+        )
+
+        # --- Verify both ONNX files exist and load correctly ---
+        vision_onnx_path = os.path.join(output_dir, "vision_encoder.onnx")
+        self.assertExists(vision_onnx_path)
+        text_onnx_path = os.path.join(output_dir, "model.onnx")
+        self.assertExists(text_onnx_path)
+
+        num_patches_per_side = image_size // patch_size
+        num_merged_patches = (num_patches_per_side**2) // (spatial_merge_size**2)
+
+        vision_sess = self.check_ort(vision_onnx_path)
+
+        # --- Encode two images independently with the vision encoder ---
+        image1 = np.zeros((1, vision_config.num_channels, image_size, image_size), dtype=np.float32)
+        image2 = np.ones((1, vision_config.num_channels, image_size, image_size), dtype=np.float32) * 0.5
+
+        image1_features = vision_sess.run(None, {"pixel_values": image1})[0]
+        image2_features = vision_sess.run(None, {"pixel_values": image2})[0]
+
+        # Each image produces [num_merged_patches, text_hidden_size]
+        self.assertEqual(image1_features.shape, (num_merged_patches, text_config.hidden_size))
+        self.assertEqual(image2_features.shape, (num_merged_patches, text_config.hidden_size))
+
+        # --- Build combined inputs_embeds: [img1 | text | img2] ---
+        text_seq_len = 3
+        text_token_ids = torch.randint(0, text_config.vocab_size, (1, text_seq_len))
+        with torch.no_grad():
+            text_embeds = model.model.language_model.embed_tokens(text_token_ids).numpy().astype(np.float32)
+        # text_embeds: [1, text_seq_len, hidden_size]; squeeze batch for cat
+        text_embeds_2d = text_embeds[0]  # [text_seq_len, hidden_size]
+
+        # Concatenate along sequence: [num_merged_patches + text_seq_len + num_merged_patches, hidden_size]
+        combined_2d = np.concatenate([image1_features, text_embeds_2d, image2_features], axis=0)
+        total_seq_len = combined_2d.shape[0]
+        inputs_embeds = combined_2d[np.newaxis]  # [1, total_seq_len, hidden_size]
+
+        self.assertEqual(inputs_embeds.shape, (1, 2 * num_merged_patches + text_seq_len, text_config.hidden_size))
+
+        # --- Run text decoder on the combined inputs_embeds ---
+        text_sess = self.check_ort(text_onnx_path)
+        onnx_input_names = {inp.name for inp in text_sess.get_inputs()}
+
+        head_size = text_config.head_dim
+        batch_size = 1
+        onnx_feed = {
+            "inputs_embeds": inputs_embeds,
+            "attention_mask": np.ones((batch_size, total_seq_len), dtype=np.int64),
+            "position_ids": np.arange(total_seq_len, dtype=np.int64).reshape(batch_size, total_seq_len),
+        }
+        for i in range(num_hidden_layers):
+            onnx_feed[f"past_key_values.{i}.key"] = np.zeros((batch_size, text_config.num_key_value_heads, 0, head_size), dtype=np.float32)
+            onnx_feed[f"past_key_values.{i}.value"] = np.zeros(
+                (batch_size, text_config.num_key_value_heads, 0, head_size), dtype=np.float32
+            )
+        onnx_feed = {k: v for k, v in onnx_feed.items() if k in onnx_input_names}
+
+        onnx_outputs = text_sess.run(None, onnx_feed)
+        self.assertIsNotNone(onnx_outputs[0])
+        # Logits shape: [batch_size, total_seq_len, vocab_size]
+        self.assertEqual(onnx_outputs[0].shape, (batch_size, total_seq_len, text_config.vocab_size))
+
     def test_dequantize_fp8_weights_no_op_when_no_fp8(self):
         """_dequantize_fp8_weights leaves normal float32 weights unchanged."""
         import torch
