@@ -50,7 +50,7 @@ def _make_search_section(config, context_length, extra_options, past_present_sha
     """Build the ``search`` section of ``genai_config.json``.
 
     Starts from :data:`GENAI_SEARCH_DEFAULTS` so that every field is always
-    initialised to a valid value.  Any attribute that exists on *config* and
+    initialized to a valid value.  Any attribute that exists on *config* and
     is not ``None`` overrides the corresponding default, which is the correct
     behaviour for both transformers < 5 (where attributes carry concrete
     values) and transformers >= 5 (where they may be ``None``).
