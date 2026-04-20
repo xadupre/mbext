@@ -248,100 +248,27 @@ class TestRandomTinyLLM(ExtTestCase):
         self.assertExists(onnx_path)
         sess = self._check_with_ort(onnx_path, cpu=provider == "cpu")
 
-        input_names = {inp.name for inp in sess.get_inputs()}
-
-        batch_size = 1
-        head_size = config.hidden_size // config.num_attention_heads
-        max_new_tokens = 10
-
-        # Use a fixed seed so the prompt token IDs are deterministic.
-        torch.manual_seed(0)
-        # Start from token ID 3 to avoid accidentally hitting BOS/EOS/PAD.
-        prompt_ids = torch.randint(3, config.vocab_size, (batch_size, 5)).to(provider)
-
-        # ------------------------------------------------------------------
-        # transformers greedy generation (reference)
-        # ------------------------------------------------------------------
-        with torch.no_grad():
-            pt_output = model.generate(prompt_ids, max_new_tokens=max_new_tokens, do_sample=False, pad_token_id=config.eos_token_id)
-        pt_tokens = pt_output[0].tolist()
-
-        # ------------------------------------------------------------------
-        # ONNX greedy generation (manual auto-regressive loop)
-        # ------------------------------------------------------------------
-        current_ids = prompt_ids.detach().cpu().numpy().astype(np.int64)
-
-        # Initialise empty KV-cache for every layer.
-        past_kv = {}
-        for i in range(num_hidden_layers):
-            past_kv[f"past_key_values.{i}.key"] = np.zeros(
-                (batch_size, config.num_key_value_heads, 0, head_size), dtype=self.get_input_np_dtype(precision)
-            )
-            past_kv[f"past_key_values.{i}.value"] = np.zeros(
-                (batch_size, config.num_key_value_heads, 0, head_size), dtype=self.get_input_np_dtype(precision)
-            )
-
-        onnx_tokens = current_ids[0].tolist()
-        results = None
-        for _ in range(max_new_tokens):
-            past_len = past_kv["past_key_values.0.key"].shape[2]
-            cur_len = current_ids.shape[1]
-
-            feed = {
-                "input_ids": current_ids,
-                "attention_mask": np.ones((batch_size, past_len + cur_len), dtype=np.int64),
-                "position_ids": np.arange(past_len, past_len + cur_len, dtype=np.int64).reshape(batch_size, cur_len),
-            }
-            for i in range(num_hidden_layers):
-                feed[f"past_key_values.{i}.key"] = past_kv[f"past_key_values.{i}.key"]
-                feed[f"past_key_values.{i}.value"] = past_kv[f"past_key_values.{i}.value"]
-            # Drop any inputs the model does not declare.
-            feed = {k: v for k, v in feed.items() if k in input_names}
-
-            results, _ = run_session_or_io_binding(
-                use_iobinding=precision == "bf16",
-                precision=precision,
-                provider=provider,
-                feed=feed,
-                sess=sess,
-                vocab_size=config.vocab_size,
-                results=results,
-            )
-
-            # Greedy: pick the token with the highest logit at the last position.
-            next_token = int(np.argmax(results["logits"][0, -1, :]))
-            onnx_tokens.append(next_token)
-
-            # Carry forward the updated KV-cache.
-            for i in range(num_hidden_layers):
-                past_kv[f"past_key_values.{i}.key"] = results[f"present.{i}.key"]
-                past_kv[f"past_key_values.{i}.value"] = results[f"present.{i}.value"]
-
-            # Prepare the single-token input for the next decode step.
-            current_ids = np.array([[next_token]], dtype=np.int64)
-
-            if next_token == config.eos_token_id:
-                break
-
-        # Greedy decoding is deterministic: both backends must produce the
-        # exact same token sequence (prompt + all generated tokens).
-        diff = self.first_token_diff(pt_tokens, onnx_tokens)
-        diff.update(
-            dict(
-                precision=precision,
-                model_id=MODEL_NAME,
-                experiment="generate",
-                provider=provider,
-                test=basename,
-                input_type="text",
-                kind="fast",
-            )
+        log_data = dict(
+            precision=precision,
+            model_id=MODEL_NAME,
+            experiment="generate",
+            provider=provider,
+            test=basename,
+            input_type="text",
+            kind="fast",
         )
-        self.log_results(diff)
-        if precision in ("fp16", "bf16"):
-            pt_tokens = pt_tokens[:-5]
-            onnx_tokens = onnx_tokens[:-5]
-        self.assertEqual(pt_tokens, onnx_tokens)
+        self.run_greedy_generation_check(
+            model=model,
+            sess=sess,
+            num_hidden_layers=num_hidden_layers,
+            num_key_value_heads=config.num_key_value_heads,
+            head_size=config.hidden_size // config.num_attention_heads,
+            vocab_size=config.vocab_size,
+            eos_token_id=config.eos_token_id,
+            precision=precision,
+            provider=provider,
+            log_data=log_data,
+        )
 
     @hide_stdout()
     def test_tiny_llm_fp32_cpu_greedy_generation(self):
