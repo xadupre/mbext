@@ -208,13 +208,15 @@ class GPTOSSModel(Model):
             topk_io_name = f"{basename}/topk_io/Cast"
             self.make_cast(topk_io_name, topk_outputs[0], self.io_dtype, shape=["batch_size", "sequence_length", self.moe_attrs["top_k"]])
 
-        # Save initializers to use with Gather nodes
+        # Save initializers to use with Gather nodes.
+        # Weights are stored transposed (is_transposed=True) in the PyTorch model as
+        # [in, out], but ONNX MatMul needs [out, in], so transpose before saving.
         gate_up_proj_weight = f"model.layers.{layer_id}.moe.experts.gate_up_proj.weight"
-        self.make_initializer(mlp.experts.gate_up_proj, gate_up_proj_weight, to=self.io_dtype)
+        self.make_initializer(mlp.experts.gate_up_proj.transpose(-1, -2), gate_up_proj_weight, to=self.io_dtype)
         gate_up_proj_bias = f"model.layers.{layer_id}.moe.experts.gate_up_proj.bias"
         self.make_initializer(mlp.experts.gate_up_proj_bias, gate_up_proj_bias, to=self.io_dtype)
         down_proj_weight = f"model.layers.{layer_id}.moe.experts.down_proj.weight"
-        self.make_initializer(mlp.experts.down_proj, down_proj_weight, to=self.io_dtype)
+        self.make_initializer(mlp.experts.down_proj.transpose(-1, -2), down_proj_weight, to=self.io_dtype)
         down_proj_bias = f"model.layers.{layer_id}.moe.experts.down_proj.bias"
         self.make_initializer(mlp.experts.down_proj_bias, down_proj_bias, to=self.io_dtype)
 
@@ -350,18 +352,16 @@ class GPTOSSModel(Model):
             dtype=self.io_dtype,
             shape=["batch_size", "sequence_length", self.moe_attrs["top_k"], self.intermediate_size, 1],
         )
-        glu_clip_name = f"{basename}/act_fn/Clip_1"
-        glu_clip_inputs = [
-            f"{glu_slice_name}/output_0",
-            "",
-            f"/model/constants/{self.to_str_dtype(self.io_dtype)}/{self.moe_attrs['swiglu_limit']}",
-        ]
-        self.make_clip(
-            glu_clip_name,
-            glu_clip_inputs,
-            dtype=self.io_dtype,
-            shape=["batch_size", "sequence_length", self.moe_attrs["top_k"], self.intermediate_size, 1],
-        )
+        swiglu_limit = self.moe_attrs["swiglu_limit"]
+        act_shape = ["batch_size", "sequence_length", self.moe_attrs["top_k"], self.intermediate_size, 1]
+        if swiglu_limit is not None:
+            glu_clip_name = f"{basename}/act_fn/Clip_1"
+            glu_clip_inputs = [f"{glu_slice_name}/output_0", "", f"/model/constants/{self.to_str_dtype(self.io_dtype)}/{swiglu_limit}"]
+            self.make_clip(glu_clip_name, glu_clip_inputs, dtype=self.io_dtype, shape=act_shape)
+            glu_act_output = f"{glu_clip_name}/output_0"
+        else:
+            glu_act_output = f"{glu_slice_name}/output_0"
+
         linear_slice_name = f"{basename}/act_fn/Slice_2"
         linear_slice_inputs = [
             f"{gate_up_proj_bias_name}/output_0",
@@ -370,28 +370,22 @@ class GPTOSSModel(Model):
             "/model/constants/INT64/[3]",
             "/model/constants/INT64/[2]",
         ]
-        self.make_slice(
-            linear_slice_name,
-            linear_slice_inputs,
-            dtype=self.io_dtype,
-            shape=["batch_size", "sequence_length", self.moe_attrs["top_k"], self.intermediate_size, 1],
-        )
-        linear_clip_name = f"{basename}/act_fn/Clip_2"
-        linear_clip_inputs = [
-            f"{linear_slice_name}/output_0",
-            f"/model/constants/{self.to_str_dtype(self.io_dtype)}/{-self.moe_attrs['swiglu_limit']}",
-            f"/model/constants/{self.to_str_dtype(self.io_dtype)}/{self.moe_attrs['swiglu_limit']}",
-        ]
-        self.make_clip(
-            linear_clip_name,
-            linear_clip_inputs,
-            dtype=self.io_dtype,
-            shape=["batch_size", "sequence_length", self.moe_attrs["top_k"], self.intermediate_size, 1],
-        )
+        self.make_slice(linear_slice_name, linear_slice_inputs, dtype=self.io_dtype, shape=act_shape)
+        if swiglu_limit is not None:
+            linear_clip_name = f"{basename}/act_fn/Clip_2"
+            linear_clip_inputs = [
+                f"{linear_slice_name}/output_0",
+                f"/model/constants/{self.to_str_dtype(self.io_dtype)}/{-swiglu_limit}",
+                f"/model/constants/{self.to_str_dtype(self.io_dtype)}/{swiglu_limit}",
+            ]
+            self.make_clip(linear_clip_name, linear_clip_inputs, dtype=self.io_dtype, shape=act_shape)
+            linear_act_output = f"{linear_clip_name}/output_0"
+        else:
+            linear_act_output = f"{linear_slice_name}/output_0"
 
         # Make Mul node after activation
         act_fn_mul_1_name = f"{basename}/act_fn/Mul_1"
-        act_fn_mul_1_inputs = [f"{glu_clip_name}/output_0", f"/model/constants/{self.to_str_dtype(self.io_dtype)}/1.703125"]
+        act_fn_mul_1_inputs = [glu_act_output, f"/model/constants/{self.to_str_dtype(self.io_dtype)}/1.703125"]
         self.make_mul(
             act_fn_mul_1_name,
             act_fn_mul_1_inputs,
@@ -406,7 +400,7 @@ class GPTOSSModel(Model):
             shape=["batch_size", "sequence_length", self.moe_attrs["top_k"], self.intermediate_size, 1],
         )
         act_fn_mul_2_name = f"{basename}/act_fn/Mul_2"
-        act_fn_mul_2_inputs = [f"{glu_clip_name}/output_0", f"{sigmoid_name}/output_0"]
+        act_fn_mul_2_inputs = [glu_act_output, f"{sigmoid_name}/output_0"]
         self.make_mul(
             act_fn_mul_2_name,
             act_fn_mul_2_inputs,
@@ -416,7 +410,7 @@ class GPTOSSModel(Model):
         act_fn_add_name = f"{basename}/act_fn/Add"
         self.make_add(
             act_fn_add_name,
-            [f"{linear_clip_name}/output_0", f"/model/constants/{self.to_str_dtype(self.io_dtype)}/1"],
+            [linear_act_output, f"/model/constants/{self.to_str_dtype(self.io_dtype)}/1"],
             dtype=self.io_dtype,
             shape=["batch_size", "sequence_length", self.moe_attrs["top_k"], self.intermediate_size, 1],
         )
@@ -491,8 +485,19 @@ class GPTOSSModel(Model):
             shape=["batch_size", "sequence_length", self.intermediate_size],
         )
 
-        # Assign output 0 of previous MoE as root input to next SkipLayerNorm
-        self.layernorm_attrs["skip_input"] = f"{weighted_sum_squeeze_name}/output_0"
+        # Assign output 0 of previous MoE as root input to next SkipLayerNorm.
+        # Cast back to io_dtype if we computed the weighted sum in float32.
+        if use_cast:
+            output_cast_name = f"{basename}/output/Cast"
+            self.make_cast(
+                output_cast_name,
+                f"{weighted_sum_squeeze_name}/output_0",
+                self.io_dtype,
+                shape=["batch_size", "sequence_length", self.intermediate_size],
+            )
+            self.layernorm_attrs["skip_input"] = f"{output_cast_name}/output_0"
+        else:
+            self.layernorm_attrs["skip_input"] = f"{weighted_sum_squeeze_name}/output_0"
 
     def make_moe_fused(self, layer_id, mlp, root_input):
         # Make nodes for the fused MoE subgraph
