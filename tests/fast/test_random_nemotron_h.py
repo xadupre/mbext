@@ -8,7 +8,14 @@ import unittest
 
 import numpy as np
 
-from modelbuilder.ext_test_case import ExtTestCase, hide_stdout, requires_cuda, requires_transformers, run_session_or_io_binding
+from modelbuilder.ext_test_case import (
+    ExtTestCase,
+    has_transformers,
+    hide_stdout,
+    requires_cuda,
+    requires_transformers,
+    run_session_or_io_binding,
+)
 
 MODEL_NAME = "nvidia/NVIDIA-Nemotron-3-Nano-4B-BF16"
 
@@ -410,9 +417,12 @@ class TestNemotronH(ExtTestCase):
         prompt_ids = torch.randint(3, config.vocab_size, (batch_size, 4))
         prompt_len = prompt_ids.shape[1]
 
-        with torch.no_grad():
-            pt_output = model.generate(prompt_ids, max_new_tokens=max_new_tokens, do_sample=False, pad_token_id=config.eos_token_id)
-        pt_tokens = pt_output[0].tolist()
+        if not has_transformers("5.5"):
+            # The code is broken in transformers 5.5 for this model.
+            # ValueError: `has_previous_state` can only be called on LinearAttention layers
+            with torch.no_grad():
+                pt_output = model.generate(prompt_ids, max_new_tokens=max_new_tokens, do_sample=False, pad_token_id=config.eos_token_id)
+            pt_tokens = pt_output[0].tolist()
 
         og_model = og.Model(output_dir)
         params = og.GeneratorParams(og_model)
@@ -426,7 +436,8 @@ class TestNemotronH(ExtTestCase):
             generator.generate_next_token()
             og_tokens.append(int(generator.get_next_tokens()[0]))
 
-        self.assertEqual(pt_tokens, og_tokens)
+        if not has_transformers("5.5"):
+            self.assertEqual(pt_tokens, og_tokens)
 
 
 if __name__ == "__main__":
