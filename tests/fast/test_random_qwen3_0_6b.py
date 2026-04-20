@@ -79,7 +79,7 @@ class TestRandomQwen3(ExtTestCase):
 
         onnx_path = os.path.join(output_dir, "model.onnx")
         self.assertExists(onnx_path)
-        sess = self.check_ort(onnx_path)
+        sess = self.check_ort(onnx_path, provider=provider)
 
         batch_size = 1
         seq_len = 5
