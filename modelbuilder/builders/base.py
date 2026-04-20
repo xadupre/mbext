@@ -26,8 +26,6 @@ from onnxruntime.quantization.matmul_nbits_quantizer import (
 from tqdm import tqdm
 from transformers import AutoConfig, AutoModelForCausalLM, AutoModelForSpeechSeq2Seq, AutoTokenizer, GenerationConfig
 
-from ..genai_config_utils import fix_genai_config
-
 
 def parse_hf_token(hf_token):
     """
@@ -244,11 +242,7 @@ class Model:
         position_scale = config.rope_position_scale if hasattr(config, "rope_position_scale") else 1
         partial_rotary_factor = config.partial_rotary_factor if hasattr(config, "partial_rotary_factor") else 1.0
         rotemb_dim = int(self.head_size * partial_rotary_factor) if partial_rotary_factor != 1.0 else 0
-        rope_theta = (
-            config.rope_theta
-            if hasattr(config, "rope_theta")
-            else (config.rope_embedding_base if hasattr(config, "rope_embedding_base") else 10000)
-        )
+        rope_theta = self._rope_theta_from_config(config)
         self.rope_attrs = {
             "create_caches": True,  # Create cos/sin caches for rotary embeddings
             "save_caches": True,  # Auto-save cos/sin caches for rotary embeddings after creation
@@ -265,6 +259,8 @@ class Model:
         }
         if hasattr(config, "rope_scaling") and config.rope_scaling is not None:
             self.make_rope_init(config)
+        if hasattr(config, "compression_ratio") and config.compression_ratio != 1.0:
+            self.rope_attrs["rescale_factors"] = 1.0 / config.compression_ratio
 
         # Attention-specific variables (MHA, GQA, GQA + Rot.Emb., etc.)
         attn_softcap = (
@@ -441,6 +437,28 @@ class Model:
         if self.exclude_lm_head:
             del self.output_names["logits"]
 
+    @staticmethod
+    def _rope_theta_from_config(config, default=10000):
+        """Return the RoPE base frequency from ``config``, trying all standard attribute locations.
+
+        The lookup order is:
+        1. ``config.rope_theta`` – the standard HuggingFace attribute.
+        2. ``config.rope_embedding_base`` – used by some older models.
+        3. ``config.rope_parameters["rope_theta"]`` – a flat dict used by models
+           such as Ernie 4.5 that store all RoPE hyper-parameters together under
+           ``rope_parameters`` rather than as individual top-level attributes.
+        4. ``default`` (10000) if none of the above is present.
+        """
+        if hasattr(config, "rope_theta"):
+            return config.rope_theta
+        if hasattr(config, "rope_embedding_base"):
+            return config.rope_embedding_base
+        if hasattr(config, "rope_parameters") and isinstance(config.rope_parameters, dict):
+            theta = config.rope_parameters.get("rope_theta")
+            if theta is not None:
+                return theta
+        return default
+
     def make_rope_init(self, config):
         # Some models (e.g. SmolLM3) store rope_theta inside rope_scaling
         # instead of as a top-level config attribute. Override the default theta
@@ -494,10 +512,7 @@ class Model:
                 # HuggingFace YaRN formula:
                 # final_mscale = yarn_get_mscale(factor, mscale) / yarn_get_mscale(factor, mscale_all_dim)
                 # where yarn_get_mscale(s, m) = 0.1 * m * log(s) + 1 if s > 1 else 1
-                def _yarn_get_mscale(s, m):
-                    return (0.1 * m * float(np.log(s)) + 1.0) if s > 1.0 else 1.0
-
-                self.rope_attrs["mscale"] = _yarn_get_mscale(factor, mscale_param) / _yarn_get_mscale(factor, mscale_all_dim)
+                self.rope_attrs["mscale"] = self.make_mscale_yarn(factor, mscale_param) / self.make_mscale_yarn(factor, mscale_all_dim)
             else:
                 self.rope_attrs["mscale"] = self.make_mscale(factor)
             self.rope_attrs["rescale_inv_freq"] = {
@@ -571,6 +586,43 @@ class Model:
             print("Attention (packed) is used in this model.")
 
         self.past_present_share_buffer = self.attention_attrs["op_type"] == "GroupQueryAttention"
+
+    def _make_search_section(self, config, context_length, extra_options, past_present_share_buffer):
+        """Build the ``search`` section of ``genai_config.json``.
+
+        Starts from :data:`GENAI_SEARCH_DEFAULTS` so that every field is always
+        initialized to a valid value.  Any attribute that exists on *config* and
+        is not ``None`` overrides the corresponding default, which is the correct
+        behaviour for both transformers < 5 (where attributes carry concrete
+        values) and transformers >= 5 (where they may be ``None``).
+        """
+        # Search-section defaults for onnxruntime-genai.  In transformers >= 5,
+        # GenerationConfig attributes default to None instead of concrete values,
+        # which can produce null entries in genai_config.json that
+        # onnxruntime-genai does not accept.
+        GENAI_SEARCH_DEFAULTS = {
+            "diversity_penalty": 0.0,
+            "do_sample": False,
+            "early_stopping": True,
+            "length_penalty": 1.0,
+            "min_length": 0,
+            "no_repeat_ngram_size": 0,
+            "num_beams": 1,
+            "num_return_sequences": 1,
+            "repetition_penalty": 1.0,
+            "temperature": 1.0,
+            "top_k": 50,
+            "top_p": 1.0,
+        }
+
+        search = dict(GENAI_SEARCH_DEFAULTS)
+        for key in GENAI_SEARCH_DEFAULTS:
+            val = getattr(config, key, None)
+            if val is not None:
+                search[key] = val
+        search["max_length"] = context_length
+        search["past_present_share_buffer"] = False if "config_only" in extra_options else past_present_share_buffer
+        return search
 
     def make_genai_config(self, model_name_or_path, extra_kwargs, out_dir):
         # Create config with attributes from config.json and generation_config.json (if latter file exists)
@@ -648,22 +700,7 @@ class Model:
                 "type": self.model_type[: self.model_type.find("For") if "For" in self.model_type else len(self.model_type)].lower(),
                 "vocab_size": self.vocab_size,
             },
-            "search": {
-                "diversity_penalty": config.diversity_penalty if hasattr(config, "diversity_penalty") else 0.0,
-                "do_sample": config.do_sample if hasattr(config, "do_sample") else False,
-                "early_stopping": True,
-                "length_penalty": config.length_penalty if hasattr(config, "length_penalty") else 1.0,
-                "max_length": self.context_length,
-                "min_length": 0,
-                "no_repeat_ngram_size": config.no_repeat_ngram_size if hasattr(config, "no_repeat_ngram_size") else 0,
-                "num_beams": config.num_beams if hasattr(config, "num_beams") else 1,
-                "num_return_sequences": config.num_return_sequences if hasattr(config, "num_return_sequences") else 1,
-                "past_present_share_buffer": False if "config_only" in self.extra_options else self.past_present_share_buffer,
-                "repetition_penalty": config.repetition_penalty if hasattr(config, "repetition_penalty") else 1.0,
-                "temperature": config.temperature if hasattr(config, "temperature") else 1.0,
-                "top_k": config.top_k if hasattr(config, "top_k") and config.top_k is not None else 50,
-                "top_p": config.top_p if hasattr(config, "top_p") and config.top_p is not None else 1.0,
-            },
+            "search": self._make_search_section(config, self.context_length, self.extra_options, self.past_present_share_buffer),
         }
 
         if self.ep == "trt-rtx" and self.window_size is not None and self.window_size > 0:
@@ -682,7 +719,6 @@ class Model:
             ep_options = {ep_name: self.ep_attrs[self.ep]}
             genai_config["model"]["decoder"]["session_options"]["provider_options"].append(ep_options)
 
-        fix_genai_config(genai_config)
         print(f"Saving GenAI config in {out_dir}")
         with open(os.path.join(out_dir, "genai_config.json"), "w") as f:
             json.dump(genai_config, f, indent=4)
@@ -1651,10 +1687,13 @@ class Model:
             return 1.0
         return np.sqrt(1 + np.log(mscale) / np.log(self.original_context_length))
 
-    def make_mscale_yarn(self, mscale):
+    def make_mscale_yarn(self, mscale, alpha=1.0):
+        # Computes the YaRN magnitude scaling factor:
+        # yarn_get_mscale(s, alpha) = 0.1 * alpha * log(s) + 1 if s > 1 else 1
+        # alpha is the optional mscale multiplier from rope_scaling config (default 1.0).
         if mscale <= 1.0:
             return 1.0
-        return 0.1 * np.log(mscale) + 1.0
+        return 0.1 * alpha * np.log(mscale) + 1.0
 
     def make_mscale(self, mscale):
         if self.rope_attrs["mscale_policy"] in {"su", "longrope"}:
