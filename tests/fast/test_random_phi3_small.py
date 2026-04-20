@@ -581,10 +581,7 @@ class TestPhi3Small(ExtTestCase):
         self.assertExists(onnx_path)
         sess = self._check_with_ort(onnx_path, cpu=provider == "cpu")
 
-        input_names = {inp.name for inp in sess.get_inputs()}
-
         batch_size = 1
-        head_size = config_obj.hidden_size // config_obj.num_attention_heads
         max_new_tokens = 10
 
         torch.manual_seed(0)
@@ -605,72 +602,28 @@ class TestPhi3Small(ExtTestCase):
                 if next_tok == config_obj.eos_token_id:
                     break
 
-        current_ids = prompt_ids.detach().cpu().numpy().astype(np.int64)
-
-        past_kv = {}
-        for i in range(num_hidden_layers):
-            past_kv[f"past_key_values.{i}.key"] = np.zeros(
-                (batch_size, config_obj.num_key_value_heads, 0, head_size), dtype=self.get_input_np_dtype(precision)
-            )
-            past_kv[f"past_key_values.{i}.value"] = np.zeros(
-                (batch_size, config_obj.num_key_value_heads, 0, head_size), dtype=self.get_input_np_dtype(precision)
-            )
-
-        onnx_tokens = current_ids[0].tolist()
-        results = None
-        for _ in range(max_new_tokens):
-            past_len = past_kv["past_key_values.0.key"].shape[2]
-            cur_len = current_ids.shape[1]
-
-            feed = {
-                "input_ids": current_ids,
-                "attention_mask": np.ones((batch_size, past_len + cur_len), dtype=np.int64),
-                "position_ids": np.arange(past_len, past_len + cur_len, dtype=np.int64).reshape(batch_size, cur_len),
-            }
-            for i in range(num_hidden_layers):
-                feed[f"past_key_values.{i}.key"] = past_kv[f"past_key_values.{i}.key"]
-                feed[f"past_key_values.{i}.value"] = past_kv[f"past_key_values.{i}.value"]
-            feed = {k: v for k, v in feed.items() if k in input_names}
-
-            results, _ = run_session_or_io_binding(
-                use_iobinding=precision == "bf16",
-                precision=precision,
-                provider=provider,
-                feed=feed,
-                sess=sess,
-                vocab_size=config_obj.vocab_size,
-                results=results,
-            )
-
-            next_token = int(np.argmax(results["logits"][0, -1, :]))
-            onnx_tokens.append(next_token)
-
-            for i in range(num_hidden_layers):
-                past_kv[f"past_key_values.{i}.key"] = results[f"present.{i}.key"]
-                past_kv[f"past_key_values.{i}.value"] = results[f"present.{i}.value"]
-
-            current_ids = np.array([[next_token]], dtype=np.int64)
-
-            if next_token == config_obj.eos_token_id:
-                break
-
-        diff = self.first_token_diff(pt_tokens, onnx_tokens)
-        diff.update(
-            dict(
-                precision=precision,
-                model_id=PHI3_SMALL_MODEL_NAME,
-                experiment="generate",
-                provider=provider,
-                test=basename,
-                input_type="text",
-                kind="fast",
-            )
+        log_data = dict(
+            precision=precision,
+            model_id=PHI3_SMALL_MODEL_NAME,
+            experiment="generate",
+            provider=provider,
+            test=basename,
+            input_type="text",
+            kind="fast",
         )
-        self.log_results(diff)
-        if precision in ("fp16", "bf16"):
-            pt_tokens = pt_tokens[:-5]
-            onnx_tokens = onnx_tokens[:-5]
-        self.assertEqual(pt_tokens, onnx_tokens)
+        self.run_greedy_generation_check(
+            model=model,
+            sess=sess,
+            num_hidden_layers=num_hidden_layers,
+            num_key_value_heads=config_obj.num_key_value_heads,
+            head_size=config_obj.hidden_size // config_obj.num_attention_heads,
+            vocab_size=config_obj.vocab_size,
+            eos_token_id=config_obj.eos_token_id,
+            precision=precision,
+            provider=provider,
+            log_data=log_data,
+            pt_tokens=pt_tokens,
+        )
 
     @hide_stdout()
     def test_fast_discrepancy_phi3_small_fp32_cpu(self):
