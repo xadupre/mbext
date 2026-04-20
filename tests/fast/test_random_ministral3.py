@@ -668,19 +668,7 @@ class TestMinistral3(ExtTestCase):
             num_hidden_layers=num_hidden_layers,
         )
 
-        # Try to load the multimodal model with onnxruntime-genai.
-        # Versions that do not yet support the `vision_encoder` config section
-        # will raise a RuntimeError; in that case we skip the test.
-        try:
-            og_model = og.Model(output_dir)
-        except RuntimeError as exc:
-            msg = str(exc)
-            if "vision_encoder" in msg or "Unknown value" in msg:
-                raise unittest.SkipTest(
-                    f"onnxruntime-genai {og.__version__} does not support the "
-                    "vision_encoder configuration format; skipping genai multimodal test."
-                )
-            raise
+        og_model = og.Model(output_dir)
 
         max_new_tokens = 3
         prompt_len = 3
