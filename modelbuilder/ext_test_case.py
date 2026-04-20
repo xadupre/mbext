@@ -432,20 +432,7 @@ class ExtTestCase(unittest.TestCase):
         Returns:
             The saved :class:`~transformers.PreTrainedTokenizerFast` instance.
         """
-        from tokenizers import Tokenizer
-        from tokenizers.models import WordLevel
-        from transformers import PreTrainedTokenizerFast
-
-        if vocab is None:
-            vocab = {unk_token: 0, bos_token: 1, eos_token: 2}
-        tokenizer = PreTrainedTokenizerFast(
-            tokenizer_object=Tokenizer(WordLevel(vocab=vocab, unk_token=unk_token)),
-            bos_token=bos_token,
-            eos_token=eos_token,
-            unk_token=unk_token,
-        )
-        tokenizer.save_pretrained(model_dir)
-        return tokenizer
+        return make_word_level_tokenizer(model_dir, vocab=vocab, bos_token=bos_token, eos_token=eos_token, unk_token=unk_token)
 
     def make_prefill_feed(
         self,
@@ -635,6 +622,46 @@ def get_input_np_dtype(precision):
 
         return ml_dtypes.bfloat16
     return {"int4": np.float32, "fp16": np.float16, "fp32": np.float32}[precision]
+
+
+def make_word_level_tokenizer(
+    model_dir: str, vocab: Optional[Dict[str, int]] = None, bos_token: str = "<s>", eos_token: str = "</s>", unk_token: str = "<unk>"
+):
+    """Create and save a minimal :class:`~transformers.PreTrainedTokenizerFast`.
+
+    The tokenizer uses a :class:`~tokenizers.models.WordLevel` model backed
+    by *vocab* (or a small default vocabulary when *vocab* is ``None``).
+    It is saved to *model_dir* via ``save_pretrained``.
+
+    This module-level function mirrors :meth:`ExtTestCase.make_word_level_tokenizer`
+    and is provided for use in module-level helper functions that do not have
+    access to a test-case instance.
+
+    Args:
+        model_dir: Directory where the tokenizer files will be written.
+        vocab: Optional mapping ``{token: id}``.  Defaults to
+            ``{"<unk>": 0, "<s>": 1, "</s>": 2}``.
+        bos_token: Beginning-of-sequence token string.
+        eos_token: End-of-sequence token string.
+        unk_token: Unknown-token string.
+
+    Returns:
+        The saved :class:`~transformers.PreTrainedTokenizerFast` instance.
+    """
+    from tokenizers import Tokenizer
+    from tokenizers.models import WordLevel
+    from transformers import PreTrainedTokenizerFast
+
+    if vocab is None:
+        vocab = {unk_token: 0, bos_token: 1, eos_token: 2}
+    tokenizer = PreTrainedTokenizerFast(
+        tokenizer_object=Tokenizer(WordLevel(vocab=vocab, unk_token=unk_token)),
+        bos_token=bos_token,
+        eos_token=eos_token,
+        unk_token=unk_token,
+    )
+    tokenizer.save_pretrained(model_dir)
+    return tokenizer
 
 
 def get_input_torch_dtype(precision):

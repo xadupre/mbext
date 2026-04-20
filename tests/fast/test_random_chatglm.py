@@ -9,7 +9,7 @@ import unittest
 
 import numpy as np
 
-from modelbuilder.ext_test_case import ExtTestCase, hide_stdout, requires_cuda, run_session_or_io_binding
+from modelbuilder.ext_test_case import ExtTestCase, hide_stdout, make_word_level_tokenizer, requires_cuda, run_session_or_io_binding
 
 CHATGLM_MODEL_NAME = "THUDM/chatglm3-6b"
 
@@ -303,9 +303,6 @@ def _save_mini_chatglm(model_dir, num_layers=1):
     fully offline.
     """
     import torch
-    from tokenizers import Tokenizer
-    from tokenizers.models import WordLevel
-    from transformers import PreTrainedTokenizerFast
 
     # ------------------------------------------------------------------
     # 1. Write model source to model_dir so trust_remote_code can load it
@@ -368,11 +365,7 @@ def _save_mini_chatglm(model_dir, num_layers=1):
     # ------------------------------------------------------------------
     # 5. Save a minimal tokenizer
     # ------------------------------------------------------------------
-    vocab = {"<unk>": 0, "<s>": 1, "</s>": 2}
-    tokenizer = PreTrainedTokenizerFast(
-        tokenizer_object=Tokenizer(WordLevel(vocab=vocab, unk_token="<unk>")), bos_token="<s>", eos_token="</s>", unk_token="<unk>"
-    )
-    tokenizer.save_pretrained(model_dir)
+    make_word_level_tokenizer(model_dir)
 
     return model, config
 
