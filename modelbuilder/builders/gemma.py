@@ -150,21 +150,6 @@ class Gemma3Model(Gemma2Model):
         self.cos_cache_local_name, self.sin_cache_local_name = ("cos_cache_local", "sin_cache_local")
         super().make_rotary_embedding_caches(cos_cache_name=self.cos_cache_local_name, sin_cache_name=self.sin_cache_local_name)
 
-    def load_weights(self, input_path):
-        # Gemma3ForConditionalGeneration (VLM) does not accept the
-        # ``num_hidden_layers`` keyword argument that the base class would
-        # normally forward to ``AutoModelForCausalLM.from_pretrained``.
-        # Load it directly here instead.
-        if self._original_architecture == "Gemma3ForConditionalGeneration":
-            if self.quant_type is not None or input_path.endswith(".gguf"):
-                return super().load_weights(input_path)
-            from transformers import Gemma3ForConditionalGeneration as _HFModel
-
-            return _HFModel.from_pretrained(
-                self.model_name_or_path, cache_dir=self.cache_dir, token=self.hf_token, trust_remote_code=self.hf_remote
-            )
-        return super().load_weights(input_path)
-
     def make_rotary_embedding_caches(self, **kwargs):
         cos_cache_name = kwargs.get("cos_cache_name", (self.cos_cache_global_name if self.window_size == -1 else self.cos_cache_local_name))
         sin_cache_name = kwargs.get("sin_cache_name", (self.sin_cache_global_name if self.window_size == -1 else self.sin_cache_local_name))
