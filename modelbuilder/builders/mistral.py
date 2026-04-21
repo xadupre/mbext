@@ -54,25 +54,6 @@ class Ministral3TextModel(MistralModel):
                 dequantized = module.weight.float() * scale_inv.float()
                 module.weight = torch.nn.Parameter(dequantized, requires_grad=False)
 
-    def load_weights(self, input_path):
-        # Mistral3ForConditionalGeneration (model_type="mistral3") is not
-        # registered with AutoModelForCausalLM.  Load the full multimodal
-        # model directly; make_model will find the embedded language-model
-        # sub-modules (embed_tokens, MistralDecoderLayer, norm, lm_head)
-        # via the standard module iteration already present in base.Model.
-        if "ConditionalGeneration" in self.model_type:
-            from transformers import Mistral3ForConditionalGeneration
-
-            model = Mistral3ForConditionalGeneration.from_pretrained(
-                self.model_name_or_path, cache_dir=self.cache_dir, token=self.hf_token, trust_remote_code=self.hf_remote
-            )
-        else:
-            model = super().load_weights(input_path)
-        # Dequantize FP8 weights if present (official Ministral-3B model uses
-        # float8_e4m3fn with per-tensor weight_scale_inv).
-        self._dequantize_fp8_weights(model)
-        return model
-
     def make_genai_config(self, model_name_or_path, extra_kwargs, out_dir):
         """`minitral3` is not supported as an architecture, let's replace with `mistral`."""
         super().make_genai_config(model_name_or_path, extra_kwargs, out_dir)
