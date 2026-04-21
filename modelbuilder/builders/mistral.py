@@ -89,7 +89,7 @@ class Ministral3TextModel(MistralModel):
             json.dump(genai_config, f, indent=4)
 
 
-class Ministral3VisionEncoderModel:
+class Ministral3VisionEncoderModel(Model):
     """Direct ``onnx_ir`` graph builder for the Pixtral vision encoder + multimodal projector.
 
     Builds the ONNX graph manually (analogous to other model builders in this
@@ -117,18 +117,43 @@ class Ministral3VisionEncoderModel:
     # ------------------------------------------------------------------ #
 
     def __init__(self, config, io_dtype, onnx_dtype, ep, cache_dir, extra_options):
+        vc = config.vision_config
+
+        # Patch a copy of config with vision encoder attributes so that
+        # Model.__init__ (which expects an LLM-style config) can initialise
+        # the shared graph/values state without errors.
+        vis_config = copy.deepcopy(config)
+        vis_config.hidden_size = vc.hidden_size
+        vis_config.intermediate_size = vc.intermediate_size
+        vis_config.num_attention_heads = vc.num_attention_heads
+        vis_config.num_key_value_heads = vc.num_attention_heads  # no GQA in vision encoder
+        vis_config.num_hidden_layers = vc.num_hidden_layers
+        vis_config.head_dim = getattr(vc, "head_dim", None) or vc.hidden_size // vc.num_attention_heads
+        vis_config.hidden_act = getattr(vc, "hidden_act", "silu")
+        vis_config.vocab_size = getattr(vc, "vocab_size", 1)
+        vis_config.max_position_embeddings = (vc.image_size // vc.patch_size) ** 2
+        vis_config.rms_norm_eps = 1e-5  # hardcoded in PixtralRMSNorm
+        vis_config.rope_scaling = None  # prevent text-model rope init
+
+        extra_options = {**extra_options, "filename": self.FILENAME, "exclude_lm_head": True, "exclude_embeds": True}
+
+        super().__init__(vis_config, io_dtype, onnx_dtype, ep, cache_dir, extra_options)
+
+        # Re-initialise the graph with the vision-encoder name and reset
+        # shared graph state so make_model() starts from a clean slate.
+        self.graph = ir.Graph(inputs=(), outputs=(), nodes=(), opset_imports={"": 21, "com.microsoft": 1}, name="pixtral_vision_encoder")
+        self.model = ir.Model(self.graph, ir_version=10, producer_name="onnxruntime-genai")
+        self.values = {}
+        self.node_names = set()
+
+        # Backward-compatibility alias used by save_model().
+        self.onnx_model = self.model
+
+        # Store original (unpatched) config for callers that need top-level
+        # Mistral3 attributes (e.g. spatial_merge_size, text_config, …).
         self.config = config
         self.vision_config = config.vision_config
-        self.io_dtype = ir.DataType(io_dtype)
-        self.onnx_dtype = ir.DataType(onnx_dtype)
-        self.cache_dir = cache_dir
-        self.extra_options = extra_options
-        self.filename = self.FILENAME
-        self.hf_token = parse_hf_token(extra_options.get("hf_token", "true"))
-        self.hf_remote = extra_options.get("hf_remote", True)
-        self.model_name_or_path = config._name_or_path
 
-        vc = self.vision_config
         self.image_size = vc.image_size
         self.patch_size = vc.patch_size
         self.num_channels = vc.num_channels
@@ -148,12 +173,6 @@ class Ministral3VisionEncoderModel:
         self.text_hidden_size = tc.hidden_size
         self.vision_feature_layer = config.vision_feature_layer
         self.projector_hidden_act = config.projector_hidden_act
-
-        # onnx_ir graph state
-        self.graph = ir.Graph(inputs=(), outputs=(), nodes=(), opset_imports={"": 21, "com.microsoft": 1}, name="pixtral_vision_encoder")
-        self.onnx_model = ir.Model(self.graph, ir_version=10, producer_name="onnxruntime-genai")
-        self.values = {}
-        self.node_names = set()
 
     # ------------------------------------------------------------------ #
     #  Low-level onnx_ir primitives                                       #
