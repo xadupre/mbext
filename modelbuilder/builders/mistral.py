@@ -174,27 +174,7 @@ class Ministral3VisionEncoderModel(Model):
         self.projector_hidden_act = config.projector_hidden_act
 
     # ------------------------------------------------------------------ #
-    #  Low-level onnx_ir primitives                                       #
-    # ------------------------------------------------------------------ #
-
-    def _const_tensor(self, np_data, name):
-        """Emit a small constant as an inline ONNX ``Constant`` node.
-
-        Unlike ``make_initializer`` (which registers large weight tensors as initialisers
-        and allows them to be offloaded to external data), this method always
-        keeps the tensor value inline inside the ONNX graph node.  This is
-        required for shape constants consumed by ``Reshape``: ORT's shape
-        inference cannot read external-data tensors, so those constants must
-        remain embedded in the model file.
-        """
-        ir_t = ir.tensor(np_data, name=name)
-        node_name = f"{name}/Constant"
-        # Constant node: no inputs, one output carrying the value.
-        self.make_node("Constant", inputs=[], outputs=[name], name=node_name, value=ir_t)
-        self.make_value(name, ir_t.dtype, ir_t.shape)
-
-    # ------------------------------------------------------------------ #
-    #  Mid-level graph-construction helpers                               #
+    #  Graph-construction helpers                                         #
     # ------------------------------------------------------------------ #
 
     def _rms_norm(self, name, root_input, weight_tensor, weight_name, shape):
@@ -239,7 +219,7 @@ class Ministral3VisionEncoderModel(Model):
     def _reshape(self, name, root_input, shape_data, dtype, out_shape):
         """Reshape with a constant shape tensor."""
         shape_name = f"{name}/shape"
-        self._const_tensor(np.array(shape_data, dtype=np.int64), shape_name)
+        self.make_initializer(np.array(shape_data, dtype=np.int64), shape_name)
         self.make_reshape(name, [root_input, shape_name], dtype, out_shape)
         return f"{name}/output_0"
 
@@ -248,9 +228,9 @@ class Ministral3VisionEncoderModel(Model):
         starts_name = f"{name}/starts"
         ends_name = f"{name}/ends"
         axes_name = f"{name}/axes"
-        self._const_tensor(np.array(starts, dtype=np.int64), starts_name)
-        self._const_tensor(np.array(ends, dtype=np.int64), ends_name)
-        self._const_tensor(np.array(axes, dtype=np.int64), axes_name)
+        self.make_initializer(np.array(starts, dtype=np.int64), starts_name)
+        self.make_initializer(np.array(ends, dtype=np.int64), ends_name)
+        self.make_initializer(np.array(axes, dtype=np.int64), axes_name)
         self.make_slice(name, [root_input, starts_name, ends_name, axes_name], dtype, out_shape)
         return f"{name}/output_0"
 
@@ -258,7 +238,7 @@ class Ministral3VisionEncoderModel(Model):
         """Multiply a tensor by a scalar constant."""
         np_dtype = {ir.DataType.FLOAT: np.float32, ir.DataType.FLOAT16: np.float16}.get(dtype, np.float32)
         scale_name = f"{name}/scale"
-        self._const_tensor(np.array(scale, dtype=np_dtype), scale_name)
+        self.make_initializer(np.array(scale, dtype=np_dtype), scale_name)
         return self.make_mul(name, [root_input, scale_name], dtype, shape)
 
     # ------------------------------------------------------------------ #
