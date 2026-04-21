@@ -980,6 +980,7 @@ class Model:
         output = f"{name}/output_0"
         self.make_node("Concat", inputs=inputs, outputs=[output], name=name, axis=axis)
         self.make_value(output, dtype, shape=shape)
+        return output
 
     def make_tile(self, name, inputs, dtype, shape):
         output = f"{name}/output_0"
@@ -1063,6 +1064,7 @@ class Model:
         output = f"{name}/output_0"
         self.make_node("Add", inputs=inputs, outputs=[output], name=name)
         self.make_value(output, dtype, shape=shape)
+        return output
 
     def make_sub(self, name, inputs, dtype, shape):
         output = f"{name}/output_0"
@@ -1088,11 +1090,19 @@ class Model:
         output = f"{name}/output_0"
         self.make_node("Mul", inputs=inputs, outputs=[output], name=name)
         self.make_value(output, dtype, shape=shape)
+        return output
+
+    def make_neg(self, name, root_input, dtype, shape):
+        output = f"{name}/output_0"
+        self.make_node("Neg", inputs=[root_input], outputs=[output], name=name)
+        self.make_value(output, dtype, shape=shape)
+        return output
 
     def make_transpose(self, name, root_input, dtype, shape, perm):
         output = f"{name}/output_0"
         self.make_node("Transpose", inputs=[root_input], outputs=[output], name=name, perm=perm)
         self.make_value(output, dtype, shape=shape)
+        return output
 
     def make_div(self, name, inputs, dtype, shape):
         output = f"{name}/output_0"
@@ -1108,6 +1118,7 @@ class Model:
         output = f"{name}/output_0"
         self.make_node("Softmax", inputs=[root_input], outputs=[output], name=name, axis=axis)
         self.make_value(output, dtype, shape=shape)
+        return output
 
     def make_sigmoid(self, name, root_input, dtype, shape):
         output = f"{name}/output_0"
