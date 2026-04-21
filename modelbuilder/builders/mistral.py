@@ -209,22 +209,6 @@ class Ministral3VisionEncoderModel(Model):
         self.make_value(output, self.io_dtype, shape=shape)
         return output
 
-    def _matmul(self, name, root_input, weight_tensor, weight_name, out_shape, bias_tensor=None, bias_name=None):
-        """MatMul (weight stored transposed as [in, out]) with optional Add bias."""
-        self.make_initializer(weight_tensor.T.contiguous(), weight_name, to=self.io_dtype)
-        mm_out = f"{name}/output_0"
-        self.make_node("MatMul", inputs=[root_input, weight_name], outputs=[mm_out], name=name)
-        self.make_value(mm_out, self.io_dtype, shape=out_shape)
-        if bias_tensor is not None and bias_name is not None:
-            if torch.count_nonzero(bias_tensor) > 0:
-                self.make_initializer(bias_tensor, bias_name, to=self.io_dtype)
-                add_name = f"{name}/BiasAdd"
-                add_out = f"{add_name}/output_0"
-                self.make_node("Add", inputs=[mm_out, bias_name], outputs=[add_out], name=add_name)
-                self.make_value(add_out, self.io_dtype, shape=out_shape)
-                return add_out
-        return mm_out
-
     def _matmul_raw(self, name, a_name, b_name, shape):
         """Raw MatMul between two existing values (weights already in graph)."""
         output = f"{name}/output_0"
@@ -340,9 +324,9 @@ class Ministral3VisionEncoderModel(Model):
         hd = self.vis_head_dim
 
         # Q / K / V projections (no bias in Pixtral attention)
-        q = self._matmul(f"{b}/q_proj/MatMul", root_input, attn.q_proj.weight, f"{b}/q_proj/MatMul.weight", out_shape=[1, n_p, d])
-        k = self._matmul(f"{b}/k_proj/MatMul", root_input, attn.k_proj.weight, f"{b}/k_proj/MatMul.weight", out_shape=[1, n_p, d])
-        v = self._matmul(f"{b}/v_proj/MatMul", root_input, attn.v_proj.weight, f"{b}/v_proj/MatMul.weight", out_shape=[1, n_p, d])
+        q = f"{self.make_matmul(attn.q_proj, f'{b}/q_proj/MatMul', root_input)}/output_0"
+        k = f"{self.make_matmul(attn.k_proj, f'{b}/k_proj/MatMul', root_input)}/output_0"
+        v = f"{self.make_matmul(attn.v_proj, f'{b}/v_proj/MatMul', root_input)}/output_0"
 
         qkv_shape_4d = [1, n_p, nh, hd]
         q_4d = self._reshape(f"{b}/q_reshape", q, [1, n_p, nh, hd], self.io_dtype, qkv_shape_4d)
@@ -373,7 +357,7 @@ class Ministral3VisionEncoderModel(Model):
         attn_out_2d = self._reshape(f"{b}/attn_out_reshape", attn_out, [1, n_p, d], self.io_dtype, [1, n_p, d])
 
         # O projection (no bias in Pixtral attention)
-        o = self._matmul(f"{b}/o_proj/MatMul", attn_out_2d, attn.o_proj.weight, f"{b}/o_proj/MatMul.weight", out_shape=[1, n_p, d])
+        o = f"{self.make_matmul(attn.o_proj, f'{b}/o_proj/MatMul', attn_out_2d)}/output_0"
         return o
 
     # ------------------------------------------------------------------ #
@@ -390,13 +374,10 @@ class Ministral3VisionEncoderModel(Model):
         """
         b = f"/vision/layers.{layer_id}/mlp"
         n_p = self.n_patches
-        d = self.vis_hidden_size
         ff = self.vis_intermediate_size
 
-        gate = self._matmul(
-            f"{b}/gate_proj/MatMul", root_input, mlp.gate_proj.weight, f"{b}/gate_proj/MatMul.weight", out_shape=[1, n_p, ff]
-        )
-        up = self._matmul(f"{b}/up_proj/MatMul", root_input, mlp.up_proj.weight, f"{b}/up_proj/MatMul.weight", out_shape=[1, n_p, ff])
+        gate = f"{self.make_matmul(mlp.gate_proj, f'{b}/gate_proj/MatMul', root_input)}/output_0"
+        up = f"{self.make_matmul(mlp.up_proj, f'{b}/up_proj/MatMul', root_input)}/output_0"
 
         # SiLU(gate) * up  (SiLU(x) = x * Sigmoid(x))
         sig_name = f"{b}/act/Sigmoid"
@@ -406,7 +387,7 @@ class Ministral3VisionEncoderModel(Model):
         silu_out = self.make_mul(f"{b}/act/Mul_silu", [gate, sig_out], self.io_dtype, [1, n_p, ff])
         gate_up = self.make_mul(f"{b}/gate_up/Mul", [silu_out, up], self.io_dtype, [1, n_p, ff])
 
-        down = self._matmul(f"{b}/down_proj/MatMul", gate_up, mlp.down_proj.weight, f"{b}/down_proj/MatMul.weight", out_shape=[1, n_p, d])
+        down = f"{self.make_matmul(mlp.down_proj, f'{b}/down_proj/MatMul', gate_up)}/output_0"
         return down
 
     # ------------------------------------------------------------------ #
@@ -562,26 +543,21 @@ class Ministral3VisionEncoderModel(Model):
         merged = self._reshape("/vision/projector/merge/Reshape3", tp, [nm, d * s * s], self.io_dtype, [nm, d * s * s])
 
         # Merging linear (no bias): [nm, d*s*s] -> [nm, d]
-        merged_out = self._matmul(
-            "/vision/projector/merging_layer/MatMul",
-            merged,
-            proj.patch_merger.merging_layer.weight,
-            "vision.projector.merging_layer.weight",
-            out_shape=[nm, d],
-        )
+        merged_out = f"{self.make_matmul(proj.patch_merger.merging_layer, '/vision/projector/merging_layer/MatMul', merged)}/output_0"
 
         # --- linear_1 + gelu + linear_2 ---
         t_hid = self.text_hidden_size
+        lin1_name = "/vision/projector/linear_1/MatMul"
+        lin1_out = f"{self.make_matmul(proj.linear_1, lin1_name, merged_out)}/output_0"
         lin1_bias = getattr(proj.linear_1, "bias", None)
-        lin1_out = self._matmul(
-            "/vision/projector/linear_1/MatMul",
-            merged_out,
-            proj.linear_1.weight,
-            "vision.projector.linear_1.weight",
-            out_shape=[nm, t_hid],
-            bias_tensor=lin1_bias,
-            bias_name="vision.projector.linear_1.bias" if lin1_bias is not None else None,
-        )
+        if lin1_bias is not None and torch.count_nonzero(lin1_bias) > 0:
+            lin1_bias_name = "vision.projector.linear_1.bias"
+            self.make_initializer(lin1_bias, lin1_bias_name, to=self.io_dtype)
+            lin1_add_name = f"{lin1_name}/BiasAdd"
+            lin1_add_out = f"{lin1_add_name}/output_0"
+            self.make_node("Add", inputs=[lin1_out, lin1_bias_name], outputs=[lin1_add_out], name=lin1_add_name)
+            self.make_value(lin1_add_out, self.io_dtype, shape=[nm, t_hid])
+            lin1_out = lin1_add_out
 
         # GELU activation (default projector_hidden_act is "gelu")
         gelu_out = "/vision/projector/gelu/output_0"
@@ -589,16 +565,17 @@ class Ministral3VisionEncoderModel(Model):
         self.make_value(gelu_out, self.io_dtype, shape=[nm, t_hid])
 
         # linear_2: [nm, text_hidden_size] -> [nm, text_hidden_size]
+        lin2_name = "/vision/projector/linear_2/MatMul"
+        lin2_out = f"{self.make_matmul(proj.linear_2, lin2_name, gelu_out)}/output_0"
         lin2_bias = getattr(proj.linear_2, "bias", None)
-        lin2_out = self._matmul(
-            "/vision/projector/linear_2/MatMul",
-            gelu_out,
-            proj.linear_2.weight,
-            "vision.projector.linear_2.weight",
-            out_shape=[nm, t_hid],
-            bias_tensor=lin2_bias,
-            bias_name="vision.projector.linear_2.bias" if lin2_bias is not None else None,
-        )
+        if lin2_bias is not None and torch.count_nonzero(lin2_bias) > 0:
+            lin2_bias_name = "vision.projector.linear_2.bias"
+            self.make_initializer(lin2_bias, lin2_bias_name, to=self.io_dtype)
+            lin2_add_name = f"{lin2_name}/BiasAdd"
+            lin2_add_out = f"{lin2_add_name}/output_0"
+            self.make_node("Add", inputs=[lin2_out, lin2_bias_name], outputs=[lin2_add_out], name=lin2_add_name)
+            self.make_value(lin2_add_out, self.io_dtype, shape=[nm, t_hid])
+            lin2_out = lin2_add_out
         return lin2_out
 
     # ------------------------------------------------------------------ #
