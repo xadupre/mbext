@@ -193,8 +193,10 @@ class Ministral3VisionEncoderModel(Model):
     #  Mid-level graph-construction helpers                               #
     # ------------------------------------------------------------------ #
 
-    def _rms_norm(self, name, root_input, weight_tensor, weight_name, shape):
+    def make_layernorm(self, name, root_input, weight_tensor, weight_name, shape, epsilon=None):
         """SimplifiedLayerNormalization (PixtralRMSNorm)."""
+        if epsilon is None:
+            epsilon = self.vis_rms_norm_eps
         self.make_initializer(weight_tensor, weight_name, to=self.io_dtype)
         output = f"{name}/output_0"
         self.make_node(
@@ -203,7 +205,7 @@ class Ministral3VisionEncoderModel(Model):
             outputs=[output],
             name=name,
             axis=-1,
-            epsilon=self.vis_rms_norm_eps,
+            epsilon=epsilon,
             stash_type=1,
         )
         self.make_value(output, self.io_dtype, shape=shape)
@@ -388,7 +390,7 @@ class Ministral3VisionEncoderModel(Model):
         d = self.vis_hidden_size
 
         # attention_norm (RMSNorm, no skip)
-        norm1_out = self._rms_norm(
+        norm1_out = self.make_layernorm(
             f"{b}/attention_norm/SimplifiedLayerNorm",
             root_input,
             layer.attention_norm.weight,
@@ -403,7 +405,7 @@ class Ministral3VisionEncoderModel(Model):
         res1 = self.make_add(f"{b}/residual1/Add", [root_input, attn_out], self.io_dtype, [1, n_p, d])
 
         # ffn_norm (RMSNorm, no skip)
-        norm2_out = self._rms_norm(
+        norm2_out = self.make_layernorm(
             f"{b}/ffn_norm/SimplifiedLayerNorm", res1, layer.ffn_norm.weight, f"{b}/ffn_norm.weight", shape=[1, n_p, d]
         )
 
@@ -453,7 +455,7 @@ class Ministral3VisionEncoderModel(Model):
         )
 
         # ln_pre (SimplifiedLayerNormalization)
-        ln_pre_out = self._rms_norm(
+        ln_pre_out = self.make_layernorm(
             "/vision/ln_pre/SimplifiedLayerNorm",
             transposed,
             vt.ln_pre.weight,
@@ -488,18 +490,9 @@ class Ministral3VisionEncoderModel(Model):
         # --- Projector RMSNorm ---
         proj_norm_eps = float(self.config.text_config.rms_norm_eps)
         norm_w = "vision.projector.norm.weight"
-        self.make_initializer(proj.norm.weight, norm_w, to=self.io_dtype)
-        norm_out = "/vision/projector/norm/SimplifiedLayerNorm/output_0"
-        self.make_node(
-            "SimplifiedLayerNormalization",
-            inputs=[root_input, norm_w],
-            outputs=[norm_out],
-            name="/vision/projector/norm/SimplifiedLayerNorm",
-            axis=-1,
-            epsilon=proj_norm_eps,
-            stash_type=1,
+        norm_out = self.make_layernorm(
+            "/vision/projector/norm/SimplifiedLayerNorm", root_input, proj.norm.weight, norm_w, shape=[1, n_p, d], epsilon=proj_norm_eps
         )
-        self.make_value(norm_out, self.io_dtype, shape=[1, n_p, d])
 
         # Squeeze batch dimension: [1, n_patches, d] -> [n_patches, d]
         squeeze_out = self.make_reshape("/vision/projector/squeeze", [norm_out, [n_p, d]], self.io_dtype, [n_p, d])
