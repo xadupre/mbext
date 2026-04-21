@@ -194,11 +194,16 @@ class Ministral3VisionEncoderModel(Model):
     # ------------------------------------------------------------------ #
 
     def _precompute_rope_cos_sin(self):
-        """Return cos/sin tensors shaped [1, 1, n_patches, head_dim].
+        """Return cos/sin tensors shaped [n_patches, head_dim // 2].
 
         Pre-computes the Pixtral 2-D rotary embeddings for a fixed image
-        grid.  The cos/sin tensors are stored as constant initialisers so
-        they require no runtime computation.
+        grid.  The tensors are stored as constant initialisers (via
+        ``make_rotary_embedding``) so they require no runtime computation.
+
+        The ORT ``com.microsoft.RotaryEmbedding`` operator expects cos/sin
+        caches of shape ``[max_sequence_length, head_dim // 2]`` and doubles
+        them internally to produce the full-dimension rotation, so we return
+        only the unique (non-duplicated) half-dimension slice.
         """
         vc = self.vision_config
         head_dim = self.vis_head_dim
@@ -211,55 +216,56 @@ class Ministral3VisionEncoderModel(Model):
         freqs_h = torch.outer(h_idx, freqs[::2]).float()
         freqs_w = torch.outer(w_idx, freqs[1::2]).float()
         inv_freq = torch.cat([freqs_h[:, None, :].repeat(1, n, 1), freqs_w[None, :, :].repeat(n, 1, 1)], dim=-1).reshape(-1, head_dim // 2)
-        inv_freq = torch.cat((inv_freq, inv_freq), dim=-1)
-        # inv_freq: [n_patches, head_dim]
+        # inv_freq: [n_patches, head_dim // 2]
 
         # Position IDs: row-major (h * max_width + w)
         h_grid, w_grid = torch.meshgrid(h_idx, w_idx, indexing="ij")
         position_ids = (h_grid * n + w_grid).reshape(-1)  # [n_patches]
 
-        freqs_at_pos = inv_freq[position_ids]  # [n_patches, head_dim]
+        freqs_at_pos = inv_freq[position_ids]  # [n_patches, head_dim // 2]
         cos = freqs_at_pos.cos()
         sin = freqs_at_pos.sin()
-
-        # Shape for broadcasting with [1, num_heads, n_patches, head_dim]:
-        # apply_rotary_pos_emb(unsqueeze_dim=0) does cos.unsqueeze(0) on
-        # input already shaped [1, n_patches, head_dim], producing
-        # [1, 1, n_patches, head_dim].
-        cos = cos.unsqueeze(0).unsqueeze(0)  # [1, 1, n_patches, head_dim]
-        sin = sin.unsqueeze(0).unsqueeze(0)
         return cos, sin
 
-    def _apply_rope(self, prefix, q_or_k_name, cos_name, sin_name, shape):
-        """Apply pre-computed 2-D RoPE: q_embed = q*cos + rotate_half(q)*sin.
+    def make_rotary_embedding(self, name, root_input, **kwargs):
+        """Vision-encoder override: pre-computed 2-D RoPE via com.microsoft.RotaryEmbedding.
 
-        q_or_k_name: value name, shape [1, num_heads, n_patches, head_dim].
-        cos_name, sin_name: initialisers of shape [1, 1, n_patches, head_dim].
-        Returns the output value name (same shape as input).
+        Unlike the text-model version, position IDs and cos/sin caches are
+        pre-computed constants (one fixed image grid per model build).  The
+        caches are created lazily on the first call and shared across all
+        transformer layers.
+
+        root_input: value name of shape [1, n_patches, n_heads * head_dim].
+        Returns: output value name of the same shape.
         """
-        hd = self.vis_head_dim
-        half = hd // 2
+        if not hasattr(self, "_vis_rope_initialized"):
+            cos, sin = self._precompute_rope_cos_sin()
+            # cos/sin: [n_patches, head_dim // 2] — ORT RotaryEmbedding doubles internally
+            self.make_initializer(cos, "vision.rope.cos_cache", to=self.io_dtype)
+            self.make_initializer(sin, "vision.rope.sin_cache", to=self.io_dtype)
+            pos_ids = torch.arange(self.n_patches, dtype=torch.int64).unsqueeze(0)
+            self.make_initializer(pos_ids, "vision.rope.position_ids")
+            self._vis_rope_initialized = True
 
-        # rotate_half: split last dim in two halves, negate second, swap
-        q1 = self.make_slice(
-            f"{prefix}/rope/q1", q_or_k_name, starts=[0], ends=[half], axes=[-1], dtype=self.io_dtype, shape=shape[:-1] + [half]
+        output = f"{name}/output_0"
+        self.make_node(
+            "RotaryEmbedding",
+            inputs=[root_input, "vision.rope.position_ids", "vision.rope.cos_cache", "vision.rope.sin_cache"],
+            outputs=[output],
+            name=name,
+            domain="com.microsoft",
+            interleaved=0,
+            num_heads=self.vis_num_heads,
+            rotary_embedding_dim=self.vis_head_dim,
         )
-        q2 = self.make_slice(
-            f"{prefix}/rope/q2", q_or_k_name, starts=[half], ends=[hd], axes=[-1], dtype=self.io_dtype, shape=shape[:-1] + [half]
-        )
-        neg_q2 = self.make_neg(f"{prefix}/rope/neg_q2", q2, self.io_dtype, shape[:-1] + [half])
-        q_rot = self.make_concat(f"{prefix}/rope/q_rot", [neg_q2, q1], self.io_dtype, shape, axis=-1)
-
-        q_cos = self.make_mul(f"{prefix}/rope/q_cos", [q_or_k_name, cos_name], self.io_dtype, shape)
-        q_sin = self.make_mul(f"{prefix}/rope/q_rot_sin", [q_rot, sin_name], self.io_dtype, shape)
-        q_embed = self.make_add(f"{prefix}/rope/q_embed", [q_cos, q_sin], self.io_dtype, shape)
-        return q_embed
+        self.make_value(output, self.io_dtype, shape=[1, self.n_patches, self.vis_hidden_size])
+        return output
 
     # ------------------------------------------------------------------ #
     #  Attention layer                                                     #
     # ------------------------------------------------------------------ #
 
-    def _build_attention(self, layer_id, attn, root_input, cos_name, sin_name):
+    def _build_attention(self, layer_id, attn, root_input):
         """Build one PixtralAttention layer (encoder-style, no KV cache).
 
         root_input: [1, n_patches, vis_hidden_size]
@@ -272,30 +278,31 @@ class Ministral3VisionEncoderModel(Model):
         hd = self.vis_head_dim
 
         # Q / K / V projections (no bias in Pixtral attention)
+        # -> [1, n_patches, n_heads * head_dim]
         q = f"{self.make_matmul(attn.q_proj, f'{b}/q_proj/MatMul', root_input)}/output_0"
         k = f"{self.make_matmul(attn.k_proj, f'{b}/k_proj/MatMul', root_input)}/output_0"
         v = f"{self.make_matmul(attn.v_proj, f'{b}/v_proj/MatMul', root_input)}/output_0"
 
+        # Apply 2-D RoPE to Q and K in [1, n_patches, n_heads * head_dim] format
+        q_rope = self.make_rotary_embedding(f"{b}/q_rotary/RotaryEmbedding", q)
+        k_rope = self.make_rotary_embedding(f"{b}/k_rotary/RotaryEmbedding", k)
+
+        # Reshape to [1, n_patches, n_heads, head_dim] and transpose to [1, n_heads, n_patches, head_dim]
         qkv_shape_4d = [1, n_p, nh, hd]
-        q_4d = self.make_reshape(f"{b}/q_reshape", [q, [1, n_p, nh, hd]], self.io_dtype, qkv_shape_4d)
-        k_4d = self.make_reshape(f"{b}/k_reshape", [k, [1, n_p, nh, hd]], self.io_dtype, qkv_shape_4d)
+        q_4d = self.make_reshape(f"{b}/q_reshape", [q_rope, [1, n_p, nh, hd]], self.io_dtype, qkv_shape_4d)
+        k_4d = self.make_reshape(f"{b}/k_reshape", [k_rope, [1, n_p, nh, hd]], self.io_dtype, qkv_shape_4d)
         v_4d = self.make_reshape(f"{b}/v_reshape", [v, [1, n_p, nh, hd]], self.io_dtype, qkv_shape_4d)
 
-        # Transpose to [1, num_heads, n_patches, head_dim]
         qkv_t_shape = [1, nh, n_p, hd]
         q_t = self.make_transpose(f"{b}/q_t", q_4d, self.io_dtype, qkv_t_shape, perm=[0, 2, 1, 3])
         k_t = self.make_transpose(f"{b}/k_t", k_4d, self.io_dtype, qkv_t_shape, perm=[0, 2, 1, 3])
         v_t = self.make_transpose(f"{b}/v_t", v_4d, self.io_dtype, qkv_t_shape, perm=[0, 2, 1, 3])
 
-        # Apply 2-D RoPE to Q and K
-        q_rope = self._apply_rope(f"{b}/q", q_t, cos_name, sin_name, qkv_t_shape)
-        k_rope = self._apply_rope(f"{b}/k", k_t, cos_name, sin_name, qkv_t_shape)
-
         # Scaled dot-product attention (encoder, no causal mask)
         # K^T: [1, nh, hd, n_p]
-        k_T = self.make_transpose(f"{b}/k_T", k_rope, self.io_dtype, [1, nh, hd, n_p], perm=[0, 1, 3, 2])
+        k_T = self.make_transpose(f"{b}/k_T", k_t, self.io_dtype, [1, nh, hd, n_p], perm=[0, 1, 3, 2])
         attn_w = f"{b}/attn_w/MatMul/output_0"
-        self.make_node("MatMul", inputs=[q_rope, k_T], outputs=[attn_w], name=f"{b}/attn_w/MatMul")
+        self.make_node("MatMul", inputs=[q_t, k_T], outputs=[attn_w], name=f"{b}/attn_w/MatMul")
         self.make_value(attn_w, self.io_dtype, shape=[1, nh, n_p, n_p])
         # Scale
         np_dtype = {ir.DataType.FLOAT: np.float32, ir.DataType.FLOAT16: np.float16}.get(self.io_dtype, np.float32)
@@ -349,7 +356,7 @@ class Ministral3VisionEncoderModel(Model):
     #  Single transformer layer                                           #
     # ------------------------------------------------------------------ #
 
-    def _build_transformer_layer(self, layer_id, layer, root_input, cos_name, sin_name):
+    def _build_transformer_layer(self, layer_id, layer, root_input):
         """Build one PixtralAttentionLayer.
 
         Pipeline:
@@ -370,7 +377,7 @@ class Ministral3VisionEncoderModel(Model):
         )
 
         # Attention
-        attn_out = self._build_attention(layer_id, layer.attention, norm1_out, cos_name, sin_name)
+        attn_out = self._build_attention(layer_id, layer.attention, norm1_out)
 
         # Residual 1
         res1 = self.make_add(f"{b}/residual1/Add", [root_input, attn_out], self.io_dtype, [1, n_p, d])
@@ -555,19 +562,13 @@ class Ministral3VisionEncoderModel(Model):
         pixel_values_in = self.make_value("pixel_values", self.io_dtype, shape=[1, self.num_channels, self.image_size, self.image_size])
         self.graph.inputs.append(pixel_values_in)
 
-        # Pre-compute 2-D RoPE cos/sin (shared across all layers)
-        cos_t, sin_t = self._precompute_rope_cos_sin()
-        cos_name = "vision.rope.cos"
-        sin_name = "vision.rope.sin"
-        self.make_initializer(cos_t, cos_name, to=self.io_dtype)
-        self.make_initializer(sin_t, sin_name, to=self.io_dtype)
-
         # Patch embedding
         x = self._build_patch_embedding(vt)
 
-        # Transformer layers
+        # Transformer layers (2-D RoPE cos/sin caches are created lazily on the
+        # first make_rotary_embedding call and shared across all layers)
         for layer_id, layer in enumerate(vt.transformer.layers):
-            x = self._build_transformer_layer(layer_id, layer, x, cos_name, sin_name)
+            x = self._build_transformer_layer(layer_id, layer, x)
 
         # Projector
         image_features = self._build_projector(proj, x)
