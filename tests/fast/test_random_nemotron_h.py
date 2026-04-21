@@ -574,6 +574,76 @@ class TestNemotronH(ExtTestCase):
     def test_fast_discrepancy_nemotron_h_moe_bf16_cuda(self):
         self.common_fast_nemotron_h_moe_random_weights("bf16", "cuda")
 
+    @hide_stdout()
+    @requires_genai()
+    def test_nemotron_h_moe_fp32_cpu_genai_generate(self):
+        import torch
+        from transformers import AutoModelForCausalLM
+        from transformers.models.nemotron_h import NemotronHConfig
+
+        from modelbuilder.builder import create_model
+
+        prefix = "test_nemotron_h_moe_fp32_cpu_genai_generate"
+        num_hidden_layers = 2
+        layers_block_type = ["attention", "moe"]
+        config = NemotronHConfig(
+            architectures=["NemotronHForCausalLM"],
+            bos_token_id=1,
+            eos_token_id=2,
+            hidden_size=256,
+            head_dim=64,
+            intermediate_size=512,
+            max_position_embeddings=2048,
+            model_type="nemotron_h",
+            num_attention_heads=4,
+            num_hidden_layers=num_hidden_layers,
+            num_key_value_heads=2,
+            layer_norm_epsilon=1e-05,
+            vocab_size=32000,
+            layers_block_type=layers_block_type,
+            use_mamba_kernels=False,
+            # MoE-specific parameters (use small sizes for fast tests)
+            n_routed_experts=4,
+            moe_intermediate_size=64,
+            moe_shared_expert_intermediate_size=64,
+            num_experts_per_tok=2,
+            norm_topk_prob=True,
+            n_group=1,
+            topk_group=1,
+            moe_latent_size=None,
+            routed_scaling_factor=1.0,
+        )
+
+        model_dir = self.get_model_dir(prefix, clean=False)
+        torch.manual_seed(42)
+        model = AutoModelForCausalLM.from_config(config)
+        model.eval()
+        model.save_pretrained(model_dir)
+
+        tokenizer = self.make_word_level_tokenizer()
+        tokenizer.save_pretrained(model_dir)
+
+        output_dir, cache_dir = self.get_dirs(prefix, clean=False)
+
+        create_model(
+            model_name=MODEL_NAME,
+            input_path=model_dir,
+            output_dir=output_dir,
+            precision="fp32",
+            execution_provider="cpu",
+            cache_dir=cache_dir,
+            num_hidden_layers=num_hidden_layers,
+        )
+
+        torch.manual_seed(0)
+        prompt_ids = torch.randint(3, config.vocab_size, (1, 4))
+
+        # NemotronH with MoE layers does not support use_cache=True for mixed
+        # attention+moe configs in transformers 5.x, so we skip the PyTorch
+        # reference comparison and only verify that genai generation completes
+        # without errors.
+        self.run_genai_generation_test(output_dir, None, config.vocab_size, config.eos_token_id, prompt_ids=prompt_ids)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
