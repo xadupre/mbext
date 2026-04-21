@@ -520,27 +520,28 @@ class TestMinistral3(ExtTestCase):
     @hide_stdout()
     def test_ministral3_two_images_and_text_fp32_cpu_genai(self):
         """
-        Draw a dummy cross image, run the reference HuggingFace
-        ``Mistral3ForConditionalGeneration`` model and ``onnxruntime-genai``,
-        then compare the first generated token.
+        Draw a dummy cross image, run ``model.generate()`` from HuggingFace
+        ``Mistral3ForConditionalGeneration`` and ``onnxruntime-genai``, then
+        compare the full generated token sequences.
 
         The comparison pipeline is:
 
         1. Build a tiny randomly-initialised ``Mistral3ForConditionalGeneration``
            and export both ``vision_encoder.onnx`` and ``model.onnx``.
         2. Draw a white-cross-on-black-background image as the visual prompt.
-        3. **HF reference**: run the ONNX vision encoder on the cross image to
-           obtain ``image_features``; embed text token IDs with
-           ``model.model.language_model.embed_tokens``; concatenate
-           ``[image_features | text_embeds]`` into ``inputs_embeds``; call
-           ``Mistral3ForConditionalGeneration(inputs_embeds=...)`` to obtain
-           reference logits; take ``argmax`` over the last position as
-           ``pt_next_token``.
+        3. **HF reference**: construct a prompt that places
+           ``config.image_token_id`` placeholder tokens where image features
+           will be merged, followed by plain text token IDs; call
+           ``model.generate(input_ids=..., pixel_values=..., image_sizes=...)``
+           to obtain ``pt_tokens`` (prompt + ``max_new_tokens`` generated
+           tokens); extract the newly-generated part as ``pt_generated``.
         4. **genai**: load the ONNX models with ``og.Model``; provide the same
            ``pixel_values`` via ``og.NamedTensors`` / ``set_inputs``; provide
-           the same text token IDs via ``append_tokens``; call
-           ``generate_next_token`` once; read the result as ``og_next_token``.
-        5. Assert ``pt_next_token == og_next_token``.
+           the same text token IDs (without image placeholders) via
+           ``append_tokens``; iterate ``generate_next_token`` until done and
+           collect ``og_generated``.
+        5. Log results with :meth:`log_results` (like ``run_genai_generation``).
+        6. Assert ``pt_generated == og_generated``.
 
         The test name retains ``two_images`` for continuity with earlier
         iterations of the PR (the ONNX sibling test
@@ -632,41 +633,64 @@ class TestMinistral3(ExtTestCase):
         # shape: [1, num_channels, H, W]
         cross_image = np.stack([img_plane] * vision_config.num_channels, axis=0)[np.newaxis]
 
-        # --- ONNX vision encoder: cross image → image_features ---
-        vision_onnx_path = os.path.join(output_dir, "vision_encoder.onnx")
-        vision_sess = self.check_ort(vision_onnx_path)
-        image_features_np = vision_sess.run(None, {"pixel_values": cross_image})[0]
-        # shape: [num_merged_patches, text_hidden_size]
+        # 56×56 image / (patch_size=14 * spatial_merge_size=2) → 2×2 = 4 merged patches
+        n_merged_patches = (image_size // patch_size) ** 2 // spatial_merge_size**2
 
-        # --- HF reference ---
-        # Build inputs_embeds = [image_features | text_embeds] and run the
-        # full model to obtain the reference next-token prediction.
-        text_token_ids = torch.tensor([[1, 100, 200]], dtype=torch.long)  # bos + two in-vocab text tokens
+        # --- HF reference: generate with a proper multimodal prompt ---
+        # Build prompt with image placeholder tokens followed by text tokens.
+        # HF merge logic replaces each image_token_id with the corresponding
+        # image feature vector; the count must equal n_merged_patches.
+        image_token_id = config.image_token_id  # 10 for Mistral3
+        text_ids = [100, 200]  # two in-vocab text tokens appended after the image
+        hf_prompt = torch.tensor([[image_token_id] * n_merged_patches + text_ids])
+        image_sizes = torch.tensor([[image_size, image_size]])
+        cross_pixel_values = torch.tensor(cross_image)
+
+        max_new_tokens = 5
         with torch.no_grad():
-            text_embeds = model.model.language_model.embed_tokens(text_token_ids)  # [1, 3, hidden]
+            pt_output = model.generate(
+                input_ids=hf_prompt,
+                pixel_values=cross_pixel_values,
+                image_sizes=image_sizes,
+                max_new_tokens=max_new_tokens,
+                do_sample=False,
+                pad_token_id=config.text_config.eos_token_id,
+            )
+        pt_tokens = pt_output[0].tolist()
+        # pt_tokens = [img_tok*N, text_ids..., gen1, gen2, ...]
+        pt_generated = pt_tokens[hf_prompt.shape[1] :]
 
-        image_feat_tensor = torch.tensor(image_features_np).unsqueeze(0)  # [1, N, hidden]
-        inputs_embeds = torch.cat([image_feat_tensor, text_embeds], dim=1)  # [1, N+3, hidden]
-
-        with torch.no_grad():
-            pt_out = model(inputs_embeds=inputs_embeds)
-        pt_next_token = int(pt_out.logits[0, -1, :].argmax())
-
-        # --- genai: same pixel_values + same text token IDs → one generation step ---
+        # --- genai: same pixel_values + text_ids → multiple generation steps ---
+        # genai vision flow: set_inputs(pixel_values) lets the runtime call the
+        # vision encoder; append_tokens provides only the text token IDs.
+        # Internally the runtime prepends the image features to the text
+        # embeddings, matching the HF merged sequence.
         og_model = og.Model(output_dir)
-        prompt_ids = text_token_ids.numpy()[0].astype(np.int64)
+        text_prompt_ids = np.array(text_ids, dtype=np.int64)
         params = og.GeneratorParams(og_model)
-        params.set_search_options(do_sample=False, max_length=len(prompt_ids) + 1, temperature=1.0, top_k=1)
+        params.set_search_options(do_sample=False, max_length=n_merged_patches + len(text_ids) + max_new_tokens, temperature=1.0, top_k=1)
         generator = og.Generator(og_model, params)
         named_tensors = og.NamedTensors()
         named_tensors["pixel_values"] = cross_image
         generator.set_inputs(named_tensors)
-        generator.append_tokens(prompt_ids)
-        generator.generate_next_token()
-        og_next_token = int(generator.get_next_tokens()[0])
+        generator.append_tokens(text_prompt_ids)
+        og_generated = []
+        while not generator.is_done():
+            generator.generate_next_token()
+            og_generated.append(int(generator.get_next_tokens()[0]))
 
-        # The first token generated by genai must match the HF model's argmax.
-        self.assertEqual(pt_next_token, og_next_token)
+        log_data = dict(
+            precision="fp32",
+            model_id=MINISTRAL3_MODEL_NAME,
+            experiment="genai_vision_generate",
+            provider="cpu",
+            test=basename,
+            input_type="vision+text",
+            kind="fast",
+        )
+        diff = self.first_token_diff(pt_generated, og_generated)
+        self.log_results({**log_data, **diff})
+        self.assertEqual(pt_generated, og_generated)
 
     def test_dequantize_fp8_weights_no_op_when_no_fp8(self):
         """_dequantize_fp8_weights leaves normal float32 weights unchanged."""
