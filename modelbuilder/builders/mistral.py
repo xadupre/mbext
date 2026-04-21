@@ -682,20 +682,6 @@ class Ministral3EmbeddingModel(Model):
 
         self.graph.sort()
 
-    def save_model(self, out_dir):
-        print(f"Saving ONNX model in {out_dir}")
-        # The embedding model is always float32; skip quantization regardless of onnx_dtype.
-        self.model.graph.sort()
-        out_path = os.path.join(out_dir, self.filename)
-        data_path = os.path.join(out_dir, os.path.basename(out_path) + ".data")
-        if os.path.exists(out_path):
-            print(f"Overwriting {out_path}")
-            os.remove(out_path)
-        if os.path.exists(data_path):
-            print(f"Overwriting {data_path}")
-            os.remove(data_path)
-        ir.save(self.model, out_path, external_data=os.path.basename(data_path), size_threshold_bytes=8)
-
 
 class Ministral3ConditionalGenerationModel(Model):
     """Orchestrates exporting the vision encoder, embedding model, and text
@@ -743,7 +729,7 @@ class Ministral3ConditionalGenerationModel(Model):
         embed_extra_options["image_token_id"] = config.image_token_id
 
         # The embedding table is always stored as float32.
-        self.embedding_model = Ministral3EmbeddingModel(text_obj_config, io_dtype, onnx_dtype, ep, cache_dir, embed_extra_options)
+        self.embedding_model = Ministral3EmbeddingModel(text_obj_config, io_dtype, ir.DataType.FLOAT, ep, cache_dir, embed_extra_options)
 
         # --- Text decoder (same flattened config, exclude_embeds=True) ---
         text_extra_options = dict(extra_options)
