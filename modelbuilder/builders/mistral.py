@@ -193,23 +193,41 @@ class Ministral3VisionEncoderModel(Model):
     #  Mid-level graph-construction helpers                               #
     # ------------------------------------------------------------------ #
 
-    def make_layernorm(self, name, root_input, weight_tensor, weight_name, shape, epsilon=None):
-        """SimplifiedLayerNormalization (PixtralRMSNorm)."""
-        if epsilon is None:
-            epsilon = self.vis_rms_norm_eps
-        self.make_initializer(weight_tensor, weight_name, to=self.io_dtype)
-        output = f"{name}/output_0"
+    def make_layernorm_op(self, layer_id, layernorm, skip, simple, location):
+        """Vision-encoder override: uses /vision/ naming and concrete shapes.
+
+        ``layer_id`` may be an int (transformer layers) or a string path
+        prefix (e.g. ``"ln_pre"``, ``"projector"``) for the non-layer-specific
+        norms.  ``location`` is the sub-key within that prefix (e.g.
+        ``"attention_norm"``, ``"norm"``, or ``""`` when there is no sub-key).
+
+        Epsilon is read from ``self.layernorm_attrs["epsilon"]``; callers must
+        set it before invoking this method when a non-default value is needed.
+        """
+        root_input = self.layernorm_attrs["root_input"]
+
+        if isinstance(layer_id, int):
+            weight_name = f"vision.layers.{layer_id}.{location}.weight"
+            node_name = f"/vision/layers.{layer_id}/{location}/SimplifiedLayerNorm"
+        else:
+            # layer_id is a string path prefix (e.g. "ln_pre", "projector")
+            path = f"{layer_id}/{location}".rstrip("/")
+            weight_name = f"vision.{path.replace('/', '.')}.weight"
+            node_name = f"/vision/{path}/SimplifiedLayerNorm"
+
+        self.make_initializer(layernorm.weight, weight_name, to=self.io_dtype)
+        output_0 = f"{node_name}/output_0"
         self.make_node(
             "SimplifiedLayerNormalization",
             inputs=[root_input, weight_name],
-            outputs=[output],
-            name=name,
+            outputs=[output_0],
+            name=node_name,
             axis=-1,
-            epsilon=epsilon,
+            epsilon=self.layernorm_attrs["epsilon"],
             stash_type=1,
         )
-        self.make_value(output, self.io_dtype, shape=shape)
-        return output
+        self.make_value(output_0, self.io_dtype, shape=[1, self.n_patches, self.vis_hidden_size])
+        self.layernorm_attrs["output_0"] = output_0
 
     def _matmul_raw(self, name, a_name, b_name, shape):
         """Raw MatMul between two existing values (weights already in graph)."""
@@ -390,13 +408,9 @@ class Ministral3VisionEncoderModel(Model):
         d = self.vis_hidden_size
 
         # attention_norm (RMSNorm, no skip)
-        norm1_out = self.make_layernorm(
-            f"{b}/attention_norm/SimplifiedLayerNorm",
-            root_input,
-            layer.attention_norm.weight,
-            f"{b}/attention_norm.weight",
-            shape=[1, n_p, d],
-        )
+        self.layernorm_attrs["root_input"] = root_input
+        self.make_layernorm(layer_id, layer.attention_norm, skip=False, simple=True, location="attention_norm")
+        norm1_out = self.layernorm_attrs["output_0"]
 
         # Attention
         attn_out = self._build_attention(layer_id, layer.attention, norm1_out, cos_name, sin_name)
@@ -405,9 +419,9 @@ class Ministral3VisionEncoderModel(Model):
         res1 = self.make_add(f"{b}/residual1/Add", [root_input, attn_out], self.io_dtype, [1, n_p, d])
 
         # ffn_norm (RMSNorm, no skip)
-        norm2_out = self.make_layernorm(
-            f"{b}/ffn_norm/SimplifiedLayerNorm", res1, layer.ffn_norm.weight, f"{b}/ffn_norm.weight", shape=[1, n_p, d]
-        )
+        self.layernorm_attrs["root_input"] = res1
+        self.make_layernorm(layer_id, layer.ffn_norm, skip=False, simple=True, location="ffn_norm")
+        norm2_out = self.layernorm_attrs["output_0"]
 
         # Feed-forward (SiLU-gated MLP)
         mlp_out = self._build_mlp(layer_id, layer.feed_forward, norm2_out)
@@ -455,13 +469,9 @@ class Ministral3VisionEncoderModel(Model):
         )
 
         # ln_pre (SimplifiedLayerNormalization)
-        ln_pre_out = self.make_layernorm(
-            "/vision/ln_pre/SimplifiedLayerNorm",
-            transposed,
-            vt.ln_pre.weight,
-            "vision.ln_pre.weight",
-            shape=[1, self.n_patches, self.vis_hidden_size],
-        )
+        self.layernorm_attrs["root_input"] = transposed
+        self.make_layernorm("ln_pre", vt.ln_pre, skip=False, simple=True, location="")
+        ln_pre_out = self.layernorm_attrs["output_0"]
         return ln_pre_out
 
     # ------------------------------------------------------------------ #
@@ -489,10 +499,11 @@ class Ministral3VisionEncoderModel(Model):
 
         # --- Projector RMSNorm ---
         proj_norm_eps = float(self.config.text_config.rms_norm_eps)
-        norm_w = "vision.projector.norm.weight"
-        norm_out = self.make_layernorm(
-            "/vision/projector/norm/SimplifiedLayerNorm", root_input, proj.norm.weight, norm_w, shape=[1, n_p, d], epsilon=proj_norm_eps
-        )
+        self.layernorm_attrs["epsilon"] = proj_norm_eps
+        self.layernorm_attrs["root_input"] = root_input
+        self.make_layernorm("projector", proj.norm, skip=False, simple=True, location="norm")
+        self.layernorm_attrs["epsilon"] = self.vis_rms_norm_eps
+        norm_out = self.layernorm_attrs["output_0"]
 
         # Squeeze batch dimension: [1, n_patches, d] -> [n_patches, d]
         squeeze_out = self.make_reshape("/vision/projector/squeeze", [norm_out, [n_p, d]], self.io_dtype, [n_p, d])
