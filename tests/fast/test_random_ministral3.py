@@ -497,9 +497,15 @@ class TestMinistral3(ExtTestCase):
         # Logits shape: [batch_size, total_seq_len, vocab_size]
         self.assertEqual(onnx_outputs[0].shape, (batch_size, total_seq_len, text_config.vocab_size))
 
-    @long_test()
     @hide_stdout()
     def test_ministral3_two_images_and_text_fp32_cpu_genai(self):
+        self.common_ministral3_two_images_and_text_cpu_genai("fp32")
+
+    @hide_stdout()
+    def test_ministral3_two_images_and_text_int4_cpu_genai(self):
+        self.common_ministral3_two_images_and_text_cpu_genai("int4")
+
+    def common_ministral3_two_images_and_text_cpu_genai(self, precision):
         """
         Draw a dummy cross image, run ``model.generate()`` from HuggingFace
         ``Mistral3ForConditionalGeneration`` and ``onnxruntime-genai``, then
@@ -580,9 +586,9 @@ class TestMinistral3(ExtTestCase):
         config = Mistral3Config(text_config=text_config, vision_config=vision_config, spatial_merge_size=spatial_merge_size)
         config.architectures = ["Mistral3ForConditionalGeneration"]
 
-        basename = "test_ministral3_two_images_and_text_fp32_cpu_genai"
-        model_dir = self.get_model_dir(basename)
-        output_dir, cache_dir = self.get_dirs(basename)
+        basename = f"test_ministral3_two_images_and_text_{precision}_cpu_genai"
+        model_dir = self.get_model_dir(basename, clean=False)
+        output_dir, cache_dir = self.get_dirs(basename, clean=False)
 
         torch.manual_seed(0)
         model = Mistral3ForConditionalGeneration(config)
@@ -599,7 +605,7 @@ class TestMinistral3(ExtTestCase):
             model_name=MINISTRAL3_MODEL_NAME,
             input_path=model_dir,
             output_dir=output_dir,
-            precision="fp32",
+            precision=precision,
             execution_provider="cpu",
             cache_dir=cache_dir,
             num_hidden_layers=num_hidden_layers,
@@ -661,7 +667,7 @@ class TestMinistral3(ExtTestCase):
             og_generated.append(int(generator.get_next_tokens()[0]))
 
         log_data = dict(
-            precision="fp32",
+            precision=precision,
             model_id=MINISTRAL3_MODEL_NAME,
             experiment="genai_vision_generate",
             provider="cpu",
