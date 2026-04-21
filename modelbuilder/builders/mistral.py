@@ -29,7 +29,8 @@ class Ministral3TextModel(MistralModel):
     def __init__(self, config, io_dtype, onnx_dtype, ep, cache_dir, extra_options):
         super().__init__(config, io_dtype, onnx_dtype, ep, cache_dir, extra_options)
 
-    def _dequantize_fp8_weights(self, model):
+    @classmethod
+    def _dequantize_fp8_weights(cls, model):
         """Dequantize float8_e4m3fn weights in place using per-tensor weight_scale_inv.
 
         The official Ministral-3B-Instruct-2512 model stores linear layer weights
