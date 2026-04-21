@@ -61,9 +61,9 @@ class Ministral3TextModel(MistralModel):
         # sub-modules (embed_tokens, MistralDecoderLayer, norm, lm_head)
         # via the standard module iteration already present in base.Model.
         if "ConditionalGeneration" in self.model_type:
-            from transformers import Mistral3ForConditionalGeneration as HF_Mistral3VL
+            from transformers import Mistral3ForConditionalGeneration
 
-            model = HF_Mistral3VL.from_pretrained(
+            model = Mistral3ForConditionalGeneration.from_pretrained(
                 self.model_name_or_path, cache_dir=self.cache_dir, token=self.hf_token, trust_remote_code=self.hf_remote
             )
         else:
@@ -649,7 +649,7 @@ class Ministral3ConditionalGenerationModel(Model):
     # ------------------------------------------------------------------
 
     def make_model(self, input_path):
-        print("Building vision encoder (Pixtral + multimodal projector) for " "Mistral3ForConditionalGeneration...")
+        print("Building vision encoder (Pixtral + multimodal projector) for Mistral3ForConditionalGeneration...")
         self.vision_encoder.make_model(input_path)
         print("Building text decoder for Mistral3ForConditionalGeneration...")
         self.text_model.make_model(input_path)
@@ -675,7 +675,7 @@ class Ministral3ConditionalGenerationModel(Model):
         num_patches_per_side = image_size // patch_size
         num_merged_patches = (num_patches_per_side**2) // (spatial_merge_size**2)
 
-        genai_config["model"]["vision_encoder"] = {
+        genai_config["model"]["vision"] = {
             "filename": self.vision_encoder.filename,
             "hidden_size": vision_cfg.hidden_size,
             "image_size": image_size,
