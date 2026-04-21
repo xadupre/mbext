@@ -13,48 +13,60 @@ from modelbuilder.ext_test_case import ExtTestCase, hide_stdout, requires_cuda, 
 
 PHI3V_MODEL_NAME = "microsoft/Phi-3-vision-128k-instruct"
 
+# head_size = hidden_size // num_attention_heads = 512 // 8 = 64
+# rotary_dim_half = head_size // 2 = 32 (length of short/long factor arrays)
+_HEAD_SIZE = 64
+
+
+def _make_phi3v_config(num_hidden_layers=1):
+    """Return a minimal Phi3Config for Phi-3-vision fast offline tests.
+
+    Build a tiny Phi-3-vision config that is structurally identical to
+    microsoft/Phi-3-vision-128k-instruct but uses a single hidden layer
+    and a reduced hidden size so the test stays fast and fully offline.
+    head_size = hidden_size // num_attention_heads = 512 // 8 = 64
+    => rotary_dim = 32, so short_factor / long_factor must have length 32.
+
+    Note: Phi3VForCausalLM is not registered in current transformers; use
+    Phi3ForCausalLM as a structural equivalent and patch the saved config.json
+    to set architectures=["Phi3VForCausalLM"] after saving.
+    """
+    from transformers import Phi3Config
+
+    return Phi3Config(
+        architectures=["Phi3VForCausalLM"],
+        bos_token_id=1,
+        eos_token_id=2,
+        hidden_act="silu",
+        hidden_size=512,
+        intermediate_size=1376,
+        max_position_embeddings=8192,
+        original_max_position_embeddings=4096,
+        num_attention_heads=8,
+        num_hidden_layers=num_hidden_layers,
+        num_key_value_heads=4,
+        rms_norm_eps=1e-05,
+        rope_scaling={"type": "longrope", "short_factor": [1.0] * (_HEAD_SIZE // 2), "long_factor": [1.0] * (_HEAD_SIZE // 2)},
+        vocab_size=32064,
+    )
+
 
 class TestRandomPhi3V(ExtTestCase):
-    def common_fast_phi3v_random_weights(self, precision, provider):
-        import torch
-        from tokenizers import Tokenizer
-        from tokenizers.models import WordLevel
-        from transformers import Phi3Config, Phi3ForCausalLM, PreTrainedTokenizerFast
+    def _prepare_phi3v_model_dir(self, basename, config, provider):
+        """Save a Phi3ForCausalLM model and patch config.json to Phi3VForCausalLM.
 
-        from modelbuilder.builder import create_model
+        Phi3VForCausalLM is not registered in current transformers, so we use
+        the structurally identical Phi3ForCausalLM, then patch the saved
+        config.json to set architectures=["Phi3VForCausalLM"] so that
+        create_model selects Phi3VModel (with exclude_embeds=True).
 
-        # Build a tiny Phi-3-vision config that is structurally identical to
-        # microsoft/Phi-3-vision-128k-instruct but uses a single hidden layer
-        # and a reduced hidden size so the test stays fast and fully offline.
-        # head_size = hidden_size // num_attention_heads = 512 // 8 = 64
-        # => rotary_dim = 32, so short_factor / long_factor must have length 32.
-        num_hidden_layers = 1
-        head_size = 64
-        config = Phi3Config(
-            architectures=["Phi3VForCausalLM"],
-            bos_token_id=1,
-            eos_token_id=2,
-            hidden_act="silu",
-            hidden_size=512,
-            intermediate_size=1376,
-            max_position_embeddings=8192,
-            original_max_position_embeddings=4096,
-            num_attention_heads=8,
-            num_hidden_layers=num_hidden_layers,
-            num_key_value_heads=4,
-            rms_norm_eps=1e-05,
-            rope_scaling={"type": "longrope", "short_factor": [1.0] * (head_size // 2), "long_factor": [1.0] * (head_size // 2)},
-            vocab_size=32064,
-        )
+        Returns (model, model_dir, output_dir, cache_dir).
+        """
+        from transformers import Phi3ForCausalLM
 
-        basename = f"test_discrepancies_phi3v_{precision}_{provider}"
         model_dir = self.get_model_dir(basename)
         output_dir, cache_dir = self.get_dirs(basename)
 
-        # Phi3VForCausalLM is not registered in current transformers, so we
-        # use the structurally identical Phi3ForCausalLM, then patch the saved
-        # config.json to set architectures=["Phi3VForCausalLM"] so that
-        # create_model selects Phi3VModel (with exclude_embeds=True).
         model = Phi3ForCausalLM(config)
         model.eval().to(provider)
         model.save_pretrained(model_dir)
@@ -65,11 +77,24 @@ class TestRandomPhi3V(ExtTestCase):
         with open(config_path, "w") as f:
             json.dump(saved_cfg, f, indent=2)
 
-        vocab = {"<unk>": 0, "<s>": 1, "</s>": 2}
-        tokenizer = PreTrainedTokenizerFast(
-            tokenizer_object=Tokenizer(WordLevel(vocab=vocab, unk_token="<unk>")), bos_token="<s>", eos_token="</s>", unk_token="<unk>"
-        )
+        tokenizer = self.make_word_level_tokenizer()
         tokenizer.save_pretrained(model_dir)
+
+        return model, model_dir, output_dir, cache_dir
+
+    def common_fast_phi3v_random_weights(self, precision, provider):
+        import torch
+
+        from modelbuilder.builder import create_model
+
+        # Build a tiny Phi-3-vision config that is structurally identical to
+        # microsoft/Phi-3-vision-128k-instruct but uses a single hidden layer
+        # and a reduced hidden size so the test stays fast and fully offline.
+        num_hidden_layers = 1
+        config = _make_phi3v_config(num_hidden_layers)
+
+        basename = f"test_discrepancies_phi3v_{precision}_{provider}"
+        model, model_dir, output_dir, cache_dir = self._prepare_phi3v_model_dir(basename, config, provider)
 
         # Phi3VForCausalLM is automatically built with exclude_embeds=True by
         # create_model, so the ONNX model takes `inputs_embeds` rather than
@@ -121,10 +146,10 @@ class TestRandomPhi3V(ExtTestCase):
             }
             for i in range(num_hidden_layers):
                 prefill_feed[f"past_key_values.{i}.key"] = np.zeros(
-                    (batch_size, config.num_key_value_heads, 0, head_size), dtype=self.get_input_np_dtype(precision)
+                    (batch_size, config.num_key_value_heads, 0, _HEAD_SIZE), dtype=self.get_input_np_dtype(precision)
                 )
                 prefill_feed[f"past_key_values.{i}.value"] = np.zeros(
-                    (batch_size, config.num_key_value_heads, 0, head_size), dtype=self.get_input_np_dtype(precision)
+                    (batch_size, config.num_key_value_heads, 0, _HEAD_SIZE), dtype=self.get_input_np_dtype(precision)
                 )
             prefill_feed = {k: v for k, v in prefill_feed.items() if k in onnx_input_names}
 
@@ -212,51 +237,15 @@ class TestRandomPhi3V(ExtTestCase):
 
     def common_phi3v_greedy_generation(self, precision, provider):
         import torch
-        from tokenizers import Tokenizer
-        from tokenizers.models import WordLevel
-        from transformers import Phi3Config, Phi3ForCausalLM, PreTrainedTokenizerFast
 
         from modelbuilder.builder import create_model
 
         num_hidden_layers = 1
-        head_size = 64
-        config = Phi3Config(
-            architectures=["Phi3VForCausalLM"],
-            bos_token_id=1,
-            eos_token_id=2,
-            hidden_act="silu",
-            hidden_size=512,
-            intermediate_size=1376,
-            max_position_embeddings=8192,
-            original_max_position_embeddings=4096,
-            num_attention_heads=8,
-            num_hidden_layers=num_hidden_layers,
-            num_key_value_heads=4,
-            rms_norm_eps=1e-05,
-            rope_scaling={"type": "longrope", "short_factor": [1.0] * (head_size // 2), "long_factor": [1.0] * (head_size // 2)},
-            vocab_size=32064,
-        )
+        config = _make_phi3v_config(num_hidden_layers)
 
         basename = f"test_generation_phi3v_{precision}_{provider}"
-        model_dir = self.get_model_dir(basename)
-        output_dir, cache_dir = self.get_dirs(basename)
-
         torch.manual_seed(42)
-        model = Phi3ForCausalLM(config)
-        model.eval().to(provider)
-        model.save_pretrained(model_dir)
-        config_path = os.path.join(model_dir, "config.json")
-        with open(config_path) as f:
-            saved_cfg = json.load(f)
-        saved_cfg["architectures"] = ["Phi3VForCausalLM"]
-        with open(config_path, "w") as f:
-            json.dump(saved_cfg, f, indent=2)
-
-        vocab = {"<unk>": 0, "<s>": 1, "</s>": 2}
-        tokenizer = PreTrainedTokenizerFast(
-            tokenizer_object=Tokenizer(WordLevel(vocab=vocab, unk_token="<unk>")), bos_token="<s>", eos_token="</s>", unk_token="<unk>"
-        )
-        tokenizer.save_pretrained(model_dir)
+        model, model_dir, output_dir, cache_dir = self._prepare_phi3v_model_dir(basename, config, provider)
 
         create_model(
             model_name=PHI3V_MODEL_NAME,
@@ -303,10 +292,10 @@ class TestRandomPhi3V(ExtTestCase):
         past_kv = {}
         for i in range(num_hidden_layers):
             past_kv[f"past_key_values.{i}.key"] = np.zeros(
-                (batch_size, config.num_key_value_heads, 0, head_size), dtype=self.get_input_np_dtype(precision)
+                (batch_size, config.num_key_value_heads, 0, _HEAD_SIZE), dtype=self.get_input_np_dtype(precision)
             )
             past_kv[f"past_key_values.{i}.value"] = np.zeros(
-                (batch_size, config.num_key_value_heads, 0, head_size), dtype=self.get_input_np_dtype(precision)
+                (batch_size, config.num_key_value_heads, 0, _HEAD_SIZE), dtype=self.get_input_np_dtype(precision)
             )
 
         onnx_tokens = prompt_ids[0].tolist()
@@ -401,46 +390,15 @@ class TestRandomPhi3V(ExtTestCase):
     @requires_genai()
     def test_phi3v_fp32_cpu_genai_generate(self):
         import torch
-        from transformers import Phi3Config, Phi3ForCausalLM
 
         from modelbuilder.builder import create_model
 
         prefix = "test_phi3v_fp32_cpu_genai_generate"
         num_hidden_layers = 1
-        head_size = 64
-        config = Phi3Config(
-            architectures=["Phi3VForCausalLM"],
-            bos_token_id=1,
-            eos_token_id=2,
-            hidden_act="silu",
-            hidden_size=512,
-            intermediate_size=1376,
-            max_position_embeddings=8192,
-            original_max_position_embeddings=4096,
-            num_attention_heads=8,
-            num_hidden_layers=num_hidden_layers,
-            num_key_value_heads=4,
-            rms_norm_eps=1e-05,
-            rope_scaling={"type": "longrope", "short_factor": [1.0] * (head_size // 2), "long_factor": [1.0] * (head_size // 2)},
-            vocab_size=32064,
-        )
+        config = _make_phi3v_config(num_hidden_layers)
 
-        model_dir = self.get_model_dir(prefix, clean=False)
         torch.manual_seed(42)
-        model = Phi3ForCausalLM(config)
-        model.eval()
-        model.save_pretrained(model_dir)
-        config_path = os.path.join(model_dir, "config.json")
-        with open(config_path) as f:
-            saved_cfg = json.load(f)
-        saved_cfg["architectures"] = ["Phi3VForCausalLM"]
-        with open(config_path, "w") as f:
-            json.dump(saved_cfg, f, indent=2)
-
-        tokenizer = self.make_word_level_tokenizer()
-        tokenizer.save_pretrained(model_dir)
-
-        output_dir, cache_dir = self.get_dirs(prefix, clean=False)
+        model, model_dir, output_dir, cache_dir = self._prepare_phi3v_model_dir(prefix, config, "cpu")
 
         create_model(
             model_name=PHI3V_MODEL_NAME,

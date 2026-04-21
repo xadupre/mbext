@@ -11,32 +11,40 @@ from modelbuilder.ext_test_case import ExtTestCase, hide_stdout, requires_cuda, 
 MODEL_NAME = "microsoft/Phi-3-mini-4k-instruct"
 
 
+def _make_phi3_config(num_hidden_layers=1):
+    """Return a minimal Phi3Config for fast offline tests.
+
+    Minimal Phi3Config matching the Phi3ForCausalLM architecture (non-LongRoPE
+    variant where max_position_embeddings == original_max_position_embeddings)
+    with small dimensions so the test runs fast and completely offline.
+    head_size = hidden_size // num_attention_heads = 512 // 8 = 64
+    """
+    from transformers import Phi3Config
+
+    return Phi3Config(
+        architectures=["Phi3ForCausalLM"],
+        bos_token_id=1,
+        eos_token_id=2,
+        hidden_act="silu",
+        hidden_size=512,
+        intermediate_size=1376,
+        max_position_embeddings=4096,
+        original_max_position_embeddings=4096,
+        num_attention_heads=8,
+        num_hidden_layers=num_hidden_layers,
+        num_key_value_heads=4,
+        rms_norm_eps=1e-05,
+        rope_theta=10000.0,
+        vocab_size=32064,
+    )
+
+
 class TestRandomPhi3(ExtTestCase):
     def common_fast_phi3_random_weights(self, precision, provider):
-        from transformers import Phi3Config, Phi3ForCausalLM
+        from transformers import Phi3ForCausalLM
 
         num_hidden_layers = 1
-
-        # Minimal Phi3Config matching the Phi3ForCausalLM architecture (non-LongRoPE
-        # variant where max_position_embeddings == original_max_position_embeddings)
-        # with small dimensions so the test runs fast and completely offline.
-        # head_size = hidden_size // num_attention_heads = 512 // 8 = 64
-        config = Phi3Config(
-            architectures=["Phi3ForCausalLM"],
-            bos_token_id=1,
-            eos_token_id=2,
-            hidden_act="silu",
-            hidden_size=512,
-            intermediate_size=1376,
-            max_position_embeddings=4096,
-            original_max_position_embeddings=4096,
-            num_attention_heads=8,
-            num_hidden_layers=num_hidden_layers,
-            num_key_value_heads=4,
-            rms_norm_eps=1e-05,
-            rope_theta=10000.0,
-            vocab_size=32064,
-        )
+        config = _make_phi3_config(num_hidden_layers)
 
         model = Phi3ForCausalLM(config)
         model.eval().to(provider)
@@ -60,26 +68,10 @@ class TestRandomPhi3(ExtTestCase):
 
     def common_phi3_greedy_generation(self, precision, provider):
         import torch
-        from transformers import Phi3Config, Phi3ForCausalLM
+        from transformers import Phi3ForCausalLM
 
         num_hidden_layers = 1
-
-        config = Phi3Config(
-            architectures=["Phi3ForCausalLM"],
-            bos_token_id=1,
-            eos_token_id=2,
-            hidden_act="silu",
-            hidden_size=512,
-            intermediate_size=1376,
-            max_position_embeddings=4096,
-            original_max_position_embeddings=4096,
-            num_attention_heads=8,
-            num_hidden_layers=num_hidden_layers,
-            num_key_value_heads=4,
-            rms_norm_eps=1e-05,
-            rope_theta=10000.0,
-            vocab_size=32064,
-        )
+        config = _make_phi3_config(num_hidden_layers)
 
         torch.manual_seed(42)
         model = Phi3ForCausalLM(config)
@@ -144,28 +136,13 @@ class TestRandomPhi3(ExtTestCase):
     @requires_genai()
     def test_phi3_fp32_cpu_genai_generate(self):
         import torch
-        from transformers import Phi3Config, Phi3ForCausalLM
+        from transformers import Phi3ForCausalLM
 
         from modelbuilder.builder import create_model
 
         prefix = "test_phi3_fp32_cpu_genai_generate"
         num_hidden_layers = 1
-        config = Phi3Config(
-            architectures=["Phi3ForCausalLM"],
-            bos_token_id=1,
-            eos_token_id=2,
-            hidden_act="silu",
-            hidden_size=512,
-            intermediate_size=1376,
-            max_position_embeddings=4096,
-            original_max_position_embeddings=4096,
-            num_attention_heads=8,
-            num_hidden_layers=num_hidden_layers,
-            num_key_value_heads=4,
-            rms_norm_eps=1e-05,
-            rope_theta=10000.0,
-            vocab_size=32064,
-        )
+        config = _make_phi3_config(num_hidden_layers)
 
         model_dir = self.get_model_dir(prefix, clean=False)
         torch.manual_seed(42)

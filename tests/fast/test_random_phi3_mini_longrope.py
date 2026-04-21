@@ -10,35 +10,46 @@ from modelbuilder.ext_test_case import ExtTestCase, hide_stdout, requires_cuda, 
 
 MODEL_NAME = "microsoft/Phi-3-mini-128k-instruct"
 
+# head_size = hidden_size // num_attention_heads = 512 // 8 = 64
+# rotary_dim_half = head_size // 2 = 32 (length of short/long factor arrays)
+_HEAD_SIZE = 64
+
+
+def _make_phi3_mini_longrope_config(num_hidden_layers=1):
+    """Return a minimal Phi3Config for LongRoPE fast offline tests.
+
+    Minimal Phi3Config for the LongRoPE variant: max_position_embeddings must
+    differ from original_max_position_embeddings so that create_model selects
+    Phi3MiniLongRoPEModel.
+    head_size = hidden_size // num_attention_heads = 512 // 8 = 64
+    => rotary_dim_half = head_size // 2 = 32, so short/long factors need length 32.
+    """
+    from transformers import Phi3Config
+
+    return Phi3Config(
+        architectures=["Phi3ForCausalLM"],
+        bos_token_id=1,
+        eos_token_id=2,
+        hidden_act="silu",
+        hidden_size=512,
+        intermediate_size=1376,
+        max_position_embeddings=8192,
+        original_max_position_embeddings=4096,
+        num_attention_heads=8,
+        num_hidden_layers=num_hidden_layers,
+        num_key_value_heads=4,
+        rms_norm_eps=1e-05,
+        rope_scaling={"type": "longrope", "short_factor": [1.0] * (_HEAD_SIZE // 2), "long_factor": [1.0] * (_HEAD_SIZE // 2)},
+        vocab_size=32064,
+    )
+
 
 class TestRandomPhi3MiniLongRoPE(ExtTestCase):
     def common_fast_phi3_mini_longrope_random_weights(self, precision, provider):
-        from transformers import Phi3Config, Phi3ForCausalLM
+        from transformers import Phi3ForCausalLM
 
         num_hidden_layers = 1
-
-        # Minimal Phi3Config for the LongRoPE variant: max_position_embeddings must
-        # differ from original_max_position_embeddings so that create_model selects
-        # Phi3MiniLongRoPEModel.
-        # head_size = hidden_size // num_attention_heads = 512 // 8 = 64
-        # => rotary_dim_half = head_size // 2 = 32, so short/long factors need length 32.
-        head_size = 64
-        config = Phi3Config(
-            architectures=["Phi3ForCausalLM"],
-            bos_token_id=1,
-            eos_token_id=2,
-            hidden_act="silu",
-            hidden_size=512,
-            intermediate_size=1376,
-            max_position_embeddings=8192,
-            original_max_position_embeddings=4096,
-            num_attention_heads=8,
-            num_hidden_layers=num_hidden_layers,
-            num_key_value_heads=4,
-            rms_norm_eps=1e-05,
-            rope_scaling={"type": "longrope", "short_factor": [1.0] * (head_size // 2), "long_factor": [1.0] * (head_size // 2)},
-            vocab_size=32064,
-        )
+        config = _make_phi3_mini_longrope_config(num_hidden_layers)
 
         model = Phi3ForCausalLM(config)
         model.eval().to(provider)
@@ -52,7 +63,7 @@ class TestRandomPhi3MiniLongRoPE(ExtTestCase):
             provider=provider,
             num_hidden_layers=num_hidden_layers,
             num_key_value_heads=config.num_key_value_heads,
-            head_size=head_size,
+            head_size=_HEAD_SIZE,
             vocab_size=config.vocab_size,
             create_model_kwargs={"num_hidden_layers": num_hidden_layers},
             atol={"fp16": 3e-2, "bf16": 2e-2, "fp32": 2e-3, "int4": 0.5},
@@ -62,26 +73,10 @@ class TestRandomPhi3MiniLongRoPE(ExtTestCase):
 
     def common_phi3_mini_longrope_greedy_generation(self, precision, provider):
         import torch
-        from transformers import Phi3Config, Phi3ForCausalLM
+        from transformers import Phi3ForCausalLM
 
         num_hidden_layers = 1
-        head_size = 64
-        config = Phi3Config(
-            architectures=["Phi3ForCausalLM"],
-            bos_token_id=1,
-            eos_token_id=2,
-            hidden_act="silu",
-            hidden_size=512,
-            intermediate_size=1376,
-            max_position_embeddings=8192,
-            original_max_position_embeddings=4096,
-            num_attention_heads=8,
-            num_hidden_layers=num_hidden_layers,
-            num_key_value_heads=4,
-            rms_norm_eps=1e-05,
-            rope_scaling={"type": "longrope", "short_factor": [1.0] * (head_size // 2), "long_factor": [1.0] * (head_size // 2)},
-            vocab_size=32064,
-        )
+        config = _make_phi3_mini_longrope_config(num_hidden_layers)
 
         torch.manual_seed(42)
         model = Phi3ForCausalLM(config)
@@ -96,7 +91,7 @@ class TestRandomPhi3MiniLongRoPE(ExtTestCase):
             provider=provider,
             num_hidden_layers=num_hidden_layers,
             num_key_value_heads=config.num_key_value_heads,
-            head_size=head_size,
+            head_size=_HEAD_SIZE,
             vocab_size=config.vocab_size,
             eos_token_id=config.eos_token_id,
             create_model_kwargs={"num_hidden_layers": num_hidden_layers},
@@ -146,29 +141,13 @@ class TestRandomPhi3MiniLongRoPE(ExtTestCase):
     @requires_genai()
     def test_phi3_mini_longrope_fp32_cpu_genai_generate(self):
         import torch
-        from transformers import Phi3Config, Phi3ForCausalLM
+        from transformers import Phi3ForCausalLM
 
         from modelbuilder.builder import create_model
 
         prefix = "test_phi3_mini_longrope_fp32_cpu_genai_generate"
         num_hidden_layers = 1
-        head_size = 64
-        config = Phi3Config(
-            architectures=["Phi3ForCausalLM"],
-            bos_token_id=1,
-            eos_token_id=2,
-            hidden_act="silu",
-            hidden_size=512,
-            intermediate_size=1376,
-            max_position_embeddings=8192,
-            original_max_position_embeddings=4096,
-            num_attention_heads=8,
-            num_hidden_layers=num_hidden_layers,
-            num_key_value_heads=4,
-            rms_norm_eps=1e-05,
-            rope_scaling={"type": "longrope", "short_factor": [1.0] * (head_size // 2), "long_factor": [1.0] * (head_size // 2)},
-            vocab_size=32064,
-        )
+        config = _make_phi3_mini_longrope_config(num_hidden_layers)
 
         model_dir = self.get_model_dir(prefix, clean=False)
         torch.manual_seed(42)
