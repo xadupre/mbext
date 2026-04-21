@@ -10,7 +10,6 @@ import os
 import numpy as np
 import onnx_ir as ir
 import torch
-from onnx_ir.tensor_adapters import TorchTensor, to_torch_dtype
 from tqdm import tqdm
 
 from .base import Model, parse_hf_token
@@ -178,48 +177,10 @@ class Ministral3VisionEncoderModel(Model):
     #  Low-level onnx_ir primitives                                       #
     # ------------------------------------------------------------------ #
 
-    def _val(self, name, dtype=None, shape=None):
-        """Obtain or create an IR value by name."""
-        if name == "":
-            return ir.Value(name="")
-        v = self.values.setdefault(name, ir.Value(name=name))
-        if dtype is not None:
-            v.dtype = ir.DataType(dtype)
-        if shape is not None:
-            v.shape = ir.Shape(shape)
-        return v
-
-    def _node(self, op_type, inputs, outputs, name, domain="", **kwargs):
-        """Append an ONNX node to the graph (no-op if name already exists)."""
-        if name in self.node_names:
-            return
-        in_vals = [self._val(n) for n in inputs]
-        out_vals = [self._val(n) for n in outputs]
-        node = ir.node(op_type, inputs=in_vals, attributes=kwargs, domain=domain, outputs=out_vals, name=name)
-        self.graph.append(node)
-        self.node_names.add(name)
-
-    def _init(self, tensor, name, to=None):
-        """Register a weight tensor as a graph initializer."""
-        if to is not None:
-
-            def _lazy():
-                return TorchTensor(tensor.to(to_torch_dtype(to)), name=name)
-
-            ir_tensor = ir.LazyTensor(_lazy, dtype=to, shape=ir.Shape(tensor.shape), name=name)
-        elif isinstance(tensor, torch.Tensor):
-            ir_tensor = TorchTensor(tensor, name=name)
-        else:
-            # numpy array or other
-            ir_tensor = ir.tensor(tensor, name=name)
-        value = self._val(name, ir_tensor.dtype, ir_tensor.shape)
-        value.const_value = ir_tensor
-        self.graph.register_initializer(value)
-
     def _const_tensor(self, np_data, name):
         """Emit a small constant as an inline ONNX ``Constant`` node.
 
-        Unlike ``_init`` (which registers large weight tensors as initialisers
+        Unlike ``make_initializer`` (which registers large weight tensors as initialisers
         and allows them to be offloaded to external data), this method always
         keeps the tensor value inline inside the ONNX graph node.  This is
         required for shape constants consumed by ``Reshape``: ORT's shape
@@ -229,8 +190,8 @@ class Ministral3VisionEncoderModel(Model):
         ir_t = ir.tensor(np_data, name=name)
         node_name = f"{name}/Constant"
         # Constant node: no inputs, one output carrying the value.
-        self._node("Constant", inputs=[], outputs=[name], name=node_name, value=ir_t)
-        self._val(name, ir_t.dtype, ir_t.shape)
+        self.make_node("Constant", inputs=[], outputs=[name], name=node_name, value=ir_t)
+        self.make_value(name, ir_t.dtype, ir_t.shape)
 
     # ------------------------------------------------------------------ #
     #  Mid-level graph-construction helpers                               #
@@ -238,9 +199,9 @@ class Ministral3VisionEncoderModel(Model):
 
     def _rms_norm(self, name, root_input, weight_tensor, weight_name, shape):
         """SimplifiedLayerNormalization (PixtralRMSNorm)."""
-        self._init(weight_tensor, weight_name, to=self.io_dtype)
+        self.make_initializer(weight_tensor, weight_name, to=self.io_dtype)
         output = f"{name}/output_0"
-        self._node(
+        self.make_node(
             "SimplifiedLayerNormalization",
             inputs=[root_input, weight_name],
             outputs=[output],
@@ -249,30 +210,30 @@ class Ministral3VisionEncoderModel(Model):
             epsilon=self.vis_rms_norm_eps,
             stash_type=1,
         )
-        self._val(output, self.io_dtype, shape=shape)
+        self.make_value(output, self.io_dtype, shape=shape)
         return output
 
     def _matmul(self, name, root_input, weight_tensor, weight_name, out_shape, bias_tensor=None, bias_name=None):
         """MatMul (weight stored transposed as [in, out]) with optional Add bias."""
-        self._init(weight_tensor.T.contiguous(), weight_name, to=self.io_dtype)
+        self.make_initializer(weight_tensor.T.contiguous(), weight_name, to=self.io_dtype)
         mm_out = f"{name}/output_0"
-        self._node("MatMul", inputs=[root_input, weight_name], outputs=[mm_out], name=name)
-        self._val(mm_out, self.io_dtype, shape=out_shape)
+        self.make_node("MatMul", inputs=[root_input, weight_name], outputs=[mm_out], name=name)
+        self.make_value(mm_out, self.io_dtype, shape=out_shape)
         if bias_tensor is not None and bias_name is not None:
             if torch.count_nonzero(bias_tensor) > 0:
-                self._init(bias_tensor, bias_name, to=self.io_dtype)
+                self.make_initializer(bias_tensor, bias_name, to=self.io_dtype)
                 add_name = f"{name}/BiasAdd"
                 add_out = f"{add_name}/output_0"
-                self._node("Add", inputs=[mm_out, bias_name], outputs=[add_out], name=add_name)
-                self._val(add_out, self.io_dtype, shape=out_shape)
+                self.make_node("Add", inputs=[mm_out, bias_name], outputs=[add_out], name=add_name)
+                self.make_value(add_out, self.io_dtype, shape=out_shape)
                 return add_out
         return mm_out
 
     def _matmul_raw(self, name, a_name, b_name, shape):
         """Raw MatMul between two existing values (weights already in graph)."""
         output = f"{name}/output_0"
-        self._node("MatMul", inputs=[a_name, b_name], outputs=[output], name=name)
-        self._val(output, self.io_dtype, shape=shape)
+        self.make_node("MatMul", inputs=[a_name, b_name], outputs=[output], name=name)
+        self.make_value(output, self.io_dtype, shape=shape)
         return output
 
     def _reshape(self, name, root_input, shape_data, dtype, out_shape):
@@ -280,44 +241,44 @@ class Ministral3VisionEncoderModel(Model):
         shape_name = f"{name}/shape"
         self._const_tensor(np.array(shape_data, dtype=np.int64), shape_name)
         output = f"{name}/output_0"
-        self._node("Reshape", inputs=[root_input, shape_name], outputs=[output], name=name)
-        self._val(output, dtype, shape=out_shape)
+        self.make_node("Reshape", inputs=[root_input, shape_name], outputs=[output], name=name)
+        self.make_value(output, dtype, shape=out_shape)
         return output
 
     def _transpose(self, name, root_input, perm, dtype, out_shape):
         output = f"{name}/output_0"
-        self._node("Transpose", inputs=[root_input], outputs=[output], name=name, perm=perm)
-        self._val(output, dtype, shape=out_shape)
+        self.make_node("Transpose", inputs=[root_input], outputs=[output], name=name, perm=perm)
+        self.make_value(output, dtype, shape=out_shape)
         return output
 
     def _add(self, name, a, b, dtype, shape):
         output = f"{name}/output_0"
-        self._node("Add", inputs=[a, b], outputs=[output], name=name)
-        self._val(output, dtype, shape=shape)
+        self.make_node("Add", inputs=[a, b], outputs=[output], name=name)
+        self.make_value(output, dtype, shape=shape)
         return output
 
     def _mul(self, name, a, b, dtype, shape):
         output = f"{name}/output_0"
-        self._node("Mul", inputs=[a, b], outputs=[output], name=name)
-        self._val(output, dtype, shape=shape)
+        self.make_node("Mul", inputs=[a, b], outputs=[output], name=name)
+        self.make_value(output, dtype, shape=shape)
         return output
 
     def _neg(self, name, root_input, dtype, shape):
         output = f"{name}/output_0"
-        self._node("Neg", inputs=[root_input], outputs=[output], name=name)
-        self._val(output, dtype, shape=shape)
+        self.make_node("Neg", inputs=[root_input], outputs=[output], name=name)
+        self.make_value(output, dtype, shape=shape)
         return output
 
     def _concat(self, name, inputs, dtype, shape, axis=-1):
         output = f"{name}/output_0"
-        self._node("Concat", inputs=inputs, outputs=[output], name=name, axis=axis)
-        self._val(output, dtype, shape=shape)
+        self.make_node("Concat", inputs=inputs, outputs=[output], name=name, axis=axis)
+        self.make_value(output, dtype, shape=shape)
         return output
 
     def _softmax(self, name, root_input, dtype, shape, axis=-1):
         output = f"{name}/output_0"
-        self._node("Softmax", inputs=[root_input], outputs=[output], name=name, axis=axis)
-        self._val(output, dtype, shape=shape)
+        self.make_node("Softmax", inputs=[root_input], outputs=[output], name=name, axis=axis)
+        self.make_value(output, dtype, shape=shape)
         return output
 
     def _slice(self, name, root_input, starts, ends, axes, dtype, out_shape):
@@ -329,8 +290,8 @@ class Ministral3VisionEncoderModel(Model):
         self._const_tensor(np.array(ends, dtype=np.int64), ends_name)
         self._const_tensor(np.array(axes, dtype=np.int64), axes_name)
         output = f"{name}/output_0"
-        self._node("Slice", inputs=[root_input, starts_name, ends_name, axes_name], outputs=[output], name=name)
-        self._val(output, dtype, shape=out_shape)
+        self.make_node("Slice", inputs=[root_input, starts_name, ends_name, axes_name], outputs=[output], name=name)
+        self.make_value(output, dtype, shape=out_shape)
         return output
 
     def _scale_mul(self, name, root_input, scale, dtype, shape):
@@ -484,8 +445,8 @@ class Ministral3VisionEncoderModel(Model):
         # SiLU(gate) * up  (SiLU(x) = x * Sigmoid(x))
         sig_name = f"{b}/act/Sigmoid"
         sig_out = f"{sig_name}/output_0"
-        self._node("Sigmoid", inputs=[gate], outputs=[sig_out], name=sig_name)
-        self._val(sig_out, self.io_dtype, shape=[1, n_p, ff])
+        self.make_node("Sigmoid", inputs=[gate], outputs=[sig_out], name=sig_name)
+        self.make_value(sig_out, self.io_dtype, shape=[1, n_p, ff])
 
         silu_out = self._mul(f"{b}/act/Mul_silu", gate, sig_out, self.io_dtype, [1, n_p, ff])
         gate_up = self._mul(f"{b}/gate_up/Mul", silu_out, up, self.io_dtype, [1, n_p, ff])
@@ -546,10 +507,10 @@ class Ministral3VisionEncoderModel(Model):
         """
         # Conv2d weights: [hidden_size, in_channels, patch_size, patch_size]
         conv_w = "vision.patch_conv.weight"
-        self._init(vt.patch_conv.weight, conv_w, to=self.io_dtype)
+        self.make_initializer(vt.patch_conv.weight, conv_w, to=self.io_dtype)
 
         conv_out = "/vision/patch_conv/output_0"
-        self._node(
+        self.make_node(
             "Conv",
             inputs=["pixel_values", conv_w],
             outputs=[conv_out],
@@ -561,7 +522,7 @@ class Ministral3VisionEncoderModel(Model):
             strides=[self.patch_size, self.patch_size],
         )
         n_h = n_w = self.n_patches_per_side
-        self._val(conv_out, self.io_dtype, shape=[1, self.vis_hidden_size, n_h, n_w])
+        self.make_value(conv_out, self.io_dtype, shape=[1, self.vis_hidden_size, n_h, n_w])
 
         # Reshape to [1, hidden_size, n_patches] then Transpose to [1, n_patches, hidden_size]
         reshape1 = self._reshape(
@@ -615,9 +576,9 @@ class Ministral3VisionEncoderModel(Model):
         # --- Projector RMSNorm ---
         proj_norm_eps = float(self.config.text_config.rms_norm_eps)
         norm_w = "vision.projector.norm.weight"
-        self._init(proj.norm.weight, norm_w, to=self.io_dtype)
+        self.make_initializer(proj.norm.weight, norm_w, to=self.io_dtype)
         norm_out = "/vision/projector/norm/SimplifiedLayerNorm/output_0"
-        self._node(
+        self.make_node(
             "SimplifiedLayerNormalization",
             inputs=[root_input, norm_w],
             outputs=[norm_out],
@@ -626,7 +587,7 @@ class Ministral3VisionEncoderModel(Model):
             epsilon=proj_norm_eps,
             stash_type=1,
         )
-        self._val(norm_out, self.io_dtype, shape=[1, n_p, d])
+        self.make_value(norm_out, self.io_dtype, shape=[1, n_p, d])
 
         # Squeeze batch dimension: [1, n_patches, d] -> [n_patches, d]
         squeeze_out = self._reshape("/vision/projector/squeeze", norm_out, [n_p, d], self.io_dtype, [n_p, d])
@@ -676,8 +637,8 @@ class Ministral3VisionEncoderModel(Model):
 
         # GELU activation (default projector_hidden_act is "gelu")
         gelu_out = "/vision/projector/gelu/output_0"
-        self._node("Gelu", inputs=[lin1_out], outputs=[gelu_out], name="/vision/projector/gelu/Gelu", domain="com.microsoft")
-        self._val(gelu_out, self.io_dtype, shape=[nm, t_hid])
+        self.make_node("Gelu", inputs=[lin1_out], outputs=[gelu_out], name="/vision/projector/gelu/Gelu", domain="com.microsoft")
+        self.make_value(gelu_out, self.io_dtype, shape=[nm, t_hid])
 
         # linear_2: [nm, text_hidden_size] -> [nm, text_hidden_size]
         lin2_bias = getattr(proj.linear_2, "bias", None)
@@ -712,15 +673,15 @@ class Ministral3VisionEncoderModel(Model):
         proj = hf_model.model.multi_modal_projector  # Mistral3MultiModalProjector
 
         # Graph input
-        pixel_values_in = self._val("pixel_values", self.io_dtype, shape=[1, self.num_channels, self.image_size, self.image_size])
+        pixel_values_in = self.make_value("pixel_values", self.io_dtype, shape=[1, self.num_channels, self.image_size, self.image_size])
         self.graph.inputs.append(pixel_values_in)
 
         # Pre-compute 2-D RoPE cos/sin (shared across all layers)
         cos_t, sin_t = self._precompute_rope_cos_sin()
         cos_name = "vision.rope.cos"
         sin_name = "vision.rope.sin"
-        self._init(cos_t, cos_name, to=self.io_dtype)
-        self._init(sin_t, sin_name, to=self.io_dtype)
+        self.make_initializer(cos_t, cos_name, to=self.io_dtype)
+        self.make_initializer(sin_t, sin_name, to=self.io_dtype)
 
         # Patch embedding
         x = self._build_patch_embedding(vt)
@@ -733,8 +694,8 @@ class Ministral3VisionEncoderModel(Model):
         image_features = self._build_projector(proj, x)
 
         # Graph output (rename via Identity so the output has the clean name)
-        self._node("Identity", inputs=[image_features], outputs=["image_features"], name="/vision/output/Identity")
-        out_val = self._val("image_features", self.io_dtype, shape=[self.n_merged_patches, self.text_hidden_size])
+        self.make_node("Identity", inputs=[image_features], outputs=["image_features"], name="/vision/output/Identity")
+        out_val = self.make_value("image_features", self.io_dtype, shape=[self.n_merged_patches, self.text_hidden_size])
         self.graph.outputs.append(out_val)
 
         self.graph.sort()
