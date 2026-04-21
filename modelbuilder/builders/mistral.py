@@ -170,27 +170,7 @@ class Ministral3VisionEncoderModel(Model):
         self.projector_hidden_act = config.projector_hidden_act
 
     # ------------------------------------------------------------------ #
-    #  Low-level onnx_ir primitives                                       #
-    # ------------------------------------------------------------------ #
-
-    def _const_tensor(self, np_data, name):
-        """Emit a small constant as an inline ONNX ``Constant`` node.
-
-        Unlike ``make_initializer`` (which registers large weight tensors as initialisers
-        and allows them to be offloaded to external data), this method always
-        keeps the tensor value inline inside the ONNX graph node.  This is
-        required for shape constants consumed by ``Reshape``: ORT's shape
-        inference cannot read external-data tensors, so those constants must
-        remain embedded in the model file.
-        """
-        ir_t = ir.tensor(np_data, name=name)
-        node_name = f"{name}/Constant"
-        # Constant node: no inputs, one output carrying the value.
-        self.make_node("Constant", inputs=[], outputs=[name], name=node_name, value=ir_t)
-        self.make_value(name, ir_t.dtype, ir_t.shape)
-
-    # ------------------------------------------------------------------ #
-    #  Mid-level graph-construction helpers                               #
+    #  Graph-construction helpers                                         #
     # ------------------------------------------------------------------ #
 
     def _rms_norm(self, name, root_input, weight_tensor, weight_name, shape):
@@ -216,11 +196,12 @@ class Ministral3VisionEncoderModel(Model):
         self.make_value(output, self.io_dtype, shape=shape)
         return output
 
+
     def _scale_mul(self, name, root_input, scale, dtype, shape):
         """Multiply a tensor by a scalar constant."""
         np_dtype = {ir.DataType.FLOAT: np.float32, ir.DataType.FLOAT16: np.float16}.get(dtype, np.float32)
         scale_name = f"{name}/scale"
-        self._const_tensor(np.array(scale, dtype=np_dtype), scale_name)
+        self.make_initializer(np.array(scale, dtype=np_dtype), scale_name)
         return self.make_mul(name, [root_input, scale_name], dtype, shape)
 
     # ------------------------------------------------------------------ #
@@ -605,7 +586,6 @@ class Ministral3VisionEncoderModel(Model):
         self.graph.outputs.append(out_val)
 
         self.graph.sort()
-
 
 class Ministral3ConditionalGenerationModel(Model):
     """Orchestrates exporting both the vision encoder and the text decoder for
