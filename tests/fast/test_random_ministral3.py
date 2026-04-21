@@ -496,12 +496,10 @@ class TestMinistral3(ExtTestCase):
         # Logits shape: [batch_size, total_seq_len, vocab_size]
         self.assertEqual(onnx_outputs[0].shape, (batch_size, total_seq_len, text_config.vocab_size))
 
-    @long_test()
     @hide_stdout()
     def test_ministral3_two_images_and_text_fp32_cpu_genai(self):
         self.common_ministral3_two_images_and_text_cpu_genai("fp32")
 
-    @long_test()
     @hide_stdout()
     def test_ministral3_two_images_and_text_int4_cpu_genai(self):
         self.common_ministral3_two_images_and_text_cpu_genai("int4")
