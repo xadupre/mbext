@@ -216,13 +216,6 @@ class Ministral3VisionEncoderModel(Model):
         self.make_value(output, self.io_dtype, shape=shape)
         return output
 
-    def _scale_mul(self, name, root_input, scale, dtype, shape):
-        """Multiply a tensor by a scalar constant."""
-        np_dtype = {ir.DataType.FLOAT: np.float32, ir.DataType.FLOAT16: np.float16}.get(dtype, np.float32)
-        scale_name = f"{name}/scale"
-        self._const_tensor(np.array(scale, dtype=np_dtype), scale_name)
-        return self.make_mul(name, [root_input, scale_name], dtype, shape)
-
     # ------------------------------------------------------------------ #
     #  2-D RoPE (pre-computed at graph-build time)                        #
     # ------------------------------------------------------------------ #
@@ -330,7 +323,10 @@ class Ministral3VisionEncoderModel(Model):
         k_T = self.make_transpose(f"{b}/k_T", k_rope, self.io_dtype, [1, nh, hd, n_p], perm=[0, 1, 3, 2])
         attn_w = self._matmul_raw(f"{b}/attn_w/MatMul", q_rope, k_T, shape=[1, nh, n_p, n_p])
         # Scale
-        attn_ws = self._scale_mul(f"{b}/attn_scale", attn_w, scale=self.vis_attn_scale, dtype=self.io_dtype, shape=[1, nh, n_p, n_p])
+        np_dtype = {ir.DataType.FLOAT: np.float32, ir.DataType.FLOAT16: np.float16}.get(self.io_dtype, np.float32)
+        scale_name = f"{b}/attn_scale/scale"
+        self._const_tensor(np.array(self.vis_attn_scale, dtype=np_dtype), scale_name)
+        attn_ws = self.make_mul(f"{b}/attn_scale", [attn_w, scale_name], self.io_dtype, [1, nh, n_p, n_p])
         attn_probs = self.make_softmax(f"{b}/attn_softmax", attn_ws, self.io_dtype, [1, nh, n_p, n_p])
         attn_out_t = self._matmul_raw(f"{b}/attn_out/MatMul", attn_probs, v_t, shape=qkv_t_shape)
 
