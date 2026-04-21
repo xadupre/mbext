@@ -596,8 +596,10 @@ class Ministral3VisionEncoderModel(Model):
         self.graph.sort()
 
 
-class Ministral3EmbeddingModel:
+class Ministral3EmbeddingModel(Model):
     """ONNX embedding model for the ``phi3v``-style multimodal pipeline.
+
+    Inherits from :class:`Model` to fit the standard builder interface.
 
     ``input_ids`` must include ``image_token_id`` placeholder tokens at the
     positions where image features should be inserted.  The model:
@@ -629,24 +631,32 @@ class Ministral3EmbeddingModel:
 
     FILENAME = "embedding.onnx"
 
-    def __init__(self, config):
+    def __init__(self, config, io_dtype, onnx_dtype, ep, cache_dir, extra_options):
+        super().__init__(config, io_dtype, onnx_dtype, ep, cache_dir, extra_options)
         self.filename = self.FILENAME
-        self.vocab_size = config.text_config.vocab_size
-        self.text_hidden_size = config.text_config.hidden_size
-        self.image_token_id = config.image_token_id
+        self.image_token_id = extra_options["image_token_id"]
         self._model_proto = None
 
     # ------------------------------------------------------------------
 
-    def make_model(self, hf_model):
-        """Build the ONNX graph from an already-loaded HF model."""
+    def _load_hf_model(self, input_path):
+        from transformers import Mistral3ForConditionalGeneration
+
+        src = input_path if os.path.isdir(input_path) else self.model_name_or_path
+        extra_kwargs = {} if os.path.isdir(input_path) else {"cache_dir": self.cache_dir}
+        return Mistral3ForConditionalGeneration.from_pretrained(src, token=self.hf_token, trust_remote_code=self.hf_remote, **extra_kwargs)
+
+    def make_model(self, input_path):
+        """Load HF weights and build the embedding ONNX graph."""
+        hf_model = self._load_hf_model(input_path)
+        hf_model.eval()
         embed_weight = hf_model.model.language_model.embed_tokens.weight.detach().float().numpy()
 
         # I/O descriptors (dynamic shapes).
         # ORT-GenAI passes input_ids as 2D [batch, seq_len].
         input_ids_input = helper.make_tensor_value_info("input_ids", TensorProto.INT64, [None, None])
-        image_features_input = helper.make_tensor_value_info("image_features", TensorProto.FLOAT, [None, self.text_hidden_size])
-        inputs_embeds_output = helper.make_tensor_value_info("inputs_embeds", TensorProto.FLOAT, [1, None, self.text_hidden_size])
+        image_features_input = helper.make_tensor_value_info("image_features", TensorProto.FLOAT, [None, self.hidden_size])
+        inputs_embeds_output = helper.make_tensor_value_info("inputs_embeds", TensorProto.FLOAT, [1, None, self.hidden_size])
 
         # Initialisers
         embed_init = numpy_helper.from_array(embed_weight, name="embed_tokens_weight")
@@ -683,9 +693,13 @@ class Ministral3EmbeddingModel:
         self._model_proto = proto
 
     def save_model(self, out_dir):
+        print(f"Saving ONNX model in {out_dir}")
         if self._model_proto is None:
             raise RuntimeError("Call make_model() before save_model()")
         out_path = os.path.join(out_dir, self.filename)
+        if os.path.exists(out_path):
+            print(f"Overwriting {out_path}")
+            os.remove(out_path)
         onnx.save(self._model_proto, out_path)
 
 
@@ -706,12 +720,9 @@ class Ministral3ConditionalGenerationModel(Model):
         # --- Vision encoder ---
         self.vision_encoder = Ministral3VisionEncoderModel(config, io_dtype, onnx_dtype, ep, cache_dir, extra_options)
 
-        # --- Embedding model (always float32 regardless of onnx_dtype) ---
-        self.embedding_model = Ministral3EmbeddingModel(config)
-
-        # --- Text decoder ---
-        # Flatten text_config attributes onto the top-level config so that the
-        # existing Ministral3TextModel constructor finds them (hidden_size, etc.).
+        # --- Embedding model ---
+        # Flatten text_config attributes onto the top-level config so that
+        # Model.__init__ (inside Ministral3EmbeddingModel) finds hidden_size etc.
         text_obj_config = copy.deepcopy(config)
         text_config = config.text_config
         for key in text_config:
@@ -734,6 +745,13 @@ class Ministral3ConditionalGenerationModel(Model):
             ):
                 setattr(text_obj_config, key, getattr(text_config, key))
 
+        embed_extra_options = dict(extra_options)
+        embed_extra_options["image_token_id"] = config.image_token_id
+
+        # The embedding table is always stored as float32.
+        self.embedding_model = Ministral3EmbeddingModel(text_obj_config, io_dtype, onnx_dtype, ep, cache_dir, embed_extra_options)
+
+        # --- Text decoder (same flattened config, exclude_embeds=True) ---
         text_extra_options = dict(extra_options)
         text_extra_options["exclude_embeds"] = True
 
@@ -747,9 +765,7 @@ class Ministral3ConditionalGenerationModel(Model):
         print("Building vision encoder (Pixtral + multimodal projector) for Mistral3ForConditionalGeneration...")
         self.vision_encoder.make_model(input_path)
         print("Building embedding model for Mistral3ForConditionalGeneration...")
-        hf_model = self.vision_encoder._load_hf_model(input_path)
-        hf_model.eval()
-        self.embedding_model.make_model(hf_model)
+        self.embedding_model.make_model(input_path)
         print("Building text decoder for Mistral3ForConditionalGeneration...")
         self.text_model.make_model(input_path)
 
