@@ -8,7 +8,7 @@ import unittest
 
 import numpy as np
 
-from modelbuilder.ext_test_case import ExtTestCase, hide_stdout, long_test, requires_cuda, requires_genai, requires_transformers
+from modelbuilder.ext_test_case import ExtTestCase, hide_stdout, requires_cuda, requires_genai, requires_transformers
 
 MINISTRAL3_MODEL_NAME = "mistralai/Ministral-3-3B-Instruct-2512"
 
