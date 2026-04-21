@@ -586,8 +586,8 @@ class TestMinistral3(ExtTestCase):
         config.architectures = ["Mistral3ForConditionalGeneration"]
 
         basename = f"test_ministral3_two_images_and_text_{precision}_cpu_genai"
-        model_dir = self.get_model_dir(basename, clean=False)
-        output_dir, cache_dir = self.get_dirs(basename, clean=False)
+        model_dir = self.get_model_dir(basename)
+        output_dir, cache_dir = self.get_dirs(basename)
 
         torch.manual_seed(0)
         model = Mistral3ForConditionalGeneration(config)

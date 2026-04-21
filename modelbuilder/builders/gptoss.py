@@ -54,7 +54,7 @@ class GPTOSSModel(Model):
 
         t = torch.arange(self.rope_attrs["cache_length"], dtype=torch.float32)
         freqs = torch.einsum("i,j->ij", t, inv_freq)
-        cos_cache, sin_cache = (freqs.cos() * self.rope_attrs["mscale"], freqs.sin() * self.rope_attrs["mscale"])
+        cos_cache, sin_cache = freqs.cos() * self.rope_attrs["mscale"], freqs.sin() * self.rope_attrs["mscale"]
         return cos_cache, sin_cache
 
     def make_attention(self, layer_id, attention, root_input, **kwargs):
