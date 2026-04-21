@@ -361,13 +361,19 @@ class Ministral3VisionEncoderModel(Model):
     #  Single transformer layer                                           #
     # ------------------------------------------------------------------ #
 
-    def _build_transformer_layer(self, layer_id, layer, root_input):
+    def make_layer(self, layer_id, layer):
         """Build one PixtralAttentionLayer.
 
         Pipeline:
           attention_norm -> attention -> residual ->
           ffn_norm -> feed_forward -> residual
+
+        Reads the hidden-states tensor name from
+        ``self.layernorm_attrs["root_input"]`` (set by the previous layer or
+        by ``make_model`` before the first layer) and stores the output tensor
+        name back there, following the ``Model.make_layer`` convention.
         """
+        root_input = self.layernorm_attrs["root_input"]
         b = f"/vision/layers.{layer_id}"
         n_p = self.n_patches
         d = self.vis_hidden_size
@@ -398,7 +404,9 @@ class Ministral3VisionEncoderModel(Model):
 
         # Residual 2
         res2 = self.make_add(f"{b}/residual2/Add", [res1, mlp_out], self.io_dtype, [1, n_p, d])
-        return res2
+
+        # Store output for next layer or post-processing
+        self.layernorm_attrs["root_input"] = res2
 
     # ------------------------------------------------------------------ #
     #  Patch embedding (Conv2d + reshape + RMSNorm)                       #
@@ -573,8 +581,10 @@ class Ministral3VisionEncoderModel(Model):
 
         # Transformer layers (2-D RoPE cos/sin caches are created lazily on the
         # first make_rotary_embedding call and shared across all layers)
+        self.layernorm_attrs["root_input"] = x
         for layer_id, layer in enumerate(vt.transformer.layers):
-            x = self._build_transformer_layer(layer_id, layer, x)
+            self.make_layer(layer_id, layer)
+        x = self.layernorm_attrs["root_input"]
 
         # Projector
         image_features = self._build_projector(proj, x)
