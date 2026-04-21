@@ -206,8 +206,11 @@ class TestGptOss20b(ExtTestCase):
         from modelbuilder.builders.gptoss import GPTOSSModel
 
         head_dim = 32
-        cache_length = 64  # small cache for speed
 
+        # Do NOT override max_position_embeddings: the default (131072) is consistent
+        # with the default YARN params (factor=32, original_max_position_embeddings=4096,
+        # 32 * 4096 = 131072).  Setting max_position_embeddings to an arbitrary small
+        # value would produce an implicit factor that disagrees with the explicit one.
         config = GptOssConfig(
             architectures=["GptOssForCausalLM"],
             hidden_act="silu",
@@ -222,7 +225,6 @@ class TestGptOss20b(ExtTestCase):
             rms_norm_eps=1e-5,
             sliding_window=32,
             vocab_size=256,
-            max_position_embeddings=cache_length,
         )
 
         # Confirm the default rope_parameters use YARN so this test stays meaningful
@@ -236,6 +238,8 @@ class TestGptOss20b(ExtTestCase):
 
         cos_cache, sin_cache = builder.make_rotary_embedding_caches_from_scratch()
 
+        # Derive cache_length from the builder so the reference exactly matches.
+        cache_length = builder.rope_attrs["cache_length"]
         ref_cos, ref_sin = _ref_yarn_rope_cache(
             head_size=head_dim,
             cache_length=cache_length,
