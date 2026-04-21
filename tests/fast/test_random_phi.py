@@ -3,7 +3,6 @@
 # Licensed under the MIT License.  See License.txt in the project root for
 # license information.
 # --------------------------------------------------------------------------
-import os
 import unittest
 
 
@@ -134,9 +133,7 @@ class TestPhi(ExtTestCase):
     @requires_genai()
     def test_phi_fp32_cpu_genai_generate(self):
         import torch
-        from tokenizers import Tokenizer
-        from tokenizers.models import WordLevel
-        from transformers import PhiConfig, PhiForCausalLM, PreTrainedTokenizerFast
+        from transformers import PhiConfig, PhiForCausalLM
 
         from modelbuilder.builder import create_model
 
@@ -163,10 +160,7 @@ class TestPhi(ExtTestCase):
         model.eval()
         model.save_pretrained(model_dir)
 
-        vocab = {"<unk>": 0, "<s>": 1, "</s>": 2}
-        tokenizer = PreTrainedTokenizerFast(
-            tokenizer_object=Tokenizer(WordLevel(vocab=vocab, unk_token="<unk>")), bos_token="<s>", eos_token="</s>", unk_token="<unk>"
-        )
+        tokenizer = self.make_word_level_tokenizer()
         tokenizer.save_pretrained(model_dir)
 
         output_dir, cache_dir = self.get_dirs(prefix, clean=False)
@@ -180,22 +174,7 @@ class TestPhi(ExtTestCase):
             cache_dir=cache_dir,
         )
 
-        onnx_path = os.path.join(output_dir, "model.onnx")
-        self.assertExists(onnx_path)
-        genai_config_path = os.path.join(output_dir, "genai_config.json")
-        self.assertExists(genai_config_path)
-
-        torch.manual_seed(0)
-        batch_size = 1
-        max_new_tokens = 5
-        prompt_ids = torch.randint(3, config.vocab_size, (batch_size, 4))
-
-        with torch.no_grad():
-            pt_output = model.generate(prompt_ids, max_new_tokens=max_new_tokens, do_sample=False, pad_token_id=config.eos_token_id)
-        pt_tokens = pt_output[0].tolist()
-
-        og_tokens = self.run_genai_generation(output_dir, prompt_ids, max_new_tokens)
-        self.assertEqual(pt_tokens, og_tokens)
+        self.run_genai_generation_test(output_dir, model, config.vocab_size, config.eos_token_id)
 
 
 if __name__ == "__main__":
