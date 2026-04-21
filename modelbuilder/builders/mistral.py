@@ -209,13 +209,6 @@ class Ministral3VisionEncoderModel(Model):
         self.make_value(output, self.io_dtype, shape=shape)
         return output
 
-    def _matmul_raw(self, name, a_name, b_name, shape):
-        """Raw MatMul between two existing values (weights already in graph)."""
-        output = f"{name}/output_0"
-        self.make_node("MatMul", inputs=[a_name, b_name], outputs=[output], name=name)
-        self.make_value(output, self.io_dtype, shape=shape)
-        return output
-
     def _scale_mul(self, name, root_input, scale, dtype, shape):
         """Multiply a tensor by a scalar constant."""
         np_dtype = {ir.DataType.FLOAT: np.float32, ir.DataType.FLOAT16: np.float16}.get(dtype, np.float32)
@@ -328,11 +321,11 @@ class Ministral3VisionEncoderModel(Model):
         # Scaled dot-product attention (encoder, no causal mask)
         # K^T: [1, nh, hd, n_p]
         k_T = self.make_transpose(f"{b}/k_T", k_rope, self.io_dtype, [1, nh, hd, n_p], perm=[0, 1, 3, 2])
-        attn_w = self._matmul_raw(f"{b}/attn_w/MatMul", q_rope, k_T, shape=[1, nh, n_p, n_p])
+        attn_w = f"{self.make_matmul_op(None, f'{b}/attn_w/MatMul', q_rope, b_input=k_T, shape=[1, nh, n_p, n_p])}/output_0"
         # Scale
         attn_ws = self._scale_mul(f"{b}/attn_scale", attn_w, scale=self.vis_attn_scale, dtype=self.io_dtype, shape=[1, nh, n_p, n_p])
         attn_probs = self.make_softmax(f"{b}/attn_softmax", attn_ws, self.io_dtype, [1, nh, n_p, n_p])
-        attn_out_t = self._matmul_raw(f"{b}/attn_out/MatMul", attn_probs, v_t, shape=qkv_t_shape)
+        attn_out_t = f"{self.make_matmul_op(None, f'{b}/attn_out/MatMul', attn_probs, b_input=v_t, shape=qkv_t_shape)}/output_0"
 
         # Transpose + Reshape back to [1, n_patches, hidden_size]
         attn_out = self.make_transpose(f"{b}/attn_out_t", attn_out_t, self.io_dtype, [1, n_p, nh, hd], perm=[0, 2, 1, 3])

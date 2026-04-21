@@ -1196,7 +1196,11 @@ class Model:
             return self.make_matmul_op(matmul, basename, root_input, **kwargs)
 
     def make_matmul_op(self, matmul, basename, root_input, **kwargs):
-        if self.onnx_dtype in {ir.DataType.FLOAT16, ir.DataType.BFLOAT16, ir.DataType.FLOAT}:
+        if kwargs.get("b_input") is not None:
+            # Raw MatMul: second input is an already-existing value in the graph.
+            # Always use the float path regardless of onnx_dtype.
+            return self.make_matmul_float(matmul, basename, root_input, **kwargs)
+        elif self.onnx_dtype in {ir.DataType.FLOAT16, ir.DataType.BFLOAT16, ir.DataType.FLOAT}:
             return self.make_matmul_float(matmul, basename, root_input, **kwargs)
         elif self.onnx_dtype in {ir.DataType.INT4, ir.DataType.UINT4}:
             if self.quant_attrs["use_qdq"]:
@@ -1207,14 +1211,22 @@ class Model:
             raise NotImplementedError(f"The {self.onnx_dtype} precision is not currently supported.")
 
     def make_matmul_float(self, matmul, name, root_input, **kwargs):
-        weight = name[1:].replace("/", ".") + ".weight"
-        self.make_initializer(matmul.weight.T, weight, to=self.io_dtype)
+        b_input = kwargs.get("b_input", None)
+        if b_input is None:
+            weight = name[1:].replace("/", ".") + ".weight"
+            self.make_initializer(matmul.weight.T, weight, to=self.io_dtype)
+            last_dim = matmul.weight.shape[0]
+            seq_dim = kwargs.get("seq_dim", "sequence_length")
+            default_shape = ["batch_size", seq_dim, last_dim]
+        else:
+            weight = b_input
+            default_shape = None
 
-        last_dim = matmul.weight.shape[0]
-        seq_dim = kwargs.get("seq_dim", "sequence_length")
         output = "logits" if kwargs.get("logits", False) else f"{name}/output_0"
         self.make_node("MatMul", inputs=[root_input, weight], outputs=[output], name=name)
-        self.make_value(output, self.io_dtype, shape=["batch_size", seq_dim, last_dim])
+        shape = kwargs.get("shape", default_shape)
+        if shape is not None:
+            self.make_value(output, self.io_dtype, shape=shape)
 
         return name
 
