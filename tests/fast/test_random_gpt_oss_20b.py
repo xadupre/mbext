@@ -238,12 +238,14 @@ class TestGptOss20b(ExtTestCase):
 
         cos_cache, sin_cache = builder.make_rotary_embedding_caches_from_scratch()
 
-        # Derive cache_length from the builder so the reference exactly matches.
+        # Derive theta and cache_length from the builder so the reference exactly matches.
+        # builder.rope_attrs["theta"] is always set correctly (handles top-level rope_theta
+        # or rope_scaling["rope_theta"] depending on transformers version).
         cache_length = builder.rope_attrs["cache_length"]
         ref_cos, ref_sin = _ref_yarn_rope_cache(
             head_size=head_dim,
             cache_length=cache_length,
-            theta=rope_scaling["rope_theta"],
+            theta=builder.rope_attrs["theta"],
             factor=rope_scaling["factor"],
             beta_fast=rope_scaling["beta_fast"],
             beta_slow=rope_scaling["beta_slow"],
