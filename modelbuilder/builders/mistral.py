@@ -25,35 +25,34 @@ class MistralNeMoModel(MistralModel):
         super().__init__(config, io_dtype, onnx_dtype, ep, cache_dir, extra_options)
 
 
-def _dequantize_fp8_weights(model):
-    """Dequantize float8_e4m3fn weights in place using per-tensor weight_scale_inv.
-
-    The official Ministral-3B-Instruct-2512 model stores linear layer weights
-    as float8_e4m3fn with a per-tensor inverse scale factor (weight_scale_inv).
-    Standard PyTorch matmul cannot consume float8 parameters, so we eagerly
-    cast them back to float32 before building the ONNX graph.
-
-    Dequantization formula: weight_fp32 = weight_fp8.float() * weight_scale_inv
-    """
-    fp8_dtype = getattr(torch, "float8_e4m3fn", None)
-    if fp8_dtype is None:
-        return  # PyTorch version does not support FP8; nothing to do
-    for module in model.modules():
-        if not hasattr(module, "weight") or module.weight is None:
-            continue
-        if module.weight.dtype != fp8_dtype:
-            continue
-        if not hasattr(module, "weight_scale_inv"):
-            continue
-        scale_inv = module.weight_scale_inv
-        with torch.no_grad():
-            dequantized = module.weight.float() * scale_inv.float()
-            module.weight = torch.nn.Parameter(dequantized, requires_grad=False)
-
-
 class Ministral3TextModel(MistralModel):
     def __init__(self, config, io_dtype, onnx_dtype, ep, cache_dir, extra_options):
         super().__init__(config, io_dtype, onnx_dtype, ep, cache_dir, extra_options)
+
+    def _dequantize_fp8_weights(self, model):
+        """Dequantize float8_e4m3fn weights in place using per-tensor weight_scale_inv.
+
+        The official Ministral-3B-Instruct-2512 model stores linear layer weights
+        as float8_e4m3fn with a per-tensor inverse scale factor (weight_scale_inv).
+        Standard PyTorch matmul cannot consume float8 parameters, so we eagerly
+        cast them back to float32 before building the ONNX graph.
+
+        Dequantization formula: weight_fp32 = weight_fp8.float() * weight_scale_inv
+        """
+        fp8_dtype = getattr(torch, "float8_e4m3fn", None)
+        if fp8_dtype is None:
+            return  # PyTorch version does not support FP8; nothing to do
+        for module in model.modules():
+            if not hasattr(module, "weight") or module.weight is None:
+                continue
+            if module.weight.dtype != fp8_dtype:
+                continue
+            if not hasattr(module, "weight_scale_inv"):
+                continue
+            scale_inv = module.weight_scale_inv
+            with torch.no_grad():
+                dequantized = module.weight.float() * scale_inv.float()
+                module.weight = torch.nn.Parameter(dequantized, requires_grad=False)
 
     def load_weights(self, input_path):
         # Mistral3ForConditionalGeneration (model_type="mistral3") is not
@@ -71,7 +70,7 @@ class Ministral3TextModel(MistralModel):
             model = super().load_weights(input_path)
         # Dequantize FP8 weights if present (official Ministral-3B model uses
         # float8_e4m3fn with per-tensor weight_scale_inv).
-        _dequantize_fp8_weights(model)
+        self._dequantize_fp8_weights(model)
         return model
 
     def make_genai_config(self, model_name_or_path, extra_kwargs, out_dir):
