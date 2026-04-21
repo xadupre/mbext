@@ -3,6 +3,7 @@
 # Licensed under the MIT License.  See License.txt in the project root for
 # license information.
 # --------------------------------------------------------------------------
+import math
 import os
 import unittest
 from unittest.mock import patch
@@ -12,6 +13,51 @@ import numpy as np
 from modelbuilder.ext_test_case import ExtTestCase, hide_stdout, requires_cuda, requires_genai, run_session_or_io_binding
 
 MODEL_NAME = "openai/gpt-oss-20b"
+
+
+def _ref_yarn_rope_cache(head_size, cache_length, theta, factor, beta_fast, beta_slow, original_max_pos, truncate):
+    """Reference YARN RoPE cos/sin cache matching HuggingFace's ``_compute_yarn_parameters``.
+
+    Computes the NTK-by-parts inv_freq and then builds the cos/sin table that
+    ``GPTOSSModel.make_rotary_embedding_caches_from_scratch`` should reproduce.
+
+    Returns
+    -------
+    cos_cache, sin_cache : torch.Tensor of shape [cache_length, head_size // 2]
+    """
+    import torch
+
+    d_half = head_size // 2
+
+    # Base inverse frequencies (no scaling)
+    pos_freqs = theta ** (torch.arange(0, head_size, 2, dtype=torch.float) / head_size)
+    inv_freq = 1.0 / pos_freqs
+
+    # NTK by-parts correction range
+    # find_correction_dim(n_rot, dim, base, max_pos) = dim * log(max_pos / (n_rot * 2π)) / (2 * log(base))
+    #                                                 = d_half * log(max_pos / (n_rot * 2π)) / log(base)
+    low = d_half * math.log(original_max_pos / (beta_fast * 2 * math.pi)) / math.log(theta)
+    high = d_half * math.log(original_max_pos / (beta_slow * 2 * math.pi)) / math.log(theta)
+    if truncate:
+        low = math.floor(low)
+        high = math.ceil(high)
+
+    interpolation = inv_freq / factor  # 1 / (factor * pos_freqs)
+    extrapolation = inv_freq  # 1 / pos_freqs
+
+    ramp = (torch.arange(d_half, dtype=torch.float32) - low) / (high - low)
+    mask = 1.0 - ramp.clamp(0, 1)  # inv_freq_extrapolation_factor
+
+    inv_freq_rescaled = interpolation * (1 - mask) + extrapolation * mask
+
+    # Magnitude scaling: yarn_get_mscale(factor) = 0.1 * log(factor) + 1  (if factor > 1)
+    mscale = 0.1 * math.log(factor) + 1.0 if factor > 1 else 1.0
+
+    t = torch.arange(cache_length, dtype=torch.float32)
+    freqs = torch.einsum("i,j->ij", t, inv_freq_rescaled)
+    cos_cache = freqs.cos() * mscale
+    sin_cache = freqs.sin() * mscale
+    return cos_cache, sin_cache
 
 
 class TestGptOss20b(ExtTestCase):
@@ -140,6 +186,72 @@ class TestGptOss20b(ExtTestCase):
     @requires_cuda()
     def test_fast_discrepancy_gpt_oss_20b_fp16_cuda(self):
         self.common_fast_gpt_oss_20b_random_weights("fp16", "cuda")
+
+    def test_yarn_rope_cache_fp32(self):
+        """Verify that GPTOSSModel.make_rotary_embedding_caches_from_scratch produces
+        the correct YARN (Yet Another RoPE extensioN) cos/sin cache.
+
+        The expected values are computed by ``_ref_yarn_rope_cache``, which mirrors
+        HuggingFace's ``_compute_yarn_parameters`` exactly.  This test guards against
+        regressions in:
+          * the direction of inv_freq (1/pos_freqs, not pos_freqs)
+          * the interpolation/extrapolation blending (interp = inv_freq / factor)
+          * the truncate=False boundary (no floor/ceil for GPT-OSS)
+          * the mscale formula (0.1 * log(factor) + 1)
+        """
+        import onnx_ir as ir
+        from transformers import GptOssConfig
+
+        from modelbuilder.builders.gptoss import GPTOSSModel
+
+        head_dim = 32
+        cache_length = 64  # small cache for speed
+
+        config = GptOssConfig(
+            architectures=["GptOssForCausalLM"],
+            hidden_act="silu",
+            hidden_size=64,
+            intermediate_size=64,
+            head_dim=head_dim,
+            num_attention_heads=4,
+            num_hidden_layers=2,
+            num_key_value_heads=2,
+            num_local_experts=4,
+            num_experts_per_tok=2,
+            rms_norm_eps=1e-5,
+            sliding_window=32,
+            vocab_size=256,
+            max_position_embeddings=cache_length,
+        )
+
+        # Confirm the default rope_parameters use YARN so this test stays meaningful
+        rope_scaling = config.rope_scaling
+        self.assertEqual(rope_scaling["rope_type"], "yarn")
+
+        # Instantiate the builder (no model weights needed for cache computation)
+        builder = GPTOSSModel(
+            config, io_dtype=ir.DataType.FLOAT, onnx_dtype=ir.DataType.FLOAT, ep="cpu", cache_dir="/tmp", extra_options={}
+        )
+
+        cos_cache, sin_cache = builder.make_rotary_embedding_caches_from_scratch()
+
+        ref_cos, ref_sin = _ref_yarn_rope_cache(
+            head_size=head_dim,
+            cache_length=cache_length,
+            theta=rope_scaling["rope_theta"],
+            factor=rope_scaling["factor"],
+            beta_fast=rope_scaling["beta_fast"],
+            beta_slow=rope_scaling["beta_slow"],
+            original_max_pos=rope_scaling["original_max_position_embeddings"],
+            truncate=rope_scaling.get("truncate", True),
+        )
+
+        self.assertEqual(cos_cache.shape, ref_cos.shape)
+        self.assertEqual(sin_cache.shape, ref_sin.shape)
+        import torch
+
+        torch.testing.assert_close(cos_cache, ref_cos, rtol=1e-5, atol=1e-5)
+        torch.testing.assert_close(sin_cache, ref_sin, rtol=1e-5, atol=1e-5)
 
     def common_moe_decomposed_random_weights(self, precision, ort_provider):
         """Build a GPT-OSS-20B ONNX model with ``execution_provider="cpu"`` while
