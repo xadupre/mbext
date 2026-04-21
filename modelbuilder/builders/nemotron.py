@@ -28,7 +28,7 @@ class NemotronHModel(LlamaModel):
         if hasattr(config, "n_routed_experts"):
             self.moe_attrs["num_experts"] = config.n_routed_experts
         if hasattr(config, "norm_topk_prob"):
-            self.moe_attrs["normalize_routing_weights"] = config.norm_topk_prob
+            self.moe_attrs["normalize_routing_weights"] = 1 if config.norm_topk_prob else 0
 
         # Determine which layers have attention (and therefore need KV cache).
         # KV cache input/output names are re-indexed to only cover attention layers,
