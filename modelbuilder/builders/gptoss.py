@@ -49,12 +49,12 @@ class GPTOSSModel(Model):
         super().make_layernorm(layer_id, layernorm, skip, simple, location)
 
     def make_rotary_embedding_caches_from_scratch(self):
-        inv_freq = 1.0 / (self.rope_attrs["theta"] ** (torch.arange(0, self.head_size, 2, dtype=torch.float) / self.head_size))
+        inv_freq = self.rope_attrs["theta"] ** (torch.arange(0, self.head_size, 2, dtype=torch.float) / self.head_size)
         inv_freq = self.make_inv_freq_rescaled(inv_freq)
 
         t = torch.arange(self.rope_attrs["cache_length"], dtype=torch.float32)
         freqs = torch.einsum("i,j->ij", t, inv_freq)
-        cos_cache, sin_cache = (freqs.cos() * self.rope_attrs["mscale"], freqs.sin() * self.rope_attrs["mscale"])
+        cos_cache, sin_cache = freqs.cos() * self.rope_attrs["mscale"], freqs.sin() * self.rope_attrs["mscale"]
         return cos_cache, sin_cache
 
     def make_attention(self, layer_id, attention, root_input, **kwargs):
