@@ -197,17 +197,6 @@ class Ministral3VisionEncoderModel(Model):
         return output
 
 
-    def _slice(self, name, root_input, starts, ends, axes, dtype, out_shape):
-        """Slice along axes with scalar integer constants."""
-        starts_name = f"{name}/starts"
-        ends_name = f"{name}/ends"
-        axes_name = f"{name}/axes"
-        self.make_initializer(np.array(starts, dtype=np.int64), starts_name)
-        self.make_initializer(np.array(ends, dtype=np.int64), ends_name)
-        self.make_initializer(np.array(axes, dtype=np.int64), axes_name)
-        self.make_slice(name, [root_input, starts_name, ends_name, axes_name], dtype, out_shape)
-        return f"{name}/output_0"
-
     def _scale_mul(self, name, root_input, scale, dtype, shape):
         """Multiply a tensor by a scalar constant."""
         np_dtype = {ir.DataType.FLOAT: np.float32, ir.DataType.FLOAT16: np.float16}.get(dtype, np.float32)
@@ -267,11 +256,11 @@ class Ministral3VisionEncoderModel(Model):
         half = hd // 2
 
         # rotate_half: split last dim in two halves, negate second, swap
-        q1 = self._slice(
-            f"{prefix}/rope/q1", q_or_k_name, starts=[0], ends=[half], axes=[-1], dtype=self.io_dtype, out_shape=shape[:-1] + [half]
+        q1 = self.make_slice(
+            f"{prefix}/rope/q1", q_or_k_name, starts=[0], ends=[half], axes=[-1], dtype=self.io_dtype, shape=shape[:-1] + [half]
         )
-        q2 = self._slice(
-            f"{prefix}/rope/q2", q_or_k_name, starts=[half], ends=[hd], axes=[-1], dtype=self.io_dtype, out_shape=shape[:-1] + [half]
+        q2 = self.make_slice(
+            f"{prefix}/rope/q2", q_or_k_name, starts=[half], ends=[hd], axes=[-1], dtype=self.io_dtype, shape=shape[:-1] + [half]
         )
         neg_q2 = self.make_neg(f"{prefix}/rope/neg_q2", q2, self.io_dtype, shape[:-1] + [half])
         q_rot = self.make_concat(f"{prefix}/rope/q_rot", [neg_q2, q1], self.io_dtype, shape, axis=-1)
