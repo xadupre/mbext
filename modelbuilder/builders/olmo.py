@@ -21,10 +21,12 @@ class OLMoModel(Model):
         self.layernorm_attrs["epsilon"] = getattr(config, "layer_norm_eps", getattr(config, "rms_norm_eps", 1e-5))
 
     def make_layernorm(self, layer_id, layernorm, skip, simple, location):
-        # OlmoLayerNorm has no learnable weight or bias; inject identity values so
-        # the base class make_layernorm_op can create the initializer tensors it needs.
+        # OlmoLayerNorm has no learnable weight or bias; inject an all-ones weight so
+        # the base class make_layernorm_op can create the required Scale initializer.
+        # The all-zeros bias is intentionally not injected: the base class detects the
+        # missing bias attribute and omits the optional B input from the ONNX node,
+        # avoiding unnecessary initializer tensors and identity-value computations.
         layernorm.weight = torch.ones(self.hidden_size)
-        layernorm.bias = torch.zeros(self.hidden_size)
         super().make_layernorm(layer_id, layernorm, skip, simple, location)
 
 

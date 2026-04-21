@@ -1555,12 +1555,20 @@ class Model:
         weight = f"model.layers.{layer_id}.{location}_layernorm.weight"
         self.make_initializer(layernorm.weight + self.layernorm_attrs["add_offset"], weight, to=new_io_dtype)
         bias = f"model.layers.{layer_id}.{location}_layernorm.bias"
+        # Bias (B) is optional for LayerNormalization and SkipLayerNormalization.
+        # Skip creating it when layernorm has no bias attribute, bias is None,
+        # or bias is all-zeros (an identity operation that adds no information).
+        has_bias = not simple
         if not simple:
-            self.make_initializer(layernorm.bias, bias, to=new_io_dtype)
+            b = getattr(layernorm, "bias", None)
+            if b is None or (hasattr(b, "any") and not b.any()):
+                has_bias = False
+            else:
+                self.make_initializer(b, bias, to=new_io_dtype)
 
         # Create input names for op
         inputs = [root_input, skip_input, weight] if skip else [root_input, weight]
-        if not simple:
+        if has_bias:
             inputs.append(bias)
 
         name = f"/model/layers.{layer_id}/{location}_layernorm/{'Skip' if skip else ''}LayerNorm"
@@ -1610,12 +1618,20 @@ class Model:
         weight = f"model.layers.{layer_id}.{location}_layernorm.weight"
         self.make_initializer(layernorm.weight + self.layernorm_attrs["add_offset"], weight, to=new_io_dtype)
         bias = f"model.layers.{layer_id}.{location}_layernorm.bias"
+        # Bias (B) is optional for LayerNormalization and SkipLayerNormalization.
+        # Skip creating it when layernorm has no bias attribute, bias is None,
+        # or bias is all-zeros (an identity operation that adds no information).
+        has_bias = not simple
         if not simple:
-            self.make_initializer(layernorm.bias, bias, to=new_io_dtype)
+            b = getattr(layernorm, "bias", None)
+            if b is None or (hasattr(b, "any") and not b.any()):
+                has_bias = False
+            else:
+                self.make_initializer(b, bias, to=new_io_dtype)
 
         # Create input names for op
         inputs = [root_input, skip_input, weight] if skip else [root_input, weight]
-        if not simple:
+        if has_bias:
             inputs.append(bias)
 
         name = f"/model/layers.{layer_id}/{location}_layernorm/{'Skip' if skip else ''}LayerNorm"
@@ -1659,7 +1675,7 @@ class Model:
                 root_input,
                 skip_input,
                 weight,
-                bias,
+                bias if has_bias else None,
                 outputs[0],
                 output_3,
                 new_io_dtype,
@@ -2213,7 +2229,9 @@ class Model:
         self.make_value(output_3, io_dtype, shape=["batch_size", "sequence_length", self.hidden_size])
 
         make_layer_norm_name = f"{basename}/LayerNormalization"
-        inputs = [output_3, weight_name, bias_name]
+        inputs = [output_3, weight_name]
+        if bias_name is not None:
+            inputs.append(bias_name)
 
         kwargs = {"epsilon": self.layernorm_attrs["epsilon"]}
         kwargs.update({"axis": -1, "stash_type": 1})
