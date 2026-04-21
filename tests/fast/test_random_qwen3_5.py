@@ -70,9 +70,7 @@ class TestRandomQwen3_5(ExtTestCase):
         Returns the (model, output_dir) tuple so callers can run inference.
         """
         import torch
-        from tokenizers import Tokenizer
-        from tokenizers.models import WordLevel
-        from transformers import AutoModelForImageTextToText, PreTrainedTokenizerFast
+        from transformers import AutoModelForImageTextToText
 
         from modelbuilder.builder import create_model
 
@@ -85,10 +83,7 @@ class TestRandomQwen3_5(ExtTestCase):
         model.eval()
         model.save_pretrained(model_dir_full)
 
-        vocab = {"<unk>": 0, "<s>": 1, "</s>": 2}
-        tokenizer = PreTrainedTokenizerFast(
-            tokenizer_object=Tokenizer(WordLevel(vocab=vocab, unk_token="<unk>")), bos_token="<s>", eos_token="</s>", unk_token="<unk>"
-        )
+        tokenizer = self.make_word_level_tokenizer()
         tokenizer.save_pretrained(model_dir_full)
 
         create_model(
