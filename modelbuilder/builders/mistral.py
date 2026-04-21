@@ -243,32 +243,6 @@ class Ministral3VisionEncoderModel(Model):
         self.make_reshape(name, [root_input, shape_name], dtype, out_shape)
         return f"{name}/output_0"
 
-    def _transpose(self, name, root_input, perm, dtype, out_shape):
-        self.make_transpose(name, root_input, dtype, out_shape, perm=perm)
-        return f"{name}/output_0"
-
-    def _add(self, name, a, b, dtype, shape):
-        self.make_add(name, [a, b], dtype, shape)
-        return f"{name}/output_0"
-
-    def _mul(self, name, a, b, dtype, shape):
-        self.make_mul(name, [a, b], dtype, shape)
-        return f"{name}/output_0"
-
-    def _neg(self, name, root_input, dtype, shape):
-        output = f"{name}/output_0"
-        self.make_node("Neg", inputs=[root_input], outputs=[output], name=name)
-        self.make_value(output, dtype, shape=shape)
-        return output
-
-    def _concat(self, name, inputs, dtype, shape, axis=-1):
-        self.make_concat(name, inputs, dtype, shape, axis=axis)
-        return f"{name}/output_0"
-
-    def _softmax(self, name, root_input, dtype, shape, axis=-1):
-        self.make_softmax(name, root_input, dtype, shape, axis=axis)
-        return f"{name}/output_0"
-
     def _slice(self, name, root_input, starts, ends, axes, dtype, out_shape):
         """Slice along axes with scalar integer constants."""
         starts_name = f"{name}/starts"
@@ -285,8 +259,7 @@ class Ministral3VisionEncoderModel(Model):
         np_dtype = {ir.DataType.FLOAT: np.float32, ir.DataType.FLOAT16: np.float16}.get(dtype, np.float32)
         scale_name = f"{name}/scale"
         self._const_tensor(np.array(scale, dtype=np_dtype), scale_name)
-        self.make_mul(name, [root_input, scale_name], dtype, shape)
-        return f"{name}/output_0"
+        return self.make_mul(name, [root_input, scale_name], dtype, shape)
 
     # ------------------------------------------------------------------ #
     #  2-D RoPE (pre-computed at graph-build time)                        #
@@ -346,12 +319,12 @@ class Ministral3VisionEncoderModel(Model):
         q2 = self._slice(
             f"{prefix}/rope/q2", q_or_k_name, starts=[half], ends=[hd], axes=[-1], dtype=self.io_dtype, out_shape=shape[:-1] + [half]
         )
-        neg_q2 = self._neg(f"{prefix}/rope/neg_q2", q2, self.io_dtype, shape[:-1] + [half])
-        q_rot = self._concat(f"{prefix}/rope/q_rot", [neg_q2, q1], self.io_dtype, shape, axis=-1)
+        neg_q2 = self.make_neg(f"{prefix}/rope/neg_q2", q2, self.io_dtype, shape[:-1] + [half])
+        q_rot = self.make_concat(f"{prefix}/rope/q_rot", [neg_q2, q1], self.io_dtype, shape, axis=-1)
 
-        q_cos = self._mul(f"{prefix}/rope/q_cos", q_or_k_name, cos_name, self.io_dtype, shape)
-        q_sin = self._mul(f"{prefix}/rope/q_rot_sin", q_rot, sin_name, self.io_dtype, shape)
-        q_embed = self._add(f"{prefix}/rope/q_embed", q_cos, q_sin, self.io_dtype, shape)
+        q_cos = self.make_mul(f"{prefix}/rope/q_cos", [q_or_k_name, cos_name], self.io_dtype, shape)
+        q_sin = self.make_mul(f"{prefix}/rope/q_rot_sin", [q_rot, sin_name], self.io_dtype, shape)
+        q_embed = self.make_add(f"{prefix}/rope/q_embed", [q_cos, q_sin], self.io_dtype, shape)
         return q_embed
 
     # ------------------------------------------------------------------ #
@@ -382,9 +355,9 @@ class Ministral3VisionEncoderModel(Model):
 
         # Transpose to [1, num_heads, n_patches, head_dim]
         qkv_t_shape = [1, nh, n_p, hd]
-        q_t = self._transpose(f"{b}/q_t", q_4d, perm=[0, 2, 1, 3], dtype=self.io_dtype, out_shape=qkv_t_shape)
-        k_t = self._transpose(f"{b}/k_t", k_4d, perm=[0, 2, 1, 3], dtype=self.io_dtype, out_shape=qkv_t_shape)
-        v_t = self._transpose(f"{b}/v_t", v_4d, perm=[0, 2, 1, 3], dtype=self.io_dtype, out_shape=qkv_t_shape)
+        q_t = self.make_transpose(f"{b}/q_t", q_4d, self.io_dtype, qkv_t_shape, perm=[0, 2, 1, 3])
+        k_t = self.make_transpose(f"{b}/k_t", k_4d, self.io_dtype, qkv_t_shape, perm=[0, 2, 1, 3])
+        v_t = self.make_transpose(f"{b}/v_t", v_4d, self.io_dtype, qkv_t_shape, perm=[0, 2, 1, 3])
 
         # Apply 2-D RoPE to Q and K
         q_rope = self._apply_rope(f"{b}/q", q_t, cos_name, sin_name, qkv_t_shape)
@@ -392,15 +365,15 @@ class Ministral3VisionEncoderModel(Model):
 
         # Scaled dot-product attention (encoder, no causal mask)
         # K^T: [1, nh, hd, n_p]
-        k_T = self._transpose(f"{b}/k_T", k_rope, perm=[0, 1, 3, 2], dtype=self.io_dtype, out_shape=[1, nh, hd, n_p])
+        k_T = self.make_transpose(f"{b}/k_T", k_rope, self.io_dtype, [1, nh, hd, n_p], perm=[0, 1, 3, 2])
         attn_w = self._matmul_raw(f"{b}/attn_w/MatMul", q_rope, k_T, shape=[1, nh, n_p, n_p])
         # Scale
         attn_ws = self._scale_mul(f"{b}/attn_scale", attn_w, scale=self.vis_attn_scale, dtype=self.io_dtype, shape=[1, nh, n_p, n_p])
-        attn_probs = self._softmax(f"{b}/attn_softmax", attn_ws, dtype=self.io_dtype, shape=[1, nh, n_p, n_p])
+        attn_probs = self.make_softmax(f"{b}/attn_softmax", attn_ws, self.io_dtype, [1, nh, n_p, n_p])
         attn_out_t = self._matmul_raw(f"{b}/attn_out/MatMul", attn_probs, v_t, shape=qkv_t_shape)
 
         # Transpose + Reshape back to [1, n_patches, hidden_size]
-        attn_out = self._transpose(f"{b}/attn_out_t", attn_out_t, perm=[0, 2, 1, 3], dtype=self.io_dtype, out_shape=[1, n_p, nh, hd])
+        attn_out = self.make_transpose(f"{b}/attn_out_t", attn_out_t, self.io_dtype, [1, n_p, nh, hd], perm=[0, 2, 1, 3])
         attn_out_2d = self._reshape(f"{b}/attn_out_reshape", attn_out, [1, n_p, d], self.io_dtype, [1, n_p, d])
 
         # O projection (no bias in Pixtral attention)
@@ -434,8 +407,8 @@ class Ministral3VisionEncoderModel(Model):
         self.make_sigmoid(sig_name, gate, self.io_dtype, [1, n_p, ff])
         sig_out = f"{sig_name}/output_0"
 
-        silu_out = self._mul(f"{b}/act/Mul_silu", gate, sig_out, self.io_dtype, [1, n_p, ff])
-        gate_up = self._mul(f"{b}/gate_up/Mul", silu_out, up, self.io_dtype, [1, n_p, ff])
+        silu_out = self.make_mul(f"{b}/act/Mul_silu", [gate, sig_out], self.io_dtype, [1, n_p, ff])
+        gate_up = self.make_mul(f"{b}/gate_up/Mul", [silu_out, up], self.io_dtype, [1, n_p, ff])
 
         down = self._matmul(f"{b}/down_proj/MatMul", gate_up, mlp.down_proj.weight, f"{b}/down_proj/MatMul.weight", out_shape=[1, n_p, d])
         return down
@@ -468,7 +441,7 @@ class Ministral3VisionEncoderModel(Model):
         attn_out = self._build_attention(layer_id, layer.attention, norm1_out, cos_name, sin_name)
 
         # Residual 1
-        res1 = self._add(f"{b}/residual1/Add", root_input, attn_out, self.io_dtype, [1, n_p, d])
+        res1 = self.make_add(f"{b}/residual1/Add", [root_input, attn_out], self.io_dtype, [1, n_p, d])
 
         # ffn_norm (RMSNorm, no skip)
         norm2_out = self._rms_norm(
@@ -479,7 +452,7 @@ class Ministral3VisionEncoderModel(Model):
         mlp_out = self._build_mlp(layer_id, layer.feed_forward, norm2_out)
 
         # Residual 2
-        res2 = self._add(f"{b}/residual2/Add", res1, mlp_out, self.io_dtype, [1, n_p, d])
+        res2 = self.make_add(f"{b}/residual2/Add", [res1, mlp_out], self.io_dtype, [1, n_p, d])
         return res2
 
     # ------------------------------------------------------------------ #
@@ -517,12 +490,8 @@ class Ministral3VisionEncoderModel(Model):
             self.io_dtype,
             [1, self.vis_hidden_size, self.n_patches],
         )
-        transposed = self._transpose(
-            "/vision/patch_embed/Transpose",
-            reshape1,
-            perm=[0, 2, 1],
-            dtype=self.io_dtype,
-            out_shape=[1, self.n_patches, self.vis_hidden_size],
+        transposed = self.make_transpose(
+            "/vision/patch_embed/Transpose", reshape1, self.io_dtype, [1, self.n_patches, self.vis_hidden_size], perm=[0, 2, 1]
         )
 
         # ln_pre (SimplifiedLayerNormalization)
@@ -593,9 +562,7 @@ class Ministral3VisionEncoderModel(Model):
         #   -> [n_merged, d*s*s]                            Reshape
         r1 = self._reshape("/vision/projector/merge/Reshape1", squeeze_out, [n_h, n_w, d], self.io_dtype, [n_h, n_w, d])
         r2 = self._reshape("/vision/projector/merge/Reshape2", r1, [mh, s, mw, s, d], self.io_dtype, [mh, s, mw, s, d])
-        tp = self._transpose(
-            "/vision/projector/merge/Transpose", r2, perm=[0, 2, 4, 1, 3], dtype=self.io_dtype, out_shape=[mh, mw, d, s, s]
-        )
+        tp = self.make_transpose("/vision/projector/merge/Transpose", r2, self.io_dtype, [mh, mw, d, s, s], perm=[0, 2, 4, 1, 3])
         merged = self._reshape("/vision/projector/merge/Reshape3", tp, [nm, d * s * s], self.io_dtype, [nm, d * s * s])
 
         # Merging linear (no bias): [nm, d*s*s] -> [nm, d]
