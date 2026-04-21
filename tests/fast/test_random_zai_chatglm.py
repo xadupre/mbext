@@ -556,22 +556,15 @@ class TestZaiChatGLM(ExtTestCase):
             cache_dir=cache_dir,
         )
 
-        onnx_path = os.path.join(output_dir, "model.onnx")
-        self.assertExists(onnx_path)
-        genai_config_path = os.path.join(output_dir, "genai_config.json")
-        self.assertExists(genai_config_path)
-
         torch.manual_seed(0)
-        batch_size = 1
-        max_new_tokens = 5
-        prompt_ids = torch.randint(3, config.vocab_size, (batch_size, 4))
+        prompt_ids = torch.randint(3, config.vocab_size, (1, 4))
 
         # Manual greedy generation with PyTorch (ChatGLM uses trust_remote_code).
         with torch.no_grad():
             pt_current_ids = prompt_ids.clone()
             pt_past_key_values = None
             pt_tokens = prompt_ids[0].tolist()
-            for _ in range(max_new_tokens):
+            for _ in range(5):
                 pt_out = model(pt_current_ids, past_key_values=pt_past_key_values)
                 next_tok = int(torch.argmax(pt_out.logits[0, -1, :]).item())
                 pt_tokens.append(next_tok)
@@ -580,8 +573,7 @@ class TestZaiChatGLM(ExtTestCase):
                 if next_tok == config.eos_token_id:
                     break
 
-        og_tokens = self.run_genai_generation(output_dir, prompt_ids, max_new_tokens)
-        self.assertEqual(pt_tokens, og_tokens)
+        self.run_genai_generation_test(output_dir, None, config.vocab_size, config.eos_token_id, pt_tokens=pt_tokens, prompt_ids=prompt_ids)
 
 
 if __name__ == "__main__":

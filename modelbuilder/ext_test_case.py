@@ -831,6 +831,69 @@ class ExtTestCase(unittest.TestCase):
             og_tokens.append(int(generator.get_next_tokens()[0]))
         return og_tokens
 
+    def run_genai_generation_test(
+        self,
+        output_dir: str,
+        model,
+        vocab_size: int,
+        eos_token_id: int,
+        max_new_tokens: int = 5,
+        pt_tokens: Optional[List[int]] = None,
+        prompt_ids=None,
+    ) -> None:
+        """Assert ONNX artefacts exist, then compare PyTorch vs genai generation.
+
+        This helper encapsulates the boilerplate shared by every
+        ``test_*_cpu_genai_generate`` test method:
+
+        1. Assert that ``model.onnx`` and ``genai_config.json`` exist in
+           *output_dir*.
+        2. Build a deterministic prompt tensor (or use the provided
+           *prompt_ids*).
+        3. Run ``model.generate`` with greedy decoding to get the reference
+           token sequence (unless *pt_tokens* is already provided or *model*
+           is ``None``).
+        4. Run :meth:`run_genai_generation` to obtain the genai token sequence.
+        5. Assert that both sequences are equal (skipped when *pt_tokens* is
+           ``None`` after step 3).
+
+        :param output_dir: directory produced by
+            :func:`modelbuilder.builder.create_model`, containing
+            ``model.onnx`` and ``genai_config.json``.
+        :param model: PyTorch model used for the reference generation.  Pass
+            ``None`` when providing *pt_tokens* directly (e.g. when the model
+            does not support ``generate``).
+        :param vocab_size: vocabulary size used to sample random prompt tokens.
+            Ignored when *prompt_ids* is provided.
+        :param eos_token_id: end-of-sequence token id, forwarded as
+            ``pad_token_id`` to ``model.generate``.
+        :param max_new_tokens: maximum number of new tokens to generate.
+        :param pt_tokens: pre-computed PyTorch token sequence.  When given,
+            the ``model.generate`` call is skipped.  Pass ``None`` together
+            with a non-``None`` *model* to let the helper run
+            ``model.generate``.
+        :param prompt_ids: 2-D integer tensor of shape ``(1, prompt_len)``.
+            When omitted a 4-token prompt is created with ``torch.manual_seed(0)``.
+        """
+        import torch
+
+        self.assertExists(os.path.join(output_dir, "model.onnx"))
+        self.assertExists(os.path.join(output_dir, "genai_config.json"))
+
+        if prompt_ids is None:
+            torch.manual_seed(0)
+            prompt_ids = torch.randint(3, vocab_size, (1, 4))
+
+        if pt_tokens is None and model is not None:
+            with torch.no_grad():
+                pt_output = model.generate(prompt_ids, max_new_tokens=max_new_tokens, do_sample=False, pad_token_id=eos_token_id)
+            pt_tokens = pt_output[0].tolist()
+
+        og_tokens = self.run_genai_generation(output_dir, prompt_ids, max_new_tokens)
+
+        if pt_tokens is not None:
+            self.assertEqual(pt_tokens, og_tokens)
+
 
 def get_input_np_dtype(precision):
     if precision == "bf16":
