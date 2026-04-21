@@ -260,20 +260,20 @@ class ExtTestCase(unittest.TestCase):
         if os.path.exists(path):
             shutil.rmtree(path)
 
-    def get_dirs(self, prefix: str, clean: bool = True) -> Tuple[str]:
-        output_dir = f"dump_models/{prefix}/output"
-        cache_dir = os.path.expanduser(f"~/.cache/modelbuilder/{prefix}")
+    def get_dirs(self, prefix: str, clean: bool = True) -> tuple[str]:
+        output_dir = os.path.join("dump_models", prefix, "output")
+        cache_dir = os.path.expanduser(os.path.join("~", ".cache", "modelbuilder", prefix))
         os.makedirs(output_dir, exist_ok=True)
         os.makedirs(cache_dir, exist_ok=True)
         if clean or self._do_clean:
-            self.addCleanup(self.clean_dir, f"dump_models/{prefix}/output_dir")
+            self.addCleanup(self.clean_dir, os.path.join("dump_models", prefix, "output"))
         return output_dir, cache_dir
 
-    def get_model_dir(self, prefix: str, clean: bool = False) -> Tuple[str]:
-        model_dir = f"dump_models/{prefix}/checkpoint"
+    def get_model_dir(self, prefix: str, clean: bool = False) -> tuple[str]:
+        model_dir = os.path.join("dump_models", prefix, "checkpoint")
         os.makedirs(model_dir, exist_ok=True)
         if clean or self._do_clean:
-            self.addCleanup(self.clean_dir, f"dump_models/{prefix}/checkpoint")
+            self.addCleanup(self.clean_dir, os.path.join("dump_models", prefix, "checkpoint"))
         return model_dir
 
     def assertExists(self, name):
