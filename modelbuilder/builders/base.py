@@ -1081,10 +1081,40 @@ class Model:
         self.make_node("Range", inputs=inputs, outputs=[output], name=name)
         self.make_value(output, dtype, shape=shape)
 
-    def make_slice(self, name, inputs, dtype, shape):
+    def make_slice(self, name, inputs, dtype, shape, *, starts=None, ends=None, axes=None):
+        """Create a Slice ONNX node.
+
+        When *starts*, *ends*, and *axes* are provided as Python lists the
+        method creates inline ``Constant`` nodes for each of them automatically
+        and *inputs* should be the single root tensor name (str).  Otherwise
+        *inputs* must be a list of already-resolved tensor name strings
+        ``[data, starts, ends, ...]`` in the usual ONNX Slice convention.
+
+        Returns the output tensor name.
+        """
+        if starts is not None or ends is not None or axes is not None:
+            assert starts is not None and ends is not None, "Both 'starts' and 'ends' must be provided together"
+            root_input = inputs
+            starts_name = f"{name}/starts"
+            ends_name = f"{name}/ends"
+            for tensor_name, values in [(starts_name, starts), (ends_name, ends)]:
+                np_data = np.array(values, dtype=np.int64)
+                ir_t = ir.tensor(np_data, name=tensor_name)
+                self.make_node("Constant", inputs=[], outputs=[tensor_name], name=f"{tensor_name}/Constant", value=ir_t)
+                self.make_value(tensor_name, ir_t.dtype, ir_t.shape)
+            actual_inputs = [root_input, starts_name, ends_name]
+            if axes is not None:
+                axes_name = f"{name}/axes"
+                np_axes = np.array(axes, dtype=np.int64)
+                ir_t = ir.tensor(np_axes, name=axes_name)
+                self.make_node("Constant", inputs=[], outputs=[axes_name], name=f"{axes_name}/Constant", value=ir_t)
+                self.make_value(axes_name, ir_t.dtype, ir_t.shape)
+                actual_inputs.append(axes_name)
+            inputs = actual_inputs
         output = f"{name}/output_0"
         self.make_node("Slice", inputs=inputs, outputs=[output], name=name)
         self.make_value(output, dtype, shape=shape)
+        return output
 
     def make_mul(self, name, inputs, dtype, shape):
         output = f"{name}/output_0"
