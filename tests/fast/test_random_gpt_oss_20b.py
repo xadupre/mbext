@@ -199,6 +199,7 @@ class TestGptOss20b(ExtTestCase):
           * the truncate=False boundary (no floor/ceil for GPT-OSS)
           * the mscale formula (0.1 * log(factor) + 1)
         """
+        import torch
         import onnx_ir as ir
         from transformers import GptOssConfig
 
@@ -248,8 +249,6 @@ class TestGptOss20b(ExtTestCase):
 
         self.assertEqual(cos_cache.shape, ref_cos.shape)
         self.assertEqual(sin_cache.shape, ref_sin.shape)
-        import torch
-
         torch.testing.assert_close(cos_cache, ref_cos, rtol=1e-5, atol=1e-5)
         torch.testing.assert_close(sin_cache, ref_sin, rtol=1e-5, atol=1e-5)
 
