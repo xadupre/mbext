@@ -558,12 +558,8 @@ class ExtTestCase(unittest.TestCase):
                 "position_ids": position_ids_3d,
             }
             for i in range(num_hidden_layers):
-                prefill_feed[f"past_key_values.{i}.key"] = np.zeros(
-                    (batch_size, num_key_value_heads, 0, head_size), dtype=np_dtype
-                )
-                prefill_feed[f"past_key_values.{i}.value"] = np.zeros(
-                    (batch_size, num_key_value_heads, 0, head_size), dtype=np_dtype
-                )
+                prefill_feed[f"past_key_values.{i}.key"] = np.zeros((batch_size, num_key_value_heads, 0, head_size), dtype=np_dtype)
+                prefill_feed[f"past_key_values.{i}.value"] = np.zeros((batch_size, num_key_value_heads, 0, head_size), dtype=np_dtype)
             prefill_feed = {k: v for k, v in prefill_feed.items() if k in onnx_input_names}
 
             prefill_results, ort_logits_np = run_session_or_io_binding(
