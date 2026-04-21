@@ -656,7 +656,7 @@ class Ministral3VisionEncoderModel(Model):
                 pbar.update()
                 pbar.set_description(f"Saving {tensor.name} ({tensor.dtype.short_name()}, {tensor.shape})")
 
-            ir.save(self.onnx_model, out_path, external_data=os.path.basename(data_path), size_threshold_bytes=0, callback=callback)
+            ir.save(self.onnx_model, out_path, external_data=os.path.basename(data_path), size_threshold_bytes=1024, callback=callback)
 
 
 class Ministral3ConditionalGenerationModel(Model):
