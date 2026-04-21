@@ -876,11 +876,11 @@ class TestMistralNeMo(ExtTestCase):
         """_dequantize_fp8_weights leaves normal float32 weights unchanged."""
         import torch
 
-        from modelbuilder.builders.mistral import _dequantize_fp8_weights
+        from modelbuilder.builders.mistral import Ministral3TextModel
 
         linear = torch.nn.Linear(8, 4, bias=False)
         original_data = linear.weight.data.clone()
-        _dequantize_fp8_weights(linear)
+        Ministral3TextModel._dequantize_fp8_weights(linear)
         self.assertTrue(torch.allclose(linear.weight.data, original_data))
 
     def test_dequantize_fp8_weights_applies_scale(self):
@@ -891,7 +891,7 @@ class TestMistralNeMo(ExtTestCase):
         if fp8_dtype is None:
             self.skipTest("float8_e4m3fn not available in this PyTorch build")
 
-        from modelbuilder.builders.mistral import _dequantize_fp8_weights
+        from modelbuilder.builders.mistral import Ministral3TextModel
 
         linear = torch.nn.Linear(8, 4, bias=False)
         # Simulate FP8 quantization: store weight as float8_e4m3fn.
@@ -901,7 +901,7 @@ class TestMistralNeMo(ExtTestCase):
         scale_inv = torch.tensor([2.0])
         linear.register_buffer("weight_scale_inv", scale_inv)
 
-        _dequantize_fp8_weights(linear)
+        Ministral3TextModel._dequantize_fp8_weights(linear)
 
         self.assertEqual(linear.weight.dtype, torch.float32)
         expected = fp8_weight.float() * scale_inv.float()
