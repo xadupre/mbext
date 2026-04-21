@@ -395,25 +395,16 @@ class TestNemotronH(ExtTestCase):
 
         torch.manual_seed(0)
         prompt_ids = torch.randint(3, config.vocab_size, (1, 4))
-        max_new_tokens = 5
 
         pt_tokens = None
         if not has_transformers("5.5"):
             # The code is broken in transformers 5.5 for this model.
             # ValueError: `has_previous_state` can only be called on LinearAttention layers
             with torch.no_grad():
-                pt_output = model.generate(prompt_ids, max_new_tokens=max_new_tokens, do_sample=False, pad_token_id=config.eos_token_id)
+                pt_output = model.generate(prompt_ids, max_new_tokens=5, do_sample=False, pad_token_id=config.eos_token_id)
             pt_tokens = pt_output[0].tolist()
 
-        self.run_genai_generation_test(
-            output_dir,
-            None,
-            config.vocab_size,
-            config.eos_token_id,
-            max_new_tokens=max_new_tokens,
-            pt_tokens=pt_tokens,
-            prompt_ids=prompt_ids,
-        )
+        self.run_genai_generation_test(output_dir, None, config.vocab_size, config.eos_token_id, pt_tokens=pt_tokens, prompt_ids=prompt_ids)
 
 
 if __name__ == "__main__":
