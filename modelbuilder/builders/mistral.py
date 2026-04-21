@@ -8,10 +8,8 @@ import json
 import os
 
 import numpy as np
-import onnx
 import onnx_ir as ir
 import torch
-from onnx import TensorProto, helper, numpy_helper
 
 from .base import Model
 
@@ -635,7 +633,6 @@ class Ministral3EmbeddingModel(Model):
         super().__init__(config, io_dtype, onnx_dtype, ep, cache_dir, extra_options)
         self.filename = self.FILENAME
         self.image_token_id = extra_options["image_token_id"]
-        self._model_proto = None
 
     # ------------------------------------------------------------------
 
@@ -652,55 +649,52 @@ class Ministral3EmbeddingModel(Model):
         hf_model.eval()
         embed_weight = hf_model.model.language_model.embed_tokens.weight.detach().float().numpy()
 
-        # I/O descriptors (dynamic shapes).
-        # ORT-GenAI passes input_ids as 2D [batch, seq_len].
-        input_ids_input = helper.make_tensor_value_info("input_ids", TensorProto.INT64, [None, None])
-        image_features_input = helper.make_tensor_value_info("image_features", TensorProto.FLOAT, [None, self.hidden_size])
-        inputs_embeds_output = helper.make_tensor_value_info("inputs_embeds", TensorProto.FLOAT, [1, None, self.hidden_size])
-
         # Initialisers
-        embed_init = numpy_helper.from_array(embed_weight, name="embed_tokens_weight")
-        img_tok_const = numpy_helper.from_array(np.array(self.image_token_id, dtype=np.int64), name="image_token_id_const")
-        squeeze_batch_axes = numpy_helper.from_array(np.array([0], dtype=np.int64), name="squeeze_batch_axes")
+        self.make_initializer(embed_weight, name="embed_tokens_weight")
+        self.make_initializer(np.array(self.image_token_id, dtype=np.int64), name="image_token_id_const")
+        self.make_initializer(np.array([0], dtype=np.int64), name="squeeze_batch_axes")
+
+        # Graph inputs (dynamic shapes).
+        # ORT-GenAI passes input_ids as 2D [batch, seq_len].
+        self.graph.inputs.append(self.make_value("input_ids", ir.DataType.INT64, shape=[None, None]))
+        self.graph.inputs.append(self.make_value("image_features", ir.DataType.FLOAT, shape=[None, self.hidden_size]))
 
         # Nodes:
         # 1. Embed all tokens: input_ids [1, T] -> text_embeds [1, T, H]
-        gather = helper.make_node("Gather", inputs=["embed_tokens_weight", "input_ids"], outputs=["text_embeds"], axis=0)
+        self.make_node("Gather", inputs=["embed_tokens_weight", "input_ids"], outputs=["text_embeds"], name="/embed/Gather", axis=0)
         # 2. Squeeze batch dim for easier indexing: [1, T, H] → [T, H]
-        squeeze_3d = helper.make_node("Squeeze", inputs=["text_embeds", "squeeze_batch_axes"], outputs=["text_2d"])
+        self.make_node("Squeeze", inputs=["text_embeds", "squeeze_batch_axes"], outputs=["text_2d"], name="/embed/Squeeze_3d")
         # 3. Flatten input_ids: [1, T] → [T]
-        squeeze_ids = helper.make_node("Squeeze", inputs=["input_ids", "squeeze_batch_axes"], outputs=["flat_ids"])
+        self.make_node("Squeeze", inputs=["input_ids", "squeeze_batch_axes"], outputs=["flat_ids"], name="/embed/Squeeze_ids")
         # 4. Boolean mask where tokens are image placeholders: [T] bool
-        equal = helper.make_node("Equal", inputs=["flat_ids", "image_token_id_const"], outputs=["is_image"])
+        self.make_node("Equal", inputs=["flat_ids", "image_token_id_const"], outputs=["is_image"], name="/embed/Equal")
         # 5. Positions of image placeholders: [1, N] int64
-        nonzero = helper.make_node("NonZero", inputs=["is_image"], outputs=["img_pos"])
+        self.make_node("NonZero", inputs=["is_image"], outputs=["img_pos"], name="/embed/NonZero")
         # 6. Transpose to [N, 1] for ScatterND
-        transpose = helper.make_node("Transpose", inputs=["img_pos"], outputs=["img_pos_idx"], perm=[1, 0])
+        self.make_node("Transpose", inputs=["img_pos"], outputs=["img_pos_idx"], name="/embed/Transpose", perm=[1, 0])
         # 7. Scatter image_features into text embeddings at placeholder positions
-        scatter = helper.make_node("ScatterND", inputs=["text_2d", "img_pos_idx", "image_features"], outputs=["scattered_2d"])
+        self.make_node("ScatterND", inputs=["text_2d", "img_pos_idx", "image_features"], outputs=["scattered_2d"], name="/embed/ScatterND")
         # 8. Re-add batch dimension: [T, H] → [1, T, H]
-        unsqueeze = helper.make_node("Unsqueeze", inputs=["scattered_2d", "squeeze_batch_axes"], outputs=["inputs_embeds"])
+        self.make_node("Unsqueeze", inputs=["scattered_2d", "squeeze_batch_axes"], outputs=["inputs_embeds"], name="/embed/Unsqueeze")
 
-        graph = helper.make_graph(
-            [gather, squeeze_3d, squeeze_ids, equal, nonzero, transpose, scatter, unsqueeze],
-            "embedding_model",
-            [input_ids_input, image_features_input],
-            [inputs_embeds_output],
-            initializer=[embed_init, img_tok_const, squeeze_batch_axes],
-        )
-        proto = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 16)])
-        proto.ir_version = 8
-        self._model_proto = proto
+        # Graph output
+        self.graph.outputs.append(self.make_value("inputs_embeds", ir.DataType.FLOAT, shape=[1, None, self.hidden_size]))
+
+        self.graph.sort()
 
     def save_model(self, out_dir):
         print(f"Saving ONNX model in {out_dir}")
-        if self._model_proto is None:
-            raise RuntimeError("Call make_model() before save_model()")
+        # The embedding model is always float32; skip quantization regardless of onnx_dtype.
+        self.model.graph.sort()
         out_path = os.path.join(out_dir, self.filename)
+        data_path = os.path.join(out_dir, os.path.basename(out_path) + ".data")
         if os.path.exists(out_path):
             print(f"Overwriting {out_path}")
             os.remove(out_path)
-        onnx.save(self._model_proto, out_path)
+        if os.path.exists(data_path):
+            print(f"Overwriting {data_path}")
+            os.remove(data_path)
+        ir.save(self.model, out_path, external_data=os.path.basename(data_path), size_threshold_bytes=8)
 
 
 class Ministral3ConditionalGenerationModel(Model):
