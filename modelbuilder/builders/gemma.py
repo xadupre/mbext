@@ -140,14 +140,14 @@ class Gemma3Model(Gemma2Model):
         super().make_attention_init()
 
     def make_rotary_embedding_multi_cache(self):
-        self.cos_cache_global_name, self.sin_cache_global_name = ("cos_cache_global", "sin_cache_global")
+        self.cos_cache_global_name, self.sin_cache_global_name = "cos_cache_global", "sin_cache_global"
         super().make_rotary_embedding_caches(cos_cache_name=self.cos_cache_global_name, sin_cache_name=self.sin_cache_global_name)
 
         # Create the new cos/sin caches for local attention layers with its own theta value
         self.rope_attrs["create_caches"] = True
         self.rope_attrs["theta"] = self.rope_local_theta
 
-        self.cos_cache_local_name, self.sin_cache_local_name = ("cos_cache_local", "sin_cache_local")
+        self.cos_cache_local_name, self.sin_cache_local_name = "cos_cache_local", "sin_cache_local"
         super().make_rotary_embedding_caches(cos_cache_name=self.cos_cache_local_name, sin_cache_name=self.sin_cache_local_name)
 
     def load_weights(self, input_path):
@@ -158,9 +158,9 @@ class Gemma3Model(Gemma2Model):
         if self._original_architecture == "Gemma3ForConditionalGeneration":
             if self.quant_type is not None or input_path.endswith(".gguf"):
                 return super().load_weights(input_path)
-            from transformers import Gemma3ForConditionalGeneration as _HFModel
+            from transformers import Gemma3ForConditionalGeneration
 
-            return _HFModel.from_pretrained(
+            return Gemma3ForConditionalGeneration.from_pretrained(
                 self.model_name_or_path, cache_dir=self.cache_dir, token=self.hf_token, trust_remote_code=self.hf_remote
             )
         return super().load_weights(input_path)

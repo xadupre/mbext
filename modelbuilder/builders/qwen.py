@@ -10,6 +10,7 @@ import onnx_ir as ir
 import torch
 from onnxruntime.quantization.matmul_nbits_quantizer import RTNWeightOnlyQuantConfig
 from transformers import AutoConfig
+
 from .base import Model
 
 
