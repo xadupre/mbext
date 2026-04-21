@@ -542,6 +542,11 @@ class TestMinistral3(ExtTestCase):
            ``generate_next_token`` once; read the result as ``og_next_token``.
         5. Assert ``pt_next_token == og_next_token``.
 
+        The test name retains ``two_images`` for continuity with earlier
+        iterations of the PR (the ONNX sibling test
+        ``test_ministral3_two_images_and_text_fp32_cpu_random_weights``
+        does exercise two images).
+
         Requires ``onnxruntime-genai`` with ``vision_encoder`` support in
         ``genai_config.json``; run with ``LONGTEST=1``.
         """
@@ -636,7 +641,7 @@ class TestMinistral3(ExtTestCase):
         # --- HF reference ---
         # Build inputs_embeds = [image_features | text_embeds] and run the
         # full model to obtain the reference next-token prediction.
-        text_token_ids = torch.tensor([[1, 100, 200]], dtype=torch.long)  # 3 text tokens
+        text_token_ids = torch.tensor([[1, 100, 200]], dtype=torch.long)  # bos + two in-vocab text tokens
         with torch.no_grad():
             text_embeds = model.model.language_model.embed_tokens(text_token_ids)  # [1, 3, hidden]
 
