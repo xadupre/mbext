@@ -492,11 +492,11 @@ class TestNemotronH(ExtTestCase):
                 "position_ids": np.arange(seq_len, dtype=np.int64).reshape(batch_size, seq_len),
             }
             # Only attention layers have KV cache entries
-            for i in attn_layer_ids:
-                prefill_feed[f"past_key_values.{i}.key"] = np.zeros(
+            for layer_idx in attn_layer_ids:
+                prefill_feed[f"past_key_values.{layer_idx}.key"] = np.zeros(
                     (batch_size, config.num_key_value_heads, 0, head_size), dtype=self.get_input_np_dtype(precision)
                 )
-                prefill_feed[f"past_key_values.{i}.value"] = np.zeros(
+                prefill_feed[f"past_key_values.{layer_idx}.value"] = np.zeros(
                     (batch_size, config.num_key_value_heads, 0, head_size), dtype=self.get_input_np_dtype(precision)
                 )
             prefill_feed = {k: v for k, v in prefill_feed.items() if k in onnx_input_names}
@@ -530,9 +530,9 @@ class TestNemotronH(ExtTestCase):
                 "position_ids": np.array([[seq_len]], dtype=np.int64),
             }
             # Only attention layers have KV cache entries
-            for i in attn_layer_ids:
-                decode_feed[f"past_key_values.{i}.key"] = prefill_results[f"present.{i}.key"]
-                decode_feed[f"past_key_values.{i}.value"] = prefill_results[f"present.{i}.value"]
+            for layer_idx in attn_layer_ids:
+                decode_feed[f"past_key_values.{layer_idx}.key"] = prefill_results[f"present.{layer_idx}.key"]
+                decode_feed[f"past_key_values.{layer_idx}.value"] = prefill_results[f"present.{layer_idx}.value"]
             decode_feed = {k: v for k, v in decode_feed.items() if k in onnx_input_names}
 
             prefill_results, onnx_decode_logits = run_session_or_io_binding(
