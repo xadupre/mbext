@@ -236,13 +236,6 @@ class Ministral3VisionEncoderModel(Model):
         self.make_value(output, self.io_dtype, shape=shape)
         return output
 
-    def _reshape(self, name, root_input, shape_data, dtype, out_shape):
-        """Reshape with a constant shape tensor."""
-        shape_name = f"{name}/shape"
-        self._const_tensor(np.array(shape_data, dtype=np.int64), shape_name)
-        self.make_reshape(name, [root_input, shape_name], dtype, out_shape)
-        return f"{name}/output_0"
-
     def _slice(self, name, root_input, starts, ends, axes, dtype, out_shape):
         """Slice along axes with scalar integer constants."""
         starts_name = f"{name}/starts"
@@ -349,9 +342,9 @@ class Ministral3VisionEncoderModel(Model):
         v = self._matmul(f"{b}/v_proj/MatMul", root_input, attn.v_proj.weight, f"{b}/v_proj/MatMul.weight", out_shape=[1, n_p, d])
 
         qkv_shape_4d = [1, n_p, nh, hd]
-        q_4d = self._reshape(f"{b}/q_reshape", q, [1, n_p, nh, hd], self.io_dtype, qkv_shape_4d)
-        k_4d = self._reshape(f"{b}/k_reshape", k, [1, n_p, nh, hd], self.io_dtype, qkv_shape_4d)
-        v_4d = self._reshape(f"{b}/v_reshape", v, [1, n_p, nh, hd], self.io_dtype, qkv_shape_4d)
+        q_4d = self.make_reshape(f"{b}/q_reshape", [q, [1, n_p, nh, hd]], self.io_dtype, qkv_shape_4d)
+        k_4d = self.make_reshape(f"{b}/k_reshape", [k, [1, n_p, nh, hd]], self.io_dtype, qkv_shape_4d)
+        v_4d = self.make_reshape(f"{b}/v_reshape", [v, [1, n_p, nh, hd]], self.io_dtype, qkv_shape_4d)
 
         # Transpose to [1, num_heads, n_patches, head_dim]
         qkv_t_shape = [1, nh, n_p, hd]
@@ -374,7 +367,7 @@ class Ministral3VisionEncoderModel(Model):
 
         # Transpose + Reshape back to [1, n_patches, hidden_size]
         attn_out = self.make_transpose(f"{b}/attn_out_t", attn_out_t, self.io_dtype, [1, n_p, nh, hd], perm=[0, 2, 1, 3])
-        attn_out_2d = self._reshape(f"{b}/attn_out_reshape", attn_out, [1, n_p, d], self.io_dtype, [1, n_p, d])
+        attn_out_2d = self.make_reshape(f"{b}/attn_out_reshape", [attn_out, [1, n_p, d]], self.io_dtype, [1, n_p, d])
 
         # O projection (no bias in Pixtral attention)
         o = self._matmul(f"{b}/o_proj/MatMul", attn_out_2d, attn.o_proj.weight, f"{b}/o_proj/MatMul.weight", out_shape=[1, n_p, d])
@@ -483,10 +476,9 @@ class Ministral3VisionEncoderModel(Model):
         conv_out = "/vision/patch_conv/Conv/output_0"
 
         # Reshape to [1, hidden_size, n_patches] then Transpose to [1, n_patches, hidden_size]
-        reshape1 = self._reshape(
+        reshape1 = self.make_reshape(
             "/vision/patch_embed/Reshape1",
-            conv_out,
-            [1, self.vis_hidden_size, self.n_patches],
+            [conv_out, [1, self.vis_hidden_size, self.n_patches]],
             self.io_dtype,
             [1, self.vis_hidden_size, self.n_patches],
         )
@@ -544,7 +536,7 @@ class Ministral3VisionEncoderModel(Model):
         self.make_value(norm_out, self.io_dtype, shape=[1, n_p, d])
 
         # Squeeze batch dimension: [1, n_patches, d] -> [n_patches, d]
-        squeeze_out = self._reshape("/vision/projector/squeeze", norm_out, [n_p, d], self.io_dtype, [n_p, d])
+        squeeze_out = self.make_reshape("/vision/projector/squeeze", [norm_out, [n_p, d]], self.io_dtype, [n_p, d])
 
         # --- Patch Merger (unfold equivalent for non-overlapping windows) ---
         #
@@ -560,10 +552,10 @@ class Ministral3VisionEncoderModel(Model):
         #   -> [n_h//s, s, n_w//s, s, d]                   Reshape
         #   -> [n_h//s, n_w//s, d, s, s]  perm=[0,2,4,1,3] Transpose
         #   -> [n_merged, d*s*s]                            Reshape
-        r1 = self._reshape("/vision/projector/merge/Reshape1", squeeze_out, [n_h, n_w, d], self.io_dtype, [n_h, n_w, d])
-        r2 = self._reshape("/vision/projector/merge/Reshape2", r1, [mh, s, mw, s, d], self.io_dtype, [mh, s, mw, s, d])
+        r1 = self.make_reshape("/vision/projector/merge/Reshape1", [squeeze_out, [n_h, n_w, d]], self.io_dtype, [n_h, n_w, d])
+        r2 = self.make_reshape("/vision/projector/merge/Reshape2", [r1, [mh, s, mw, s, d]], self.io_dtype, [mh, s, mw, s, d])
         tp = self.make_transpose("/vision/projector/merge/Transpose", r2, self.io_dtype, [mh, mw, d, s, s], perm=[0, 2, 4, 1, 3])
-        merged = self._reshape("/vision/projector/merge/Reshape3", tp, [nm, d * s * s], self.io_dtype, [nm, d * s * s])
+        merged = self.make_reshape("/vision/projector/merge/Reshape3", [tp, [nm, d * s * s]], self.io_dtype, [nm, d * s * s])
 
         # Merging linear (no bias): [nm, d*s*s] -> [nm, d]
         merged_out = self._matmul(
