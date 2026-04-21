@@ -265,11 +265,14 @@ class Ministral3VisionEncoderModel(Model):
     #  Attention layer                                                     #
     # ------------------------------------------------------------------ #
 
-    def _build_attention(self, layer_id, attn, root_input):
+    def make_attention(self, layer_id, attention, root_input, **kwargs):
         """Build one PixtralAttention layer (encoder-style, no KV cache).
 
+        Overrides Model.make_attention for the vision encoder.
+
         root_input: [1, n_patches, vis_hidden_size]
-        Returns: output name, same shape.
+        Sets self.layernorm_attrs["skip_input"] to the output name of the
+        same shape, following the base-class convention.
         """
         b = f"/vision/layers.{layer_id}/attn"
         n_p = self.n_patches
@@ -279,9 +282,9 @@ class Ministral3VisionEncoderModel(Model):
 
         # Q / K / V projections (no bias in Pixtral attention)
         # -> [1, n_patches, n_heads * head_dim]
-        q = f"{self.make_matmul(attn.q_proj, f'{b}/q_proj/MatMul', root_input)}/output_0"
-        k = f"{self.make_matmul(attn.k_proj, f'{b}/k_proj/MatMul', root_input)}/output_0"
-        v = f"{self.make_matmul(attn.v_proj, f'{b}/v_proj/MatMul', root_input)}/output_0"
+        q = f"{self.make_matmul(attention.q_proj, f'{b}/q_proj/MatMul', root_input)}/output_0"
+        k = f"{self.make_matmul(attention.k_proj, f'{b}/k_proj/MatMul', root_input)}/output_0"
+        v = f"{self.make_matmul(attention.v_proj, f'{b}/v_proj/MatMul', root_input)}/output_0"
 
         # Apply 2-D RoPE to Q and K in [1, n_patches, n_heads * head_dim] format
         q_rope = self.make_rotary_embedding(f"{b}/q_rotary/RotaryEmbedding", q)
@@ -319,8 +322,10 @@ class Ministral3VisionEncoderModel(Model):
         attn_out_2d = self.make_reshape(f"{b}/attn_out_reshape", [attn_out, [1, n_p, d]], self.io_dtype, [1, n_p, d])
 
         # O projection (no bias in Pixtral attention)
-        o = f"{self.make_matmul(attn.o_proj, f'{b}/o_proj/MatMul', attn_out_2d)}/output_0"
-        return o
+        o = f"{self.make_matmul(attention.o_proj, f'{b}/o_proj/MatMul', attn_out_2d)}/output_0"
+
+        # Follow Model.make_attention convention: store output in layernorm_attrs["skip_input"]
+        self.layernorm_attrs["skip_input"] = o
 
     # ------------------------------------------------------------------ #
     #  MLP (SiLU-gated)                                                   #
@@ -377,7 +382,8 @@ class Ministral3VisionEncoderModel(Model):
         )
 
         # Attention
-        attn_out = self._build_attention(layer_id, layer.attention, norm1_out)
+        self.make_attention(layer_id, layer.attention, norm1_out)
+        attn_out = self.layernorm_attrs["skip_input"]
 
         # Residual 1
         res1 = self.make_add(f"{b}/residual1/Add", [root_input, attn_out], self.io_dtype, [1, n_p, d])
