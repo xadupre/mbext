@@ -521,6 +521,16 @@ class Model:
         elif "mrope_section" in config.rope_scaling:
             # For models that use MRoPE (e.g. Qwen 2.5 VL, Qwen 3 VL)
             self.rope_attrs["mrope"] = {"sections": config.rope_scaling["mrope_section"]}  # Sections for MRoPE
+            # Some models (e.g. Qwen3-VL) store rope_theta inside rope_scaling
+            # instead of as a top-level config attribute. Override the default theta
+            # if rope_scaling provides one.
+            if "rope_theta" in config.rope_scaling:
+                self.rope_attrs["theta"] = config.rope_scaling["rope_theta"]
+            # Some models (e.g. Qwen3-VL) store rope_theta inside rope_scaling
+            # instead of as a top-level config attribute. Override the default theta
+            # if rope_scaling provides one.
+            if "rope_theta" in config.rope_scaling:
+                self.rope_attrs["theta"] = config.rope_scaling["rope_theta"]
 
     def is_gqa_supported(self) -> bool:
         valid_gqa_configurations = {
@@ -2037,7 +2047,7 @@ class Model:
         self.rope_attrs["mscale"] = self.rope_attrs["multi_cache"]["long_mscale"]
 
         # Create caches for when sequence_length > self.original_context_length
-        cos_cache_large_name, sin_cache_large_name = ("cos_cache_large", "sin_cache_large")
+        cos_cache_large_name, sin_cache_large_name = "cos_cache_large", "sin_cache_large"
         self.rope_attrs["save_caches"] = False
         cos_cache_large, sin_cache_large = self.make_rotary_embedding_caches(
             cos_cache_name=cos_cache_large_name, sin_cache_name=sin_cache_large_name
