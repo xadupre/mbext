@@ -10,7 +10,6 @@ import os
 import numpy as np
 import onnx_ir as ir
 import torch
-from tqdm import tqdm
 
 from .base import Model
 
@@ -144,9 +143,6 @@ class Ministral3VisionEncoderModel(Model):
         self.model = ir.Model(self.graph, ir_version=10, producer_name="onnxruntime-genai")
         self.values = {}
         self.node_names = set()
-
-        # Backward-compatibility alias used by save_model().
-        self.onnx_model = self.model
 
         # Store original (unpatched) config for callers that need top-level
         # Mistral3 attributes (e.g. spatial_merge_size, text_config, …).
@@ -651,32 +647,6 @@ class Ministral3VisionEncoderModel(Model):
         self.graph.outputs.append(out_val)
 
         self.graph.sort()
-
-    def save_model(self, out_dir):
-        """Save the ONNX model with external data for large weight tensors."""
-        out_path = os.path.join(out_dir, self.filename)
-        data_path = out_path + ".data"
-        if os.path.exists(out_path):
-            print(f"Overwriting {out_path}")
-            os.remove(out_path)
-        if os.path.exists(data_path):
-            print(f"Overwriting {data_path}")
-            os.remove(data_path)
-
-        print(f"Saving vision encoder ONNX model in {out_dir}")
-
-        with tqdm() as pbar:
-            total_set = False
-
-            def callback(tensor: ir.TensorProtocol, metadata: dict):
-                nonlocal total_set
-                if not total_set:
-                    pbar.total = metadata.total
-                    total_set = True
-                pbar.update()
-                pbar.set_description(f"Saving {tensor.name} ({tensor.dtype.short_name()}, {tensor.shape})")
-
-            ir.save(self.onnx_model, out_path, external_data=os.path.basename(data_path), size_threshold_bytes=0, callback=callback)
 
 
 class Ministral3ConditionalGenerationModel(Model):
