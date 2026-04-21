@@ -12,7 +12,7 @@ import onnx_ir as ir
 import torch
 from tqdm import tqdm
 
-from .base import Model, parse_hf_token
+from .base import Model
 
 
 class MistralModel(Model):
@@ -240,28 +240,20 @@ class Ministral3VisionEncoderModel(Model):
         """Reshape with a constant shape tensor."""
         shape_name = f"{name}/shape"
         self._const_tensor(np.array(shape_data, dtype=np.int64), shape_name)
-        output = f"{name}/output_0"
-        self.make_node("Reshape", inputs=[root_input, shape_name], outputs=[output], name=name)
-        self.make_value(output, dtype, shape=out_shape)
-        return output
+        self.make_reshape(name, [root_input, shape_name], dtype, out_shape)
+        return f"{name}/output_0"
 
     def _transpose(self, name, root_input, perm, dtype, out_shape):
-        output = f"{name}/output_0"
-        self.make_node("Transpose", inputs=[root_input], outputs=[output], name=name, perm=perm)
-        self.make_value(output, dtype, shape=out_shape)
-        return output
+        self.make_transpose(name, root_input, dtype, out_shape, perm=perm)
+        return f"{name}/output_0"
 
     def _add(self, name, a, b, dtype, shape):
-        output = f"{name}/output_0"
-        self.make_node("Add", inputs=[a, b], outputs=[output], name=name)
-        self.make_value(output, dtype, shape=shape)
-        return output
+        self.make_add(name, [a, b], dtype, shape)
+        return f"{name}/output_0"
 
     def _mul(self, name, a, b, dtype, shape):
-        output = f"{name}/output_0"
-        self.make_node("Mul", inputs=[a, b], outputs=[output], name=name)
-        self.make_value(output, dtype, shape=shape)
-        return output
+        self.make_mul(name, [a, b], dtype, shape)
+        return f"{name}/output_0"
 
     def _neg(self, name, root_input, dtype, shape):
         output = f"{name}/output_0"
@@ -270,16 +262,12 @@ class Ministral3VisionEncoderModel(Model):
         return output
 
     def _concat(self, name, inputs, dtype, shape, axis=-1):
-        output = f"{name}/output_0"
-        self.make_node("Concat", inputs=inputs, outputs=[output], name=name, axis=axis)
-        self.make_value(output, dtype, shape=shape)
-        return output
+        self.make_concat(name, inputs, dtype, shape, axis=axis)
+        return f"{name}/output_0"
 
     def _softmax(self, name, root_input, dtype, shape, axis=-1):
-        output = f"{name}/output_0"
-        self.make_node("Softmax", inputs=[root_input], outputs=[output], name=name, axis=axis)
-        self.make_value(output, dtype, shape=shape)
-        return output
+        self.make_softmax(name, root_input, dtype, shape, axis=axis)
+        return f"{name}/output_0"
 
     def _slice(self, name, root_input, starts, ends, axes, dtype, out_shape):
         """Slice along axes with scalar integer constants."""
@@ -289,17 +277,16 @@ class Ministral3VisionEncoderModel(Model):
         self._const_tensor(np.array(starts, dtype=np.int64), starts_name)
         self._const_tensor(np.array(ends, dtype=np.int64), ends_name)
         self._const_tensor(np.array(axes, dtype=np.int64), axes_name)
-        output = f"{name}/output_0"
-        self.make_node("Slice", inputs=[root_input, starts_name, ends_name, axes_name], outputs=[output], name=name)
-        self.make_value(output, dtype, shape=out_shape)
-        return output
+        self.make_slice(name, [root_input, starts_name, ends_name, axes_name], dtype, out_shape)
+        return f"{name}/output_0"
 
     def _scale_mul(self, name, root_input, scale, dtype, shape):
         """Multiply a tensor by a scalar constant."""
         np_dtype = {ir.DataType.FLOAT: np.float32, ir.DataType.FLOAT16: np.float16}.get(dtype, np.float32)
         scale_name = f"{name}/scale"
         self._const_tensor(np.array(scale, dtype=np_dtype), scale_name)
-        return self._mul(name, root_input, scale_name, dtype, shape)
+        self.make_mul(name, [root_input, scale_name], dtype, shape)
+        return f"{name}/output_0"
 
     # ------------------------------------------------------------------ #
     #  2-D RoPE (pre-computed at graph-build time)                        #
@@ -444,9 +431,8 @@ class Ministral3VisionEncoderModel(Model):
 
         # SiLU(gate) * up  (SiLU(x) = x * Sigmoid(x))
         sig_name = f"{b}/act/Sigmoid"
+        self.make_sigmoid(sig_name, gate, self.io_dtype, [1, n_p, ff])
         sig_out = f"{sig_name}/output_0"
-        self.make_node("Sigmoid", inputs=[gate], outputs=[sig_out], name=sig_name)
-        self.make_value(sig_out, self.io_dtype, shape=[1, n_p, ff])
 
         silu_out = self._mul(f"{b}/act/Mul_silu", gate, sig_out, self.io_dtype, [1, n_p, ff])
         gate_up = self._mul(f"{b}/gate_up/Mul", silu_out, up, self.io_dtype, [1, n_p, ff])
@@ -509,20 +495,19 @@ class Ministral3VisionEncoderModel(Model):
         conv_w = "vision.patch_conv.weight"
         self.make_initializer(vt.patch_conv.weight, conv_w, to=self.io_dtype)
 
-        conv_out = "/vision/patch_conv/output_0"
-        self.make_node(
-            "Conv",
-            inputs=["pixel_values", conv_w],
-            outputs=[conv_out],
-            name="/vision/patch_conv/Conv",
+        n_h = n_w = self.n_patches_per_side
+        self.make_conv(
+            "/vision/patch_conv/Conv",
+            ["pixel_values", conv_w],
+            self.io_dtype,
+            [1, self.vis_hidden_size, n_h, n_w],
             dilations=[1, 1],
             group=1,
             kernel_shape=[self.patch_size, self.patch_size],
             pads=[0, 0, 0, 0],
             strides=[self.patch_size, self.patch_size],
         )
-        n_h = n_w = self.n_patches_per_side
-        self.make_value(conv_out, self.io_dtype, shape=[1, self.vis_hidden_size, n_h, n_w])
+        conv_out = "/vision/patch_conv/Conv/output_0"
 
         # Reshape to [1, hidden_size, n_patches] then Transpose to [1, n_patches, hidden_size]
         reshape1 = self._reshape(
