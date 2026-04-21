@@ -377,11 +377,20 @@ class ExtTestCase(unittest.TestCase):
         rtol=None,
         seq_len=5,
         batch_size=1,
+        embed_fn=None,
     ):
         """Run prefill and decode discrepancy checks comparing PyTorch vs ONNX.
 
         This helper encapsulates the common prefill/decode test body shared
         across model test files.
+
+        When *embed_fn* is provided it is called as ``embed_fn(token_ids)``
+        (where *token_ids* is a ``torch.Tensor``) to convert token ids to
+        embeddings.  The ONNX feed then uses ``"inputs_embeds"`` instead of
+        ``"input_ids"``, and the PyTorch forward calls use
+        ``model(inputs_embeds=...)``.  This supports models such as
+        ``Gemma3ForConditionalGeneration`` that are exported with
+        ``exclude_embeds=True``.
         """
         import torch
 
@@ -397,11 +406,20 @@ class ExtTestCase(unittest.TestCase):
         prefill_results = None
         pt_prefill = None
         with self.subTest(step="prefill"):
-            prefill_feed = {
-                "input_ids": input_ids.cpu().numpy().astype(np.int64),
-                "attention_mask": np.ones((batch_size, seq_len), dtype=np.int64),
-                "position_ids": np.arange(seq_len, dtype=np.int64).reshape(batch_size, seq_len),
-            }
+            if embed_fn is not None:
+                with torch.no_grad():
+                    inputs_embeds = embed_fn(input_ids)
+                prefill_feed = {
+                    "inputs_embeds": inputs_embeds.cpu().numpy().astype(self.get_input_np_dtype(precision)),
+                    "attention_mask": np.ones((batch_size, seq_len), dtype=np.int64),
+                    "position_ids": np.arange(seq_len, dtype=np.int64).reshape(batch_size, seq_len),
+                }
+            else:
+                prefill_feed = {
+                    "input_ids": input_ids.cpu().numpy().astype(np.int64),
+                    "attention_mask": np.ones((batch_size, seq_len), dtype=np.int64),
+                    "position_ids": np.arange(seq_len, dtype=np.int64).reshape(batch_size, seq_len),
+                }
             for i in range(num_hidden_layers):
                 prefill_feed[f"past_key_values.{i}.key"] = np.zeros(
                     (batch_size, num_key_value_heads, 0, head_size), dtype=self.get_input_np_dtype(precision)
@@ -421,7 +439,10 @@ class ExtTestCase(unittest.TestCase):
             )
 
             with torch.no_grad():
-                pt_prefill = model(input_ids)
+                if embed_fn is not None:
+                    pt_prefill = model(inputs_embeds=inputs_embeds)
+                else:
+                    pt_prefill = model(input_ids)
 
             np_prefill = pt_prefill.logits.detach().cpu().numpy()
             disc = self.get_numpy_discrepancy(np_prefill, ort_logits_np)
@@ -432,12 +453,22 @@ class ExtTestCase(unittest.TestCase):
             if prefill_results is None or pt_prefill is None:
                 raise unittest.SkipTest("prefill failed")
             next_token = int(np.argmax(prefill_results["logits"][0, -1, :]))
+            next_token_tensor = torch.tensor([[next_token]], dtype=torch.long).to(provider)
 
-            decode_feed = {
-                "input_ids": np.array([[next_token]], dtype=np.int64),
-                "attention_mask": np.ones((batch_size, seq_len + 1), dtype=np.int64),
-                "position_ids": np.array([[seq_len]], dtype=np.int64),
-            }
+            if embed_fn is not None:
+                with torch.no_grad():
+                    next_embeds = embed_fn(next_token_tensor)
+                decode_feed = {
+                    "inputs_embeds": next_embeds.cpu().numpy().astype(self.get_input_np_dtype(precision)),
+                    "attention_mask": np.ones((batch_size, seq_len + 1), dtype=np.int64),
+                    "position_ids": np.array([[seq_len]], dtype=np.int64),
+                }
+            else:
+                decode_feed = {
+                    "input_ids": np.array([[next_token]], dtype=np.int64),
+                    "attention_mask": np.ones((batch_size, seq_len + 1), dtype=np.int64),
+                    "position_ids": np.array([[seq_len]], dtype=np.int64),
+                }
             for i in range(num_hidden_layers):
                 decode_feed[f"past_key_values.{i}.key"] = prefill_results[f"present.{i}.key"]
                 decode_feed[f"past_key_values.{i}.value"] = prefill_results[f"present.{i}.value"]
@@ -455,8 +486,10 @@ class ExtTestCase(unittest.TestCase):
 
             with torch.no_grad():
                 pt_past_kv = pt_prefill.past_key_values
-                next_token_tensor = torch.tensor([[next_token]], dtype=torch.long).to(provider)
-                pt_decode = model(next_token_tensor, past_key_values=pt_past_kv)
+                if embed_fn is not None:
+                    pt_decode = model(inputs_embeds=next_embeds, past_key_values=pt_past_kv)
+                else:
+                    pt_decode = model(next_token_tensor, past_key_values=pt_past_kv)
                 pt_decode_logits = pt_decode.logits.detach().cpu().numpy()
 
             disc = self.get_numpy_discrepancy(pt_decode_logits, onnx_decode_logits)
@@ -480,6 +513,7 @@ class ExtTestCase(unittest.TestCase):
         pt_tokens=None,
         half_prec_slice=None,
         batch_size=1,
+        embed_fn=None,
     ):
         """Run an end-to-end greedy generation check comparing PyTorch vs ONNX.
 
@@ -489,6 +523,13 @@ class ExtTestCase(unittest.TestCase):
         Callers that need a custom PyTorch generation loop (e.g. models that do
         not support ``generate()``) can run that loop themselves and pass the
         resulting list as ``pt_tokens``.
+
+        When *embed_fn* is provided it is called as ``embed_fn(token_ids)``
+        (where *token_ids* is a ``torch.Tensor``) to convert token ids to
+        embeddings.  The ONNX feed then uses ``"inputs_embeds"`` instead of
+        ``"input_ids"`` at every step.  This supports models such as
+        ``Gemma3ForConditionalGeneration`` that are exported with
+        ``exclude_embeds=True``.
         """
         import torch
 
@@ -505,7 +546,14 @@ class ExtTestCase(unittest.TestCase):
                 pt_output = model.generate(prompt_ids, max_new_tokens=max_new_tokens, do_sample=False, pad_token_id=eos_token_id)
             pt_tokens = pt_output[0].tolist()
 
-        current_ids = prompt_ids.detach().cpu().numpy().astype(np.int64)
+        if embed_fn is not None:
+            with torch.no_grad():
+                current_tensor = embed_fn(prompt_ids)
+            current_feed_np = current_tensor.cpu().numpy().astype(self.get_input_np_dtype(precision))
+            current_feed_key = "inputs_embeds"
+        else:
+            current_feed_np = prompt_ids.detach().cpu().numpy().astype(np.int64)
+            current_feed_key = "input_ids"
 
         past_kv = {}
         for i in range(num_hidden_layers):
@@ -516,14 +564,14 @@ class ExtTestCase(unittest.TestCase):
                 (batch_size, num_key_value_heads, 0, head_size), dtype=self.get_input_np_dtype(precision)
             )
 
-        onnx_tokens = current_ids[0].tolist()
+        onnx_tokens = prompt_ids.detach().cpu().numpy()[0].tolist()
         results = None
         for _ in range(max_new_tokens):
             past_len = past_kv["past_key_values.0.key"].shape[2]
-            cur_len = current_ids.shape[1]
+            cur_len = current_feed_np.shape[1]
 
             feed = {
-                "input_ids": current_ids,
+                current_feed_key: current_feed_np,
                 "attention_mask": np.ones((batch_size, past_len + cur_len), dtype=np.int64),
                 "position_ids": np.arange(past_len, past_len + cur_len, dtype=np.int64).reshape(batch_size, cur_len),
             }
@@ -549,7 +597,13 @@ class ExtTestCase(unittest.TestCase):
                 past_kv[f"past_key_values.{i}.key"] = results[f"present.{i}.key"]
                 past_kv[f"past_key_values.{i}.value"] = results[f"present.{i}.value"]
 
-            current_ids = np.array([[next_token]], dtype=np.int64)
+            if embed_fn is not None:
+                next_ids = torch.tensor([[next_token]], dtype=torch.long).to(provider)
+                with torch.no_grad():
+                    current_tensor = embed_fn(next_ids)
+                current_feed_np = current_tensor.cpu().numpy().astype(self.get_input_np_dtype(precision))
+            else:
+                current_feed_np = np.array([[next_token]], dtype=np.int64)
 
             if next_token == eos_token_id:
                 break
@@ -658,6 +712,7 @@ class ExtTestCase(unittest.TestCase):
         rtol: Optional[Dict] = None,
         input_type: str = "text",
         kind: str = "random",
+        embed_fn=None,
     ):
         """Build and export a random-weight model to ONNX and compare PyTorch vs ONNX.
 
@@ -717,6 +772,7 @@ class ExtTestCase(unittest.TestCase):
             log_data=log_data,
             atol=atol,
             rtol=rtol,
+            embed_fn=embed_fn,
         )
 
     def run_greedy_generation_test(
@@ -735,6 +791,7 @@ class ExtTestCase(unittest.TestCase):
         create_model_kwargs: Optional[Dict] = None,
         half_prec_slice=None,
         pt_tokens=None,
+        embed_fn=None,
     ):
         """Build and export a model to ONNX, then run end-to-end greedy generation.
 
@@ -794,6 +851,7 @@ class ExtTestCase(unittest.TestCase):
             log_data=log_data,
             half_prec_slice=half_prec_slice,
             pt_tokens=pt_tokens,
+            embed_fn=embed_fn,
         )
 
     def run_genai_generation(self, output_dir: str, prompt_ids, max_new_tokens: int = 5) -> List[int]:
