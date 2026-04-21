@@ -649,7 +649,7 @@ class Ministral3ConditionalGenerationModel(Model):
     # ------------------------------------------------------------------
 
     def make_model(self, input_path):
-        print("Building vision encoder (Pixtral + multimodal projector) for " "Mistral3ForConditionalGeneration...")
+        print("Building vision encoder (Pixtral + multimodal projector) for Mistral3ForConditionalGeneration...")
         self.vision_encoder.make_model(input_path)
         print("Building text decoder for Mistral3ForConditionalGeneration...")
         self.text_model.make_model(input_path)
@@ -675,7 +675,7 @@ class Ministral3ConditionalGenerationModel(Model):
         num_patches_per_side = image_size // patch_size
         num_merged_patches = (num_patches_per_side**2) // (spatial_merge_size**2)
 
-        genai_config["model"]["vision_encoder"] = {
+        genai_config["model"]["vision"] = {
             "filename": self.vision_encoder.filename,
             "hidden_size": vision_cfg.hidden_size,
             "image_size": image_size,
