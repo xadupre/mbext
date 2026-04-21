@@ -665,23 +665,13 @@ class Ministral3ConditionalGenerationModel(Model):
             genai_config = json.load(f)
 
         vision_cfg = self.vision_encoder.vision_config
-        text_hidden_size = self.text_model.hidden_size
-        image_size = vision_cfg.image_size
         patch_size = vision_cfg.patch_size
         spatial_merge_size = self.vision_encoder.config.spatial_merge_size
-        num_patches_per_side = image_size // patch_size
-        num_merged_patches = (num_patches_per_side**2) // (spatial_merge_size**2)
 
         genai_config["model"]["vision"] = {
             "filename": self.vision_encoder.filename,
-            "hidden_size": vision_cfg.hidden_size,
-            "image_size": image_size,
-            "num_channels": vision_cfg.num_channels,
-            "num_hidden_layers": vision_cfg.num_hidden_layers,
-            "num_merged_patches": num_merged_patches,
             "patch_size": patch_size,
             "spatial_merge_size": spatial_merge_size,
-            "text_hidden_size": text_hidden_size,
             "inputs": {"pixel_values": "pixel_values"},
             "outputs": {"image_features": "image_features"},
         }
