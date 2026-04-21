@@ -1754,8 +1754,10 @@ class Model:
         Otherwise, compute from the scaling factor using the policy-specific formula.
         """
         if config_mscale > 0 and config_mscale_all_dim > 0:
+
             def _get_mscale(scale, ms):
                 return (0.1 * ms * np.log(scale) + 1.0) if scale > 1 else 1.0
+
             return float(_get_mscale(mscale, config_mscale) / _get_mscale(mscale, config_mscale_all_dim))
         if config_mscale > 0:
             return float(config_mscale)
@@ -1765,7 +1767,7 @@ class Model:
             return self.make_mscale_yarn(mscale)
         else:
             return float(mscale)
-        
+
         if self.rope_attrs["mscale_policy"] in {"su", "longrope"}:
             return self.make_mscale_su(mscale)
         elif self.rope_attrs["mscale_policy"] == "yarn":
