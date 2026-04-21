@@ -260,20 +260,20 @@ class ExtTestCase(unittest.TestCase):
         if os.path.exists(path):
             shutil.rmtree(path)
 
-    def get_dirs(self, prefix: str, clean: bool = True) -> Tuple[str]:
-        output_dir = f"dump_models/{prefix}/output"
-        cache_dir = os.path.expanduser(f"~/.cache/modelbuilder/{prefix}")
+    def get_dirs(self, prefix: str, clean: bool = True) -> tuple[str]:
+        output_dir = os.path.join("dump_models", prefix, "output")
+        cache_dir = os.path.expanduser(os.path.join("~", ".cache", "modelbuilder", prefix))
         os.makedirs(output_dir, exist_ok=True)
         os.makedirs(cache_dir, exist_ok=True)
         if clean or self._do_clean:
-            self.addCleanup(self.clean_dir, f"dump_models/{prefix}/output_dir")
+            self.addCleanup(self.clean_dir, os.path.join("dump_models", prefix, "output"))
         return output_dir, cache_dir
 
-    def get_model_dir(self, prefix: str, clean: bool = False) -> Tuple[str]:
-        model_dir = f"dump_models/{prefix}/checkpoint"
+    def get_model_dir(self, prefix: str, clean: bool = False) -> tuple[str]:
+        model_dir = os.path.join("dump_models", prefix, "checkpoint")
         os.makedirs(model_dir, exist_ok=True)
         if clean or self._do_clean:
-            self.addCleanup(self.clean_dir, f"dump_models/{prefix}/checkpoint")
+            self.addCleanup(self.clean_dir, os.path.join("dump_models", prefix, "checkpoint"))
         return model_dir
 
     def assertExists(self, name):
@@ -558,12 +558,8 @@ class ExtTestCase(unittest.TestCase):
                 "position_ids": position_ids_3d,
             }
             for i in range(num_hidden_layers):
-                prefill_feed[f"past_key_values.{i}.key"] = np.zeros(
-                    (batch_size, num_key_value_heads, 0, head_size), dtype=np_dtype
-                )
-                prefill_feed[f"past_key_values.{i}.value"] = np.zeros(
-                    (batch_size, num_key_value_heads, 0, head_size), dtype=np_dtype
-                )
+                prefill_feed[f"past_key_values.{i}.key"] = np.zeros((batch_size, num_key_value_heads, 0, head_size), dtype=np_dtype)
+                prefill_feed[f"past_key_values.{i}.value"] = np.zeros((batch_size, num_key_value_heads, 0, head_size), dtype=np_dtype)
             prefill_feed = {k: v for k, v in prefill_feed.items() if k in onnx_input_names}
 
             prefill_results, ort_logits_np = run_session_or_io_binding(
