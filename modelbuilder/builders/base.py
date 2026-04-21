@@ -952,9 +952,16 @@ class Model:
         self.make_value(output, dtype, shape=shape)
 
     def make_reshape(self, name, inputs, dtype, shape):
+        if len(inputs) >= 2 and isinstance(inputs[1], (list, tuple)):
+            shape_name = f"{name}/shape"
+            ir_t = ir.tensor(np.array(inputs[1], dtype=np.int64), name=shape_name)
+            self.make_node("Constant", inputs=[], outputs=[shape_name], name=f"{shape_name}/Constant", value=ir_t)
+            self.make_value(shape_name, ir_t.dtype, ir_t.shape)
+            inputs = [inputs[0], shape_name]
         output = f"{name}/output_0"
         self.make_node("Reshape", inputs=inputs, outputs=[output], name=name)
         self.make_value(output, dtype, shape=shape)
+        return output
 
     def make_shape(self, name, root_input, shape):
         output = f"{name}/output_0"
