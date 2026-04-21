@@ -115,7 +115,7 @@ class NemotronHModel(LlamaModel):
         else:
             raise NotImplementedError(
                 f"NemotronH block type '{layer.block_type}' is not supported for ONNX export. "
-                "Only 'attention', 'mamba' and 'moe' layers are currently supported."
+                "Only 'attention', 'mamba' and 'MoE' layers are currently supported."
             )
 
         self.layernorm_attrs["first_layernorm"] = False

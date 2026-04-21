@@ -648,7 +648,7 @@ class TestNemotronH(ExtTestCase):
     # Tests: NemotronH Mamba blocks                                       #
     # The mamba layers use com.microsoft:CausalConvWithState which is NOT #
     # part of standard onnxruntime.  Build-only tests verify that the     #
-    # ONNX model is produced; genai tests run inference via ort-genai.    #
+    # ONNX model is produced and contains the expected custom ops.        #
     # ------------------------------------------------------------------ #
 
     def _make_nemotronh_mamba_config(self, layers_block_type=None):
