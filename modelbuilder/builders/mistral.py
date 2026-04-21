@@ -8,8 +8,10 @@ import json
 import os
 
 import numpy as np
+import onnx
 import onnx_ir as ir
 import torch
+from onnx import TensorProto, helper, numpy_helper
 
 from .base import Model
 
@@ -594,22 +596,118 @@ class Ministral3VisionEncoderModel(Model):
         self.graph.sort()
 
 
+class Ministral3EmbeddingModel:
+    """ONNX embedding model for the ``phi3v``-style multimodal pipeline.
+
+    ``input_ids`` must include ``image_token_id`` placeholder tokens at the
+    positions where image features should be inserted.  The model:
+
+    1. Embeds **all** tokens with the standard token-embedding table.
+    2. Identifies positions where ``input_ids == image_token_id`` using
+       ``Equal`` + ``NonZero``.
+    3. Scatters the vision-encoder output ``image_features`` into those
+       positions via ``ScatterND``.
+
+    This keeps ``T_total = len(input_ids)`` unchanged, so ORT-GenAI's
+    sequence-length tracking (KV cache, position IDs, attention mask) remains
+    consistent.  During token generation ``input_ids`` contains a single new
+    token (never an image placeholder), so ``NonZero`` returns an empty index
+    tensor and ``ScatterND`` is a no-op.
+
+    Graph (2-D ``input_ids [1, T]`` from ORT-GenAI's ``EmbeddingState``)::
+
+        text_embeds   = Gather(embed_tokens_weight, input_ids)  # [1, T, H]
+        text_2d       = Squeeze(text_embeds, [0])               # [T, H]
+        flat_ids      = Squeeze(input_ids, [0])                 # [T]
+        is_img        = Equal(flat_ids, image_token_id_const)   # [T] bool
+        img_pos       = NonZero(is_img)                         # [1, N]
+        img_pos_idx   = Transpose(img_pos, [1, 0])              # [N, 1]
+        scattered_2d  = ScatterND(text_2d, img_pos_idx,
+                                  image_features)               # [T, H]
+        inputs_embeds = Unsqueeze(scattered_2d, [0])            # [1, T, H]
+    """
+
+    FILENAME = "embedding.onnx"
+
+    def __init__(self, config):
+        self.filename = self.FILENAME
+        self.vocab_size = config.text_config.vocab_size
+        self.text_hidden_size = config.text_config.hidden_size
+        self.image_token_id = config.image_token_id
+        self._model_proto = None
+
+    # ------------------------------------------------------------------
+
+    def make_model(self, hf_model):
+        """Build the ONNX graph from an already-loaded HF model."""
+        embed_weight = hf_model.model.language_model.embed_tokens.weight.detach().float().numpy()
+
+        # I/O descriptors (dynamic shapes).
+        # ORT-GenAI passes input_ids as 2D [batch, seq_len].
+        input_ids_input = helper.make_tensor_value_info("input_ids", TensorProto.INT64, [None, None])
+        image_features_input = helper.make_tensor_value_info("image_features", TensorProto.FLOAT, [None, self.text_hidden_size])
+        inputs_embeds_output = helper.make_tensor_value_info("inputs_embeds", TensorProto.FLOAT, [1, None, self.text_hidden_size])
+
+        # Initialisers
+        embed_init = numpy_helper.from_array(embed_weight, name="embed_tokens_weight")
+        img_tok_const = numpy_helper.from_array(np.array(self.image_token_id, dtype=np.int64), name="image_token_id_const")
+        squeeze_batch_axes = numpy_helper.from_array(np.array([0], dtype=np.int64), name="squeeze_batch_axes")
+
+        # Nodes:
+        # 1. Embed all tokens: input_ids [1, T] -> text_embeds [1, T, H]
+        gather = helper.make_node("Gather", inputs=["embed_tokens_weight", "input_ids"], outputs=["text_embeds"], axis=0)
+        # 2. Squeeze batch dim for easier indexing: [1, T, H] → [T, H]
+        squeeze_3d = helper.make_node("Squeeze", inputs=["text_embeds", "squeeze_batch_axes"], outputs=["text_2d"])
+        # 3. Flatten input_ids: [1, T] → [T]
+        squeeze_ids = helper.make_node("Squeeze", inputs=["input_ids", "squeeze_batch_axes"], outputs=["flat_ids"])
+        # 4. Boolean mask where tokens are image placeholders: [T] bool
+        equal = helper.make_node("Equal", inputs=["flat_ids", "image_token_id_const"], outputs=["is_image"])
+        # 5. Positions of image placeholders: [1, N] int64
+        nonzero = helper.make_node("NonZero", inputs=["is_image"], outputs=["img_pos"])
+        # 6. Transpose to [N, 1] for ScatterND
+        transpose = helper.make_node("Transpose", inputs=["img_pos"], outputs=["img_pos_idx"], perm=[1, 0])
+        # 7. Scatter image_features into text embeddings at placeholder positions
+        scatter = helper.make_node("ScatterND", inputs=["text_2d", "img_pos_idx", "image_features"], outputs=["scattered_2d"])
+        # 8. Re-add batch dimension: [T, H] → [1, T, H]
+        unsqueeze = helper.make_node("Unsqueeze", inputs=["scattered_2d", "squeeze_batch_axes"], outputs=["inputs_embeds"])
+
+        graph = helper.make_graph(
+            [gather, squeeze_3d, squeeze_ids, equal, nonzero, transpose, scatter, unsqueeze],
+            "embedding_model",
+            [input_ids_input, image_features_input],
+            [inputs_embeds_output],
+            initializer=[embed_init, img_tok_const, squeeze_batch_axes],
+        )
+        proto = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 16)])
+        proto.ir_version = 8
+        self._model_proto = proto
+
+    def save_model(self, out_dir):
+        if self._model_proto is None:
+            raise RuntimeError("Call make_model() before save_model()")
+        out_path = os.path.join(out_dir, self.filename)
+        onnx.save(self._model_proto, out_path)
+
+
 class Ministral3ConditionalGenerationModel(Model):
-    """Orchestrates exporting both the vision encoder and the text decoder for
-    ``Mistral3ForConditionalGeneration`` (Ministral-3-3B-Instruct-2512).
+    """Orchestrates exporting the vision encoder, embedding model, and text
+    decoder for ``Mistral3ForConditionalGeneration`` (Ministral-3-3B-Instruct).
 
     The exported artifacts are:
 
-    * ``vision_encoder.onnx`` - Pixtral vision tower + multimodal projector
-      (one fixed-resolution image in, projected embeddings out).
-    * ``model.onnx`` - Mistral text decoder with ``exclude_embeds=True``
-      (takes ``inputs_embeds`` from the vision encoder, outputs logits + KV cache).
-    * ``genai_config.json`` - extended with a ``vision_encoder`` section.
+    * ``vision_encoder.onnx`` - Pixtral vision tower + multimodal projector.
+    * ``embedding.onnx`` - token-embedding table + image-feature prepend.
+    * ``model.onnx`` - Mistral text decoder (``inputs_embeds`` → logits).
+    * ``genai_config.json`` - ``phi3v``-type VLM config understood by
+      ``onnxruntime-genai ≥ 0.12``.
     """
 
     def __init__(self, config, io_dtype, onnx_dtype, ep, cache_dir, extra_options):
         # --- Vision encoder ---
         self.vision_encoder = Ministral3VisionEncoderModel(config, io_dtype, onnx_dtype, ep, cache_dir, extra_options)
+
+        # --- Embedding model (always float32 regardless of onnx_dtype) ---
+        self.embedding_model = Ministral3EmbeddingModel(config)
 
         # --- Text decoder ---
         # Flatten text_config attributes onto the top-level config so that the
@@ -648,32 +746,44 @@ class Ministral3ConditionalGenerationModel(Model):
     def make_model(self, input_path):
         print("Building vision encoder (Pixtral + multimodal projector) for Mistral3ForConditionalGeneration...")
         self.vision_encoder.make_model(input_path)
+        print("Building embedding model for Mistral3ForConditionalGeneration...")
+        hf_model = self.vision_encoder._load_hf_model(input_path)
+        hf_model.eval()
+        self.embedding_model.make_model(hf_model)
         print("Building text decoder for Mistral3ForConditionalGeneration...")
         self.text_model.make_model(input_path)
 
     def save_model(self, out_dir):
         self.vision_encoder.save_model(out_dir)
+        self.embedding_model.save_model(out_dir)
         self.text_model.save_model(out_dir)
 
     def make_genai_config(self, model_name_or_path, extra_kwargs, out_dir):
         # Let the text model write genai_config.json first, then extend it
-        # with a vision_encoder section.
+        # with vision + embedding sections for the phi3v VLM pipeline.
         self.text_model.make_genai_config(model_name_or_path, extra_kwargs, out_dir)
 
         config_path = os.path.join(out_dir, "genai_config.json")
         with open(config_path) as f:
             genai_config = json.load(f)
 
-        vision_cfg = self.vision_encoder.vision_config
-        patch_size = vision_cfg.patch_size
         spatial_merge_size = self.vision_encoder.config.spatial_merge_size
+
+        # onnxruntime-genai uses "phi3v" as the model type for the
+        # Vision + Embedding + Decoder multimodal pipeline.
+        genai_config["model"]["type"] = "phi3v"
 
         genai_config["model"]["vision"] = {
             "filename": self.vision_encoder.filename,
-            "patch_size": patch_size,
             "spatial_merge_size": spatial_merge_size,
             "inputs": {"pixel_values": "pixel_values"},
             "outputs": {"image_features": "image_features"},
+        }
+
+        genai_config["model"]["embedding"] = {
+            "filename": self.embedding_model.filename,
+            "inputs": {"input_ids": "input_ids", "image_features": "image_features"},
+            "outputs": {"inputs_embeds": "inputs_embeds"},
         }
 
         with open(config_path, "w") as f:
