@@ -890,13 +890,18 @@ class TestMinistral3(ExtTestCase):
         self.assertExists(vision_onnx_path)
 
         # --- Reference: PyTorch vision tower + projector ---
+        # Use model.model.get_image_features(), which is the same call path used
+        # by Mistral3ForConditionalGeneration.forward().  It squeezes the batch
+        # dimension before the projector, matching the ONNX encoder's behaviour.
         torch.manual_seed(1)
         pixel_values = torch.randn(1, vision_config.num_channels, image_size, image_size)
         image_sizes = torch.tensor([[image_size, image_size]])
 
         with torch.no_grad():
-            vt_out = model.model.vision_tower(pixel_values, image_sizes=image_sizes)
-            pt_image_features = model.model.multi_modal_projector(vt_out.last_hidden_state, image_sizes)
+            hf_out = model.model.get_image_features(pixel_values, image_sizes, vision_feature_layer=config.vision_feature_layer)
+        # get_image_features returns a BaseModelOutputWithPooling whose
+        # pooler_output is a tuple of per-image feature tensors.
+        pt_image_features = hf_out.pooler_output[0]  # [n_merged, text_hidden]
         pt_np = pt_image_features.numpy().astype(np.float32)
 
         # --- ONNX vision encoder ---
