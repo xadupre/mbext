@@ -30,8 +30,9 @@ from transformers import AutoConfig, AutoModelForCausalLM, AutoModelForSpeechSeq
 def _ort_version() -> tuple[int, ...]:
     """Return the installed onnxruntime version as an integer tuple, e.g. ``(1, 24, 4)``.
 
-    Returns ``(99, 99, 0)`` when onnxruntime is not installed so that version
-    comparisons treat an absent ORT as "current enough" (no fallback needed).
+    Returns ``(99, 99, 0)`` when onnxruntime is not installed **or** when the
+    version string cannot be parsed (e.g. a dev build with a non-numeric suffix).
+    Both cases are treated as "current enough" so that no fallback is added.
     """
     try:
         import onnxruntime
@@ -39,6 +40,12 @@ def _ort_version() -> tuple[int, ...]:
         return tuple(int(x) for x in onnxruntime.__version__.split(".")[:3])
     except (ImportError, ValueError):
         return (99, 99, 0)
+
+
+# Sentinel used as the "end-of-tensor" value for ONNX Slice nodes.  We pick
+# 2**62 rather than sys.maxsize (2**63-1) to stay safely within the signed
+# INT64 range that ONNX Slice accepts on all platforms.
+_ONNX_LARGE_SLICE_END: int = 2**62
 
 
 def _make_causal_conv_local_function(K: int, io_dtype: ir.DataType) -> ir.Function:
@@ -114,7 +121,7 @@ def _make_causal_conv_local_function(K: int, io_dtype: ir.DataType) -> ir.Functi
 
     axes2 = ci("axes2", [2])  # slice along axis 2
     axes1 = ci("axes1", [1])  # slice along axis 1
-    large_end = ci("large_end", [2**62])  # effectively +∞ for end-of-tensor slice
+    large_end = ci("large_end", [_ONNX_LARGE_SLICE_END])  # effectively +∞ for end-of-tensor slice
     one_1d = ci("one_1d", [1])  # constant [1] for shape construction
 
     # ---- 3. Dynamic reshape shape [1, C, 1] built from bias dimensions ----
