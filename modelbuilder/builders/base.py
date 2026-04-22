@@ -838,7 +838,7 @@ class Model:
                 pbar.update()
                 pbar.set_description(f"Saving {tensor.name} ({tensor.dtype.short_name()}, {tensor.shape})")
 
-            ir.save(model, out_path, external_data=os.path.basename(data_path), size_threshold_bytes=8, callback=callback)
+            ir.save(model, out_path, external_data=os.path.basename(data_path), size_threshold_bytes=0, callback=callback)
 
         # Delete temporary cache dir if empty
         if os.path.exists(self.cache_dir) and not os.listdir(self.cache_dir):
