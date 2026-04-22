@@ -6,7 +6,6 @@
 import json
 import os
 
-import numpy as np
 import onnx_ir as ir
 import torch
 
@@ -68,21 +67,11 @@ class NemotronHModel(LlamaModel):
                 # SSM recurrent state: [batch_size, num_heads, head_dim, ssm_state_size]
                 self.input_names[f"past_state.{layer_id}.ssm"] = f"past_key_values.{layer_id}.ssm_state"
                 self.input_types[f"past_state.{layer_id}.ssm"] = self.io_dtype
-                self.input_shapes[f"past_state.{layer_id}.ssm"] = [
-                    "batch_size",
-                    mamba_num_heads,
-                    mamba_head_dim,
-                    ssm_state_size,
-                ]
+                self.input_shapes[f"past_state.{layer_id}.ssm"] = ["batch_size", mamba_num_heads, mamba_head_dim, ssm_state_size]
 
                 self.output_names[f"present_state.{layer_id}.ssm"] = f"present.{layer_id}.ssm_state"
                 self.output_types[f"present_state.{layer_id}.ssm"] = self.io_dtype
-                self.output_shapes[f"present_state.{layer_id}.ssm"] = [
-                    "batch_size",
-                    mamba_num_heads,
-                    mamba_head_dim,
-                    ssm_state_size,
-                ]
+                self.output_shapes[f"present_state.{layer_id}.ssm"] = ["batch_size", mamba_num_heads, mamba_head_dim, ssm_state_size]
 
     def is_layer(self, module):
         return module.__class__.__name__ == "NemotronHBlock"
@@ -135,7 +124,7 @@ class NemotronHModel(LlamaModel):
           scan_out → out_proj → output  (→ skip_input for next layer)
         """
         basename = f"/model/layers.{layer_id}/mamba"
-        I = mamba.intermediate_size  # = num_heads * head_dim
+        I = mamba.intermediate_size  # = num_heads * head_dim  # noqa: E741
         conv_dim = mamba.conv_dim  # = I + 2*G*N
         H = mamba.num_heads
         D = mamba.head_dim
@@ -250,10 +239,17 @@ class NemotronHModel(LlamaModel):
                 return f"{rsh_out}/output_0"
             # [B, S, G, N] → [B, S, G, 1, N]
             unsq = f"{basename}/{tag}/unsqueeze"
-            self.make_unsqueeze(unsq, [f"{rsh4}/output_0", "/model/constants/INT64/[3]"], self.io_dtype, ["batch_size", "sequence_length", G, 1, N])
+            self.make_unsqueeze(
+                unsq, [f"{rsh4}/output_0", "/model/constants/INT64/[3]"], self.io_dtype, ["batch_size", "sequence_length", G, 1, N]
+            )
             # [B, S, G, 1, N] → [B, S, G, rH, N]  (broadcast Expand)
             exp5 = f"{basename}/{tag}/expand"
-            self.make_expand(exp5, [f"{unsq}/output_0", f"/model/constants/INT64/[1, 1, {G}, {rH}, {N}]"], self.io_dtype, ["batch_size", "sequence_length", G, rH, N])
+            self.make_expand(
+                exp5,
+                [f"{unsq}/output_0", f"/model/constants/INT64/[1, 1, {G}, {rH}, {N}]"],
+                self.io_dtype,
+                ["batch_size", "sequence_length", G, rH, N],
+            )
             # [B, S, G, rH, N] → [B, S, H, N]
             rsh_out = f"{basename}/{tag}/reshape_HN"
             self.make_reshape(rsh_out, [f"{exp5}/output_0", [0, 0, H, N]], self.io_dtype, ["batch_size", "sequence_length", H, N])
@@ -301,12 +297,26 @@ class NemotronHModel(LlamaModel):
         # 7. CumSum (inclusive and exclusive) of A_dt along sequence dim
         # ================================================================
         A_ci_name = f"{basename}/A_cumsum_incl/CumSum"
-        self.make_node("CumSum", inputs=[A_dt_out, "/model/constants/INT64/1"], outputs=[f"{A_ci_name}/output_0"], name=A_ci_name, exclusive=0, reverse=0)
+        self.make_node(
+            "CumSum",
+            inputs=[A_dt_out, "/model/constants/INT64/1"],
+            outputs=[f"{A_ci_name}/output_0"],
+            name=A_ci_name,
+            exclusive=0,
+            reverse=0,
+        )
         self.make_value(f"{A_ci_name}/output_0", ssm_dtype, ["batch_size", "sequence_length", H])
         A_ci = f"{A_ci_name}/output_0"  # [B, S, H]  (inclusive)
 
         A_ce_name = f"{basename}/A_cumsum_excl/CumSum"
-        self.make_node("CumSum", inputs=[A_dt_out, "/model/constants/INT64/1"], outputs=[f"{A_ce_name}/output_0"], name=A_ce_name, exclusive=1, reverse=0)
+        self.make_node(
+            "CumSum",
+            inputs=[A_dt_out, "/model/constants/INT64/1"],
+            outputs=[f"{A_ce_name}/output_0"],
+            name=A_ce_name,
+            exclusive=1,
+            reverse=0,
+        )
         self.make_value(f"{A_ce_name}/output_0", ssm_dtype, ["batch_size", "sequence_length", H])
         A_ce = f"{A_ce_name}/output_0"  # [B, S, H]  (exclusive)
 
@@ -348,7 +358,9 @@ class NemotronHModel(LlamaModel):
         # ================================================================
         B_4d_Tn = f"{basename}/B_4d_Tn/Transpose"
         self.make_transpose(B_4d_Tn, B_4d, ssm_dtype, ["batch_size", H, N, "sequence_length"], [0, 1, 3, 2])
-        G_out = make_mm(f"{basename}/G/MatMul", C_4d, f"{B_4d_Tn}/output_0", ssm_dtype, ["batch_size", H, "sequence_length", "sequence_length"])
+        G_out = make_mm(
+            f"{basename}/G/MatMul", C_4d, f"{B_4d_Tn}/output_0", ssm_dtype, ["batch_size", H, "sequence_length", "sequence_length"]
+        )
 
         # ================================================================
         # 10. L = causal_lower_tri(exp(A_ci_T[t] - A_ce_T[s]))
@@ -359,7 +371,12 @@ class NemotronHModel(LlamaModel):
         ce_unsq = f"{basename}/L/ce_unsq"
         self.make_unsqueeze(ce_unsq, [A_ce_T, "/model/constants/INT64/[-2]"], ssm_dtype, ["batch_size", H, 1, "sequence_length"])
         outer_sub_name = f"{basename}/L/outer_sub"
-        self.make_sub(outer_sub_name, [f"{ci_unsq}/output_0", f"{ce_unsq}/output_0"], ssm_dtype, ["batch_size", H, "sequence_length", "sequence_length"])
+        self.make_sub(
+            outer_sub_name,
+            [f"{ci_unsq}/output_0", f"{ce_unsq}/output_0"],
+            ssm_dtype,
+            ["batch_size", H, "sequence_length", "sequence_length"],
+        )
 
         # Build causal mask [S, S] where mask[t,s] = -1e9 if t < s else 0
         S_shape_name = f"{basename}/causal/S_shape"
@@ -367,7 +384,12 @@ class NemotronHModel(LlamaModel):
         S_scalar_name = f"{basename}/causal/S_scalar"
         self.make_gather(S_scalar_name, [f"{S_shape_name}/output_0", "/model/constants/INT64/1"], ir.DataType.INT64, [], axis=0)
         S_range_name = f"{basename}/causal/S_range"
-        self.make_range(S_range_name, ["/model/constants/INT64/0", f"{S_scalar_name}/output_0", "/model/constants/INT64/1"], ir.DataType.INT64, ["sequence_length"])
+        self.make_range(
+            S_range_name,
+            ["/model/constants/INT64/0", f"{S_scalar_name}/output_0", "/model/constants/INT64/1"],
+            ir.DataType.INT64,
+            ["sequence_length"],
+        )
         row_name = f"{basename}/causal/row"
         self.make_unsqueeze(row_name, [f"{S_range_name}/output_0", "/model/constants/INT64/[1]"], ir.DataType.INT64, ["sequence_length", 1])
         col_name = f"{basename}/causal/col"
@@ -375,10 +397,20 @@ class NemotronHModel(LlamaModel):
         lt_name = f"{basename}/causal/lt"
         self.make_less(lt_name, [f"{row_name}/output_0", f"{col_name}/output_0"])
         causal_mask_name = f"{basename}/causal/mask"
-        self.make_where(causal_mask_name, [f"{lt_name}/output_0", "/model/constants/FLOAT/-1000000000.0", "/model/constants/FLOAT/0.0"], ssm_dtype, ["sequence_length", "sequence_length"])
+        self.make_where(
+            causal_mask_name,
+            [f"{lt_name}/output_0", "/model/constants/FLOAT/-1000000000.0", "/model/constants/FLOAT/0.0"],
+            ssm_dtype,
+            ["sequence_length", "sequence_length"],
+        )
 
         L_pre_name = f"{basename}/L/add_mask"
-        self.make_add(L_pre_name, [f"{outer_sub_name}/output_0", f"{causal_mask_name}/output_0"], ssm_dtype, ["batch_size", H, "sequence_length", "sequence_length"])
+        self.make_add(
+            L_pre_name,
+            [f"{outer_sub_name}/output_0", f"{causal_mask_name}/output_0"],
+            ssm_dtype,
+            ["batch_size", H, "sequence_length", "sequence_length"],
+        )
         L_out = make_exp(f"{basename}/L/Exp", f"{L_pre_name}/output_0", ssm_dtype, ["batch_size", H, "sequence_length", "sequence_length"])
 
         # ================================================================
@@ -396,7 +428,9 @@ class NemotronHModel(LlamaModel):
         C_4d_Tn = f"{basename}/Y_init/C_T/Transpose"
         self.make_transpose(C_4d_Tn, C_4d, ssm_dtype, ["batch_size", H, N, "sequence_length"], [0, 1, 3, 2])
         # init_C = past_ssm @ C^T  →  [B, H, D, S]
-        init_C = make_mm(f"{basename}/Y_init/MatMul", past_ssm_fp32, f"{C_4d_Tn}/output_0", ssm_dtype, ["batch_size", H, D, "sequence_length"])
+        init_C = make_mm(
+            f"{basename}/Y_init/MatMul", past_ssm_fp32, f"{C_4d_Tn}/output_0", ssm_dtype, ["batch_size", H, D, "sequence_length"]
+        )
         exp_ci = make_exp(f"{basename}/Y_init/exp_ci", A_ci_T, ssm_dtype, ["batch_size", H, "sequence_length"])
         exp_ci_unsq = f"{basename}/Y_init/exp_ci_unsq"
         self.make_unsqueeze(exp_ci_unsq, [exp_ci, "/model/constants/INT64/[-2]"], ssm_dtype, ["batch_size", H, 1, "sequence_length"])
@@ -448,9 +482,19 @@ class NemotronHModel(LlamaModel):
         # Group RMSNorm: group_size = I // G
         group_size = I // G
         rms_rsh_in_name = f"{basename}/norm/rms_reshape_in"
-        self.make_reshape(rms_rsh_in_name, [f"{y_gated_name}/output_0", [0, 0, G, group_size]], ssm_dtype, ["batch_size", "sequence_length", G, group_size])
+        self.make_reshape(
+            rms_rsh_in_name,
+            [f"{y_gated_name}/output_0", [0, 0, G, group_size]],
+            ssm_dtype,
+            ["batch_size", "sequence_length", G, group_size],
+        )
         rms_pow_name = f"{basename}/norm/rms_pow"
-        self.make_node("Pow", inputs=[f"{rms_rsh_in_name}/output_0", "/model/constants/FLOAT/2"], outputs=[f"{rms_pow_name}/output_0"], name=rms_pow_name)
+        self.make_node(
+            "Pow",
+            inputs=[f"{rms_rsh_in_name}/output_0", "/model/constants/FLOAT/2"],
+            outputs=[f"{rms_pow_name}/output_0"],
+            name=rms_pow_name,
+        )
         self.make_value(f"{rms_pow_name}/output_0", ssm_dtype, ["batch_size", "sequence_length", G, group_size])
         rms_var_name = f"{basename}/norm/rms_var"
         self.make_reduce_mean(
@@ -462,11 +506,18 @@ class NemotronHModel(LlamaModel):
         )
         eps = float(mamba.norm.variance_epsilon)
         rms_eps_name = f"{basename}/norm/rms_eps"
-        self.make_add(rms_eps_name, [f"{rms_var_name}/output_0", f"/model/constants/FLOAT/{eps}"], ssm_dtype, ["batch_size", "sequence_length", G, 1])
+        self.make_add(
+            rms_eps_name, [f"{rms_var_name}/output_0", f"/model/constants/FLOAT/{eps}"], ssm_dtype, ["batch_size", "sequence_length", G, 1]
+        )
         rms_rsqrt_name = f"{basename}/norm/rms_rsqrt"
         self.make_rsqrt(rms_rsqrt_name, [f"{rms_eps_name}/output_0"], ssm_dtype, ["batch_size", "sequence_length", G, 1])
         rms_normed_name = f"{basename}/norm/rms_normed"
-        self.make_mul(rms_normed_name, [f"{rms_rsh_in_name}/output_0", f"{rms_rsqrt_name}/output_0"], ssm_dtype, ["batch_size", "sequence_length", G, group_size])
+        self.make_mul(
+            rms_normed_name,
+            [f"{rms_rsh_in_name}/output_0", f"{rms_rsqrt_name}/output_0"],
+            ssm_dtype,
+            ["batch_size", "sequence_length", G, group_size],
+        )
         rms_rsh_out_name = f"{basename}/norm/rms_reshape_out"
         self.make_reshape(rms_rsh_out_name, [f"{rms_normed_name}/output_0", [0, 0, -1]], ssm_dtype, ["batch_size", "sequence_length", I])
 
@@ -498,13 +549,7 @@ class NemotronHModel(LlamaModel):
         # ================================================================
         # A_cumsum_last[b,h]: last position of inclusive cumsum  →  [B, H, 1]
         A_last = self.make_slice(
-            f"{basename}/ssm_state/A_last",
-            A_ci_T,
-            ssm_dtype,
-            ["batch_size", H, 1],
-            starts=[-1],
-            ends=[2**62],
-            axes=[-1],
+            f"{basename}/ssm_state/A_last", A_ci_T, ssm_dtype, ["batch_size", H, 1], starts=[-1], ends=[2**62], axes=[-1]
         )
 
         # decay_s = exp(A_last - A_ci_T)  →  [B, H, S]
@@ -519,7 +564,12 @@ class NemotronHModel(LlamaModel):
         dt_decay_name = f"{basename}/ssm_state/dt_decay"
         self.make_mul(dt_decay_name, [dt_T, decay_s], ssm_dtype, ["batch_size", H, "sequence_length"])
         dt_decay_unsq_name = f"{basename}/ssm_state/dt_decay_unsq"
-        self.make_unsqueeze(dt_decay_unsq_name, [f"{dt_decay_name}/output_0", "/model/constants/INT64/[-1]"], ssm_dtype, ["batch_size", H, "sequence_length", 1])
+        self.make_unsqueeze(
+            dt_decay_unsq_name,
+            [f"{dt_decay_name}/output_0", "/model/constants/INT64/[-1]"],
+            ssm_dtype,
+            ["batch_size", H, "sequence_length", 1],
+        )
         B_weighted_name = f"{basename}/ssm_state/B_weighted"
         self.make_mul(B_weighted_name, [B_4d, f"{dt_decay_unsq_name}/output_0"], ssm_dtype, ["batch_size", H, "sequence_length", N])
 
@@ -527,7 +577,13 @@ class NemotronHModel(LlamaModel):
         # x_bar_4d: [B,H,S,D] → [B,H,D,S]
         x_bar_T_name = f"{basename}/ssm_state/x_bar_T/Transpose"
         self.make_transpose(x_bar_T_name, x_bar_4d, ssm_dtype, ["batch_size", H, D, "sequence_length"], [0, 1, 3, 2])
-        new_state_new = make_mm(f"{basename}/ssm_state/new_tokens/MatMul", f"{x_bar_T_name}/output_0", f"{B_weighted_name}/output_0", ssm_dtype, ["batch_size", H, D, N])
+        new_state_new = make_mm(
+            f"{basename}/ssm_state/new_tokens/MatMul",
+            f"{x_bar_T_name}/output_0",
+            f"{B_weighted_name}/output_0",
+            ssm_dtype,
+            ["batch_size", H, D, N],
+        )
 
         # new_state_init = past_ssm * exp(A_last)[..., None]  →  [B, H, D, N]
         exp_last = make_exp(f"{basename}/ssm_state/exp_last", A_last, ssm_dtype, ["batch_size", H, 1])
@@ -541,7 +597,12 @@ class NemotronHModel(LlamaModel):
         if use_cast:
             # Compute in fp32, then cast to io_dtype for the output
             new_ssm_fp32_name = f"{basename}/ssm_state/new_ssm_fp32"
-            self.make_node("Add", inputs=[new_state_new, f"{new_state_init_name}/output_0"], outputs=[f"{new_ssm_fp32_name}/output_0"], name=new_ssm_fp32_name)
+            self.make_node(
+                "Add",
+                inputs=[new_state_new, f"{new_state_init_name}/output_0"],
+                outputs=[f"{new_ssm_fp32_name}/output_0"],
+                name=new_ssm_fp32_name,
+            )
             self.make_value(f"{new_ssm_fp32_name}/output_0", ssm_dtype, ["batch_size", H, D, N])
             self.make_cast(new_ssm_name, f"{new_ssm_fp32_name}/output_0", self.io_dtype, ["batch_size", H, D, N])
             self.make_node("Identity", inputs=[f"{new_ssm_name}/output_0"], outputs=[present_ssm], name=f"{basename}/ssm_state/identity")
