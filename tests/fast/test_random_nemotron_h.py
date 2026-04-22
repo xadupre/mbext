@@ -740,6 +740,38 @@ class TestNemotronH(ExtTestCase):
         """Build a hybrid attention+mamba model (fp32/CPU) and check for CausalConvWithState."""
         self.common_nemotron_h_mamba_build("fp32", "cpu", layers_block_type=["attention", "mamba"])
 
+    @hide_stdout()
+    @requires_genai()
+    def test_nemotron_h_mamba_fp32_cpu_genai_generate(self):
+        """Verify genai generation completes for a mamba-only NemotronH model (fp32/CPU)."""
+        config = self._make_nemotronh_mamba_config(["mamba"])
+        prefix = "test_nemotron_h_mamba_fp32_cpu_genai_generate"
+        _, _, output_dir = self._build_mamba_model(config, "fp32", "cpu", prefix)
+
+        import torch
+
+        torch.manual_seed(0)
+        prompt_ids = torch.randint(3, config.vocab_size, (1, 4))
+        # NemotronH mamba layers use stateful conv/SSM states that differ from
+        # the standard KV cache, so we skip the PyTorch reference comparison and
+        # only verify that genai generation completes without errors.
+        self.run_genai_generation_test(output_dir, None, config.vocab_size, config.eos_token_id, prompt_ids=prompt_ids)
+
+    @hide_stdout()
+    @requires_genai()
+    def test_nemotron_h_mamba_hybrid_fp32_cpu_genai_generate(self):
+        """Verify genai generation completes for a hybrid attention+mamba NemotronH model (fp32/CPU)."""
+        config = self._make_nemotronh_mamba_config(["attention", "mamba"])
+        prefix = "test_nemotron_h_mamba_hybrid_fp32_cpu_genai_generate"
+        _, _, output_dir = self._build_mamba_model(config, "fp32", "cpu", prefix)
+
+        import torch
+
+        torch.manual_seed(0)
+        prompt_ids = torch.randint(3, config.vocab_size, (1, 4))
+        # Skip PyTorch reference comparison for the same reason as the mamba-only test.
+        self.run_genai_generation_test(output_dir, None, config.vocab_size, config.eos_token_id, prompt_ids=prompt_ids)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
