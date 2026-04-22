@@ -786,7 +786,7 @@ class TestMinistral3(ExtTestCase):
         model.save_pretrained(model_dir)
 
         # Build a tokenizer whose vocabulary maps [IMG] → config.image_token_id
-        # (10) so that apply_chat_template → tokenise → expand mirrors the
+        # (10) so that apply_chat_template → tokenize → expand mirrors the
         # pixtral-processor flow used in production.
         image_token_id = config.image_token_id  # 10 for Mistral3
         vocab = {"<unk>": 0, "<s>": 1, "</s>": 2, "[IMG]": image_token_id, "hello": 100, "world": 101}
