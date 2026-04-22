@@ -549,6 +549,7 @@ class Model:
     def is_packed_attn_supported(self) -> bool:
         valid_packed_attn_configurations = {
             ("cpu", ir.DataType.FLOAT),
+            ("cuda", ir.DataType.FLOAT),
             ("cuda", ir.DataType.FLOAT16),
             ("cuda", ir.DataType.BFLOAT16),
             ("dml", ir.DataType.FLOAT16),
