@@ -8,7 +8,7 @@ import unittest
 
 import numpy as np
 
-from modelbuilder.ext_test_case import ExtTestCase, hide_stdout, long_test, requires_cuda, requires_genai, requires_transformers
+from modelbuilder.ext_test_case import ExtTestCase, hide_stdout, requires_cuda, requires_genai, requires_transformers
 
 MINISTRAL3_MODEL_NAME = "mistralai/Ministral-3-3B-Instruct-2512"
 
@@ -288,19 +288,21 @@ class TestMinistral3(ExtTestCase):
         text_onnx_path = os.path.join(output_dir, "model.onnx")
         self.assertExists(text_onnx_path)
 
-        # --- Verify genai_config.json has vision_encoder section ---
+        # --- Verify genai_config.json has vision + embedding sections ---
         import json
 
         genai_config_path = os.path.join(output_dir, "genai_config.json")
         self.assertExists(genai_config_path)
         with open(genai_config_path) as f:
             genai_config = json.load(f)
+        self.assertEqual(genai_config["model"]["type"], "phi3v")
         self.assertIn("vision", genai_config["model"])
         ve_cfg = genai_config["model"]["vision"]
         self.assertEqual(ve_cfg["filename"], "vision_encoder.onnx")
-        self.assertEqual(ve_cfg["image_size"], image_size)
-        self.assertEqual(ve_cfg["patch_size"], patch_size)
         self.assertEqual(ve_cfg["spatial_merge_size"], spatial_merge_size)
+        self.assertIn("embedding", genai_config["model"])
+        em_cfg = genai_config["model"]["embedding"]
+        self.assertEqual(em_cfg["filename"], "embedding.onnx")
 
         # --- Run vision encoder forward pass ---
         num_patches_per_side = image_size // patch_size
@@ -497,9 +499,15 @@ class TestMinistral3(ExtTestCase):
         # Logits shape: [batch_size, total_seq_len, vocab_size]
         self.assertEqual(onnx_outputs[0].shape, (batch_size, total_seq_len, text_config.vocab_size))
 
-    @long_test()
     @hide_stdout()
     def test_ministral3_two_images_and_text_fp32_cpu_genai(self):
+        self.common_ministral3_two_images_and_text_cpu_genai("fp32")
+
+    @hide_stdout()
+    def test_ministral3_two_images_and_text_int4_cpu_genai(self):
+        self.common_ministral3_two_images_and_text_cpu_genai("int4")
+
+    def common_ministral3_two_images_and_text_cpu_genai(self, precision):
         """
         Draw a dummy cross image, run ``model.generate()`` from HuggingFace
         ``Mistral3ForConditionalGeneration`` and ``onnxruntime-genai``, then
@@ -580,7 +588,7 @@ class TestMinistral3(ExtTestCase):
         config = Mistral3Config(text_config=text_config, vision_config=vision_config, spatial_merge_size=spatial_merge_size)
         config.architectures = ["Mistral3ForConditionalGeneration"]
 
-        basename = "test_ministral3_two_images_and_text_fp32_cpu_genai"
+        basename = f"test_ministral3_two_images_and_text_{precision}_cpu_genai"
         model_dir = self.get_model_dir(basename)
         output_dir, cache_dir = self.get_dirs(basename)
 
@@ -599,7 +607,7 @@ class TestMinistral3(ExtTestCase):
             model_name=MINISTRAL3_MODEL_NAME,
             input_path=model_dir,
             output_dir=output_dir,
-            precision="fp32",
+            precision=precision,
             execution_provider="cpu",
             cache_dir=cache_dir,
             num_hidden_layers=num_hidden_layers,
@@ -641,27 +649,29 @@ class TestMinistral3(ExtTestCase):
         # pt_tokens = [img_tok*N, text_ids..., gen1, gen2, ...]
         pt_generated = pt_tokens[hf_prompt.shape[1] :]
 
-        # --- genai: same pixel_values + text_ids → multiple generation steps ---
-        # genai vision flow: set_inputs(pixel_values) lets the runtime call the
-        # vision encoder; append_tokens provides only the text token IDs.
-        # Internally the runtime prepends the image features to the text
-        # embeddings, matching the HF merged sequence.
+        # --- genai: same pixel_values + full prompt → multiple generation steps ---
+        # phi3v-style flow: the full prompt (image placeholder tokens + text tokens)
+        # is passed via append_tokens; set_inputs provides pixel_values and
+        # num_image_tokens so the runtime calls the vision encoder.
+        # The embedding model replaces the image placeholder positions with actual
+        # image features from the vision encoder, matching the HF merged sequence.
         og_model = og.Model(output_dir)
-        text_prompt_ids = np.array(text_ids, dtype=np.int64)
+        full_prompt_ids = np.array([image_token_id] * n_merged_patches + text_ids, dtype=np.int64)
         params = og.GeneratorParams(og_model)
         params.set_search_options(do_sample=False, max_length=n_merged_patches + len(text_ids) + max_new_tokens, temperature=1.0, top_k=1)
         generator = og.Generator(og_model, params)
         named_tensors = og.NamedTensors()
         named_tensors["pixel_values"] = cross_image
+        named_tensors["num_image_tokens"] = np.array([n_merged_patches], dtype=np.int64)
         generator.set_inputs(named_tensors)
-        generator.append_tokens(text_prompt_ids)
+        generator.append_tokens(full_prompt_ids)
         og_generated = []
         while not generator.is_done():
             generator.generate_next_token()
             og_generated.append(int(generator.get_next_tokens()[0]))
 
         log_data = dict(
-            precision="fp32",
+            precision=precision,
             model_id=MINISTRAL3_MODEL_NAME,
             experiment="genai_vision_generate",
             provider="cpu",
@@ -671,7 +681,126 @@ class TestMinistral3(ExtTestCase):
         )
         diff = self.first_token_diff(pt_generated, og_generated)
         self.log_results({**log_data, **diff})
-        self.assertEqual(pt_generated, og_generated)
+        # For fp32, ORT and HuggingFace produce identical tokens.
+        # For lossy precisions (int4, …) the embedding table and linear layers
+        # are quantised, so token mismatches are expected; just verify that the
+        # correct number of tokens was generated without error.
+        if precision == "fp32":
+            self.assertEqual(pt_generated, og_generated)
+        else:
+            self.assertEqual(len(og_generated), max_new_tokens)
+
+    @hide_stdout()
+    def test_ministral3_vision_encoder_int4_cpu_random_weights(self):
+        """
+        Build a randomly-initialised Mistral3ForConditionalGeneration model,
+        export it with int4 precision, and verify that the vision encoder ONNX
+        model is correctly quantised.
+
+        Specifically the test checks:
+
+        1. ``vision_encoder.onnx`` is written to the output directory.
+        2. The vision encoder ONNX graph contains at least one ``MatMulNBits``
+           node, confirming that int4 weight quantisation was applied to the
+           linear layers inside the Pixtral vision tower and projector.
+        3. An ORT forward pass on the quantised model produces
+           ``image_features`` with the expected shape
+           ``[num_merged_patches, text_hidden_size]``.
+        """
+        import onnx
+        import torch
+        from tokenizers import Tokenizer
+        from tokenizers.models import WordLevel
+        from transformers import (
+            Ministral3Config,
+            Mistral3Config,
+            Mistral3ForConditionalGeneration,
+            PixtralVisionConfig,
+            PreTrainedTokenizerFast,
+        )
+
+        from modelbuilder.builder import create_model
+
+        num_hidden_layers = 1
+        # Same tiny geometry as the fp32 sibling test:
+        # 56×56 / patch_size=14 → 4×4=16 patches;
+        # spatial_merge_size=2 → 4 merged patches.
+        image_size = 56
+        patch_size = 14
+        spatial_merge_size = 2
+
+        vision_config = PixtralVisionConfig(
+            hidden_size=64,
+            intermediate_size=128,
+            num_hidden_layers=1,
+            num_attention_heads=4,
+            head_dim=16,
+            image_size=image_size,
+            patch_size=patch_size,
+        )
+        text_config = Ministral3Config(
+            bos_token_id=1,
+            eos_token_id=2,
+            hidden_act="silu",
+            hidden_size=512,
+            intermediate_size=1376,
+            max_position_embeddings=1024,
+            num_attention_heads=8,
+            num_hidden_layers=num_hidden_layers,
+            num_key_value_heads=4,
+            head_dim=64,
+            rms_norm_eps=1e-05,
+            sliding_window=None,
+            vocab_size=32000,
+        )
+        config = Mistral3Config(text_config=text_config, vision_config=vision_config, spatial_merge_size=spatial_merge_size)
+        config.architectures = ["Mistral3ForConditionalGeneration"]
+
+        basename = "test_ministral3_vision_encoder_int4_cpu_random_weights"
+        model_dir = self.get_model_dir(basename)
+        output_dir, cache_dir = self.get_dirs(basename)
+
+        torch.manual_seed(42)
+        model = Mistral3ForConditionalGeneration(config)
+        model.eval()
+        model.save_pretrained(model_dir)
+
+        vocab = {"<unk>": 0, "<s>": 1, "</s>": 2}
+        tokenizer = PreTrainedTokenizerFast(
+            tokenizer_object=Tokenizer(WordLevel(vocab=vocab, unk_token="<unk>")), bos_token="<s>", eos_token="</s>", unk_token="<unk>"
+        )
+        tokenizer.save_pretrained(model_dir)
+
+        create_model(
+            model_name=MINISTRAL3_MODEL_NAME,
+            input_path=model_dir,
+            output_dir=output_dir,
+            precision="int4",
+            execution_provider="cpu",
+            cache_dir=cache_dir,
+            num_hidden_layers=num_hidden_layers,
+        )
+
+        # --- Verify vision encoder ONNX exists ---
+        vision_onnx_path = os.path.join(output_dir, "vision_encoder.onnx")
+        self.assertExists(vision_onnx_path)
+
+        # --- Verify MatMulNBits nodes are present (int4 quantisation applied) ---
+        # Load graph structure only (skip external weight data) to check op types.
+        vision_proto = onnx.load(vision_onnx_path, load_external_data=False)
+        op_types = {node.op_type for node in vision_proto.graph.node}
+        self.assertIn("MatMulNBits", op_types, "Vision encoder ONNX should contain MatMulNBits nodes after int4 quantisation")
+
+        # --- Run forward pass and verify output shape ---
+        num_patches_per_side = image_size // patch_size
+        expected_merged_patches = (num_patches_per_side**2) // (spatial_merge_size**2)
+
+        vision_sess = self.check_ort(vision_onnx_path)
+        pixel_values = np.zeros((1, vision_config.num_channels, image_size, image_size), dtype=np.float32)
+        vision_outputs = vision_sess.run(None, {"pixel_values": pixel_values})
+        self.assertIsNotNone(vision_outputs[0])
+        self.assertEqual(vision_outputs[0].shape[0], expected_merged_patches)
+        self.assertEqual(vision_outputs[0].shape[1], text_config.hidden_size)
 
     def test_dequantize_fp8_weights_no_op_when_no_fp8(self):
         """_dequantize_fp8_weights leaves normal float32 weights unchanged."""
