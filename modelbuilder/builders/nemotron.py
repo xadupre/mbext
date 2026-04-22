@@ -65,11 +65,11 @@ class NemotronHModel(LlamaModel):
                 self.output_shapes[f"present_state.{layer_id}.conv"] = ["batch_size", mamba_conv_dim, conv_kernel - 1]
 
                 # SSM recurrent state: [batch_size, num_heads, head_dim, ssm_state_size]
-                self.input_names[f"past_state.{layer_id}.ssm"] = f"past_key_values.{layer_id}.ssm_state"
+                self.input_names[f"past_state.{layer_id}.ssm"] = f"past_key_values.{layer_id}.recurrent_state"
                 self.input_types[f"past_state.{layer_id}.ssm"] = self.io_dtype
                 self.input_shapes[f"past_state.{layer_id}.ssm"] = ["batch_size", mamba_num_heads, mamba_head_dim, ssm_state_size]
 
-                self.output_names[f"present_state.{layer_id}.ssm"] = f"present.{layer_id}.ssm_state"
+                self.output_names[f"present_state.{layer_id}.ssm"] = f"present.{layer_id}.recurrent_state"
                 self.output_types[f"present_state.{layer_id}.ssm"] = self.io_dtype
                 self.output_shapes[f"present_state.{layer_id}.ssm"] = ["batch_size", mamba_num_heads, mamba_head_dim, ssm_state_size]
 
@@ -139,8 +139,8 @@ class NemotronHModel(LlamaModel):
 
         past_conv = f"past_key_values.{layer_id}.conv_state"
         present_conv = f"present.{layer_id}.conv_state"
-        past_ssm = f"past_key_values.{layer_id}.ssm_state"
-        present_ssm = f"present.{layer_id}.ssm_state"
+        past_ssm = f"past_key_values.{layer_id}.recurrent_state"
+        present_ssm = f"present.{layer_id}.recurrent_state"
 
         # Helper: cast tensor to fp32 if io_dtype is not fp32.
         def cast_fp32(name, inp, shape):
