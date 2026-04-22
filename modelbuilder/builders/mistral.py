@@ -713,7 +713,10 @@ class Ministral3ConditionalGenerationModel(Model):
         # Model.__init__ (inside Ministral3EmbeddingModel) finds hidden_size etc.
         text_obj_config = copy.deepcopy(config)
         text_config = config.text_config
-        for key in ["max_position_embeddings"]:  # for key in text_config:
+        # Ministral3VisionEncoderModel needs information from text_config and vision_config.
+        # We should give Ministral3VisionEncoderModel vision_config and the couple of parameters from text_config.
+        # Let's keep that for a later changer when there are more Vision models.
+        for key in text_config:
             if not hasattr(text_obj_config, key):
                 setattr(text_obj_config, key, getattr(text_config, key))
 
