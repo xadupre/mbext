@@ -891,7 +891,7 @@ class Model(LocalFunctionsMixin):
         # When a com.microsoft contrib op with a local-function fallback is added, register it.
         if domain == "com.microsoft" and op_type == "CausalConvWithState":
             # inputs[3] is past_conv_state with shape [B, C, K-1]; K = shape[-1] + 1.
-            past_val = self.values.get(inputs[3]) if len(inputs) > 3 else None
+            past_val = self.values.get(inputs[3]) if len(inputs) >= 4 else None
             if past_val is not None and past_val.shape is not None and len(past_val.shape) >= 1:
                 self._register_causal_conv_local_function(int(past_val.shape[-1]) + 1)
 
