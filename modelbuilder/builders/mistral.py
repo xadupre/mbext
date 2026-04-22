@@ -713,9 +713,9 @@ class Ministral3ConditionalGenerationModel(Model):
         # Model.__init__ (inside Ministral3EmbeddingModel) finds hidden_size etc.
         text_obj_config = copy.deepcopy(config)
         text_config = config.text_config
-        for key in text_config:
-            if not hasattr(text_obj_config, key):
-                setattr(text_obj_config, key, getattr(text_config, key))
+        #for key in text_config:
+        #    if not hasattr(text_obj_config, key):
+        #        setattr(text_obj_config, key, getattr(text_config, key))
 
         embed_extra_options = dict(extra_options)
         embed_extra_options["image_token_id"] = config.image_token_id
