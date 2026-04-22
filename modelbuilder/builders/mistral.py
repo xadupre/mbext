@@ -295,12 +295,13 @@ class Ministral3VisionEncoderModel(Model):
 
         qkv_t_shape = [1, nh, n_p, hd]
         q_t = self.make_transpose(f"{b}/q_t", q_4d, self.io_dtype, qkv_t_shape, perm=[0, 2, 1, 3])
-        k_t = self.make_transpose(f"{b}/k_t", k_4d, self.io_dtype, qkv_t_shape, perm=[0, 2, 1, 3])
+        # k_t = self.make_transpose(f"{b}/k_t", k_4d, self.io_dtype, qkv_t_shape, perm=[0, 2, 1, 3])
         v_t = self.make_transpose(f"{b}/v_t", v_4d, self.io_dtype, qkv_t_shape, perm=[0, 2, 1, 3])
 
         # Scaled dot-product attention (encoder, no causal mask)
         # K^T: [1, nh, hd, n_p]
-        k_T = self.make_transpose(f"{b}/k_T", k_t, self.io_dtype, [1, nh, hd, n_p], perm=[0, 1, 3, 2])
+        # k_T = self.make_transpose(f"{b}/k_T", k_t, self.io_dtype, [1, nh, hd, n_p], perm=[0, 1, 3, 2])
+        k_T = self.make_transpose(f"{b}/k_T", k_4d, self.io_dtype, [1, nh, hd, n_p], perm=[0, 2, 3, 1])
         attn_w = f"{b}/attn_w/MatMul/output_0"
         self.make_node("MatMul", inputs=[q_t, k_T], outputs=[attn_w], name=f"{b}/attn_w/MatMul")
         self.make_value(attn_w, self.io_dtype, shape=[1, nh, n_p, n_p])
