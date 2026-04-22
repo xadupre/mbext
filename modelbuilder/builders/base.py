@@ -888,6 +888,12 @@ class Model(LocalFunctionsMixin):
         node = ir.node(op_type, inputs=input_values, attributes=kwargs, domain=domain, outputs=output_values, name=name)
         self.model.graph.append(node)
         self.node_names.add(name)
+        # When a com.microsoft contrib op with a local-function fallback is added, register it.
+        if domain == "com.microsoft" and op_type == "CausalConvWithState":
+            # inputs[3] is past_conv_state with shape [B, C, K-1]; K = shape[-1] + 1.
+            past_val = self.values.get(inputs[3]) if len(inputs) > 3 else None
+            if past_val is not None and past_val.shape is not None and len(past_val.shape) >= 1:
+                self._register_causal_conv_local_function(int(past_val.shape[-1]) + 1)
 
     def make_value(self, name, dtype: ir.DataType | int | None = None, shape: Sequence[int | str] | ir.Shape | None = None) -> ir.Value:
         """Obtain or create an IR value by value name.
@@ -2768,10 +2774,6 @@ class Model(LocalFunctionsMixin):
         )
         self.make_value(output, self.io_dtype, shape=kwargs["output_shape"])
         self.make_value(present_conv, self.io_dtype, shape=kwargs["present_conv_shape"])
-        # Add a local-function fallback for ORT < 1.25 which lacks the native kernel.
-        # The function body uses standard ONNX ops so older runtimes can still execute it.
-        K = kwargs["present_conv_shape"][-1] + 1  # K-1 stored in shape → K
-        self._register_causal_conv_local_function(K)
 
     def make_linear_attention(self, name, **kwargs):
         inputs = [kwargs["q_path"], kwargs["k_path"], kwargs["v_path"], kwargs["past_recurrent_state"], kwargs["decay"], kwargs["beta"]]
