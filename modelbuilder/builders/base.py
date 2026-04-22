@@ -551,6 +551,7 @@ class Model(LocalFunctionsMixin):
     def is_packed_attn_supported(self) -> bool:
         valid_packed_attn_configurations = {
             ("cpu", ir.DataType.FLOAT),
+            ("cuda", ir.DataType.FLOAT),
             ("cuda", ir.DataType.FLOAT16),
             ("cuda", ir.DataType.BFLOAT16),
             ("dml", ir.DataType.FLOAT16),
@@ -654,8 +655,7 @@ class Model(LocalFunctionsMixin):
                 if val is not None and val != default_val:
                     setattr(config, key, getattr(gen_config, key))
         except Exception as e:
-            print("-- ERROR", e)
-            pass
+            print(f"Error: {e}")
 
         # Create inputs dict
         inputs = {}
@@ -840,7 +840,7 @@ class Model(LocalFunctionsMixin):
                 pbar.update()
                 pbar.set_description(f"Saving {tensor.name} ({tensor.dtype.short_name()}, {tensor.shape})")
 
-            ir.save(model, out_path, external_data=os.path.basename(data_path), size_threshold_bytes=8, callback=callback)
+            ir.save(model, out_path, external_data=os.path.basename(data_path), size_threshold_bytes=0, callback=callback)
 
         # Delete temporary cache dir if empty
         if os.path.exists(self.cache_dir) and not os.listdir(self.cache_dir):
@@ -1779,13 +1779,6 @@ class Model(LocalFunctionsMixin):
             return float(_get_mscale(mscale, config_mscale) / _get_mscale(mscale, config_mscale_all_dim))
         if config_mscale > 0:
             return float(config_mscale)
-        if self.rope_attrs["mscale_policy"] in {"su", "longrope"}:
-            return self.make_mscale_su(mscale)
-        elif self.rope_attrs["mscale_policy"] == "yarn":
-            return self.make_mscale_yarn(mscale)
-        else:
-            return float(mscale)
-
         if self.rope_attrs["mscale_policy"] in {"su", "longrope"}:
             return self.make_mscale_su(mscale)
         elif self.rope_attrs["mscale_policy"] == "yarn":
@@ -3639,7 +3632,7 @@ class Model(LocalFunctionsMixin):
         output = f"{gelu_name}/output_0"
 
         if activation == "Gelu":
-            self.make_node("Gelu", inputs=[root_input], outputs=[output], name=gelu_name)
+            self.make_node("Gelu", inputs=[root_input], outputs=[output], name=gelu_name, approximate="none")
         elif activation == "FastGelu":
             self.make_node("Gelu", inputs=[root_input], outputs=[output], name=gelu_name, approximate="tanh")
         else:
@@ -4195,7 +4188,7 @@ class Model(LocalFunctionsMixin):
 
         expand_name = self.make_common_mask_reformat_subgraph(
             basename,
-            root_input=(self.input_names["input_ids"] if not self.exclude_embeds else self.input_names["inputs_embeds"]),
+            root_input=self.input_names["input_ids"] if not self.exclude_embeds else self.input_names["inputs_embeds"],
             unsqueeze_for_concat=unsqueeze_3_name,
             unsqueeze_for_expand=unsqueeze_9_name,
             input_ids_subgraph=True,
