@@ -644,6 +644,246 @@ class TestNemotronH(ExtTestCase):
         # without errors.
         self.run_genai_generation_test(output_dir, None, config.vocab_size, config.eos_token_id, prompt_ids=prompt_ids)
 
+    # ------------------------------------------------------------------ #
+    # Tests: NemotronH Mamba blocks                                       #
+    # The mamba layers use com.microsoft:CausalConvWithState which is NOT #
+    # part of standard onnxruntime.  Build-only tests verify that the     #
+    # ONNX model is produced and contains the expected custom ops.        #
+    # ------------------------------------------------------------------ #
+
+    def _make_nemotronh_mamba_config(self, layers_block_type=None):
+        """Return a small NemotronHConfig with mamba layers for fast tests."""
+        from transformers.models.nemotron_h import NemotronHConfig
+
+        if layers_block_type is None:
+            layers_block_type = ["mamba"]
+        num_hidden_layers = len(layers_block_type)
+        return NemotronHConfig(
+            architectures=["NemotronHForCausalLM"],
+            bos_token_id=1,
+            eos_token_id=2,
+            hidden_size=256,
+            head_dim=64,
+            intermediate_size=512,
+            max_position_embeddings=2048,
+            model_type="nemotron_h",
+            num_attention_heads=4,
+            num_hidden_layers=num_hidden_layers,
+            num_key_value_heads=2,
+            layer_norm_epsilon=1e-05,
+            vocab_size=32000,
+            layers_block_type=layers_block_type,
+            use_mamba_kernels=False,
+            # Mamba-specific parameters (small for fast tests)
+            mamba_num_heads=4,
+            mamba_head_dim=8,
+            ssm_state_size=8,
+            conv_kernel=4,
+            n_groups=1,
+        )
+
+    def _build_mamba_model(self, config, precision, provider, prefix):
+        """Build a mamba ONNX model and return (model_dir, output_dir)."""
+        import torch
+        from transformers import AutoModelForCausalLM
+
+        from modelbuilder.builder import create_model
+
+        model_dir = self.get_model_dir(prefix, clean=False)
+        output_dir, cache_dir = self.get_dirs(prefix, clean=False)
+
+        torch.manual_seed(42)
+        model = AutoModelForCausalLM.from_config(config)
+        model.eval()
+        model.save_pretrained(model_dir)
+        self.make_word_level_tokenizer().save_pretrained(model_dir)
+
+        create_model(
+            model_name=MODEL_NAME,
+            input_path=model_dir,
+            output_dir=output_dir,
+            precision=precision,
+            execution_provider=provider,
+            cache_dir=cache_dir,
+            num_hidden_layers=config.num_hidden_layers,
+        )
+        return model, model_dir, output_dir
+
+    def common_nemotron_h_mamba_build(self, precision, provider, layers_block_type=None):
+        """Verify that create_model builds a mamba model and emits CausalConvWithState."""
+        import onnx
+
+        config = self._make_nemotronh_mamba_config(layers_block_type)
+        prefix = f"test_nemotron_h_mamba_build_{precision}_{provider}_{'_'.join(config.layers_block_type)}"
+        _, _, output_dir = self._build_mamba_model(config, precision, provider, prefix)
+
+        onnx_path = os.path.join(output_dir, "model.onnx")
+        self.assertExists(onnx_path)
+
+        onnx_model = onnx.load(onnx_path)
+        self.assertIsNotNone(onnx_model)
+        op_types = {node.op_type for node in onnx_model.graph.node}
+        self.assertIn("CausalConvWithState", op_types)
+
+    @hide_stdout()
+    def test_nemotron_h_mamba_fp32_cpu_build(self):
+        """Build a single-layer mamba model (fp32/CPU) and check for CausalConvWithState."""
+        self.common_nemotron_h_mamba_build("fp32", "cpu")
+
+    @hide_stdout()
+    def test_nemotron_h_mamba_fp16_cpu_build(self):
+        """Build a single-layer mamba model (fp16/CPU) and check for CausalConvWithState."""
+        self.common_nemotron_h_mamba_build("fp16", "cpu")
+
+    @hide_stdout()
+    def test_nemotron_h_mamba_hybrid_fp32_cpu_build(self):
+        """Build a hybrid attention+mamba model (fp32/CPU) and check for CausalConvWithState."""
+        self.common_nemotron_h_mamba_build("fp32", "cpu", layers_block_type=["attention", "mamba"])
+
+    @hide_stdout()
+    @requires_genai()
+    def test_nemotron_h_mamba_fp32_cpu_genai_generate(self):
+        """Verify genai generation completes for a mamba-only NemotronH model (fp32/CPU)."""
+        config = self._make_nemotronh_mamba_config(["mamba"])
+        prefix = "test_nemotron_h_mamba_fp32_cpu_genai_generate"
+        _, _, output_dir = self._build_mamba_model(config, "fp32", "cpu", prefix)
+
+        import torch
+
+        torch.manual_seed(0)
+        prompt_ids = torch.randint(3, config.vocab_size, (1, 4))
+        # NemotronH mamba layers use stateful conv/SSM states that differ from
+        # the standard KV cache, so we skip the PyTorch reference comparison and
+        # only verify that genai generation completes without errors.
+        self.run_genai_generation_test(output_dir, None, config.vocab_size, config.eos_token_id, prompt_ids=prompt_ids)
+
+    @hide_stdout()
+    @requires_genai()
+    def test_nemotron_h_mamba_hybrid_fp32_cpu_genai_generate(self):
+        """Verify genai generation completes for a hybrid attention+mamba NemotronH model (fp32/CPU)."""
+        config = self._make_nemotronh_mamba_config(["attention", "mamba"])
+        prefix = "test_nemotron_h_mamba_hybrid_fp32_cpu_genai_generate"
+        _, _, output_dir = self._build_mamba_model(config, "fp32", "cpu", prefix)
+
+        import torch
+
+        torch.manual_seed(0)
+        prompt_ids = torch.randint(3, config.vocab_size, (1, 4))
+        # Skip PyTorch reference comparison for the same reason as the mamba-only test.
+        self.run_genai_generation_test(output_dir, None, config.vocab_size, config.eos_token_id, prompt_ids=prompt_ids)
+
+    def _make_nemotronh_full_hybrid_config(self):
+        """Return a small NemotronHConfig with attention, mamba, and moe layers for fast tests."""
+        from transformers.models.nemotron_h import NemotronHConfig
+
+        return NemotronHConfig(
+            architectures=["NemotronHForCausalLM"],
+            bos_token_id=1,
+            eos_token_id=2,
+            hidden_size=256,
+            head_dim=64,
+            intermediate_size=512,
+            max_position_embeddings=2048,
+            model_type="nemotron_h",
+            num_attention_heads=4,
+            num_hidden_layers=3,
+            num_key_value_heads=2,
+            layer_norm_epsilon=1e-05,
+            vocab_size=32000,
+            layers_block_type=["attention", "mamba", "moe"],
+            use_mamba_kernels=False,
+            # Mamba-specific parameters (small for fast tests)
+            mamba_num_heads=4,
+            mamba_head_dim=8,
+            ssm_state_size=8,
+            conv_kernel=4,
+            n_groups=1,
+            # MoE-specific parameters (small for fast tests)
+            n_routed_experts=4,
+            moe_intermediate_size=64,
+            moe_shared_expert_intermediate_size=64,
+            num_experts_per_tok=2,
+            norm_topk_prob=True,
+            n_group=1,
+            topk_group=1,
+            moe_latent_size=None,
+            routed_scaling_factor=1.0,
+        )
+
+    @hide_stdout()
+    def test_nemotron_h_full_hybrid_fp32_cpu_build(self):
+        """Build a full hybrid attention+mamba+moe model (fp32/CPU) and check for CausalConvWithState."""
+        import onnx
+        import torch
+        from transformers import AutoModelForCausalLM
+
+        from modelbuilder.builder import create_model
+
+        config = self._make_nemotronh_full_hybrid_config()
+        prefix = "test_nemotron_h_full_hybrid_fp32_cpu_build"
+        model_dir = self.get_model_dir(prefix, clean=False)
+        output_dir, cache_dir = self.get_dirs(prefix, clean=False)
+
+        torch.manual_seed(42)
+        model = AutoModelForCausalLM.from_config(config)
+        model.eval()
+        model.save_pretrained(model_dir)
+        self.make_word_level_tokenizer().save_pretrained(model_dir)
+
+        create_model(
+            model_name=MODEL_NAME,
+            input_path=model_dir,
+            output_dir=output_dir,
+            precision="fp32",
+            execution_provider="cpu",
+            cache_dir=cache_dir,
+            num_hidden_layers=config.num_hidden_layers,
+        )
+
+        onnx_path = os.path.join(output_dir, "model.onnx")
+        self.assertExists(onnx_path)
+
+        onnx_model = onnx.load(onnx_path)
+        self.assertIsNotNone(onnx_model)
+        op_types = {node.op_type for node in onnx_model.graph.node}
+        self.assertIn("CausalConvWithState", op_types)
+
+    @hide_stdout()
+    @requires_genai()
+    def test_nemotron_h_full_hybrid_fp32_cpu_genai_generate(self):
+        """Verify genai generation completes for a full hybrid attention+mamba+moe NemotronH model (fp32/CPU)."""
+        import torch
+        from transformers import AutoModelForCausalLM
+
+        from modelbuilder.builder import create_model
+
+        config = self._make_nemotronh_full_hybrid_config()
+        prefix = "test_nemotron_h_full_hybrid_fp32_cpu_genai_generate"
+        model_dir = self.get_model_dir(prefix, clean=False)
+        output_dir, cache_dir = self.get_dirs(prefix, clean=False)
+
+        torch.manual_seed(42)
+        model = AutoModelForCausalLM.from_config(config)
+        model.eval()
+        model.save_pretrained(model_dir)
+        self.make_word_level_tokenizer().save_pretrained(model_dir)
+
+        create_model(
+            model_name=MODEL_NAME,
+            input_path=model_dir,
+            output_dir=output_dir,
+            precision="fp32",
+            execution_provider="cpu",
+            cache_dir=cache_dir,
+            num_hidden_layers=config.num_hidden_layers,
+        )
+
+        torch.manual_seed(0)
+        prompt_ids = torch.randint(3, config.vocab_size, (1, 4))
+        # Skip PyTorch reference comparison: mamba states and mixed block types are
+        # not supported by standard ORT/transformers reference generation.
+        self.run_genai_generation_test(output_dir, None, config.vocab_size, config.eos_token_id, prompt_ids=prompt_ids)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
