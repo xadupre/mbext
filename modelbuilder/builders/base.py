@@ -653,8 +653,7 @@ class Model:
                 if val is not None and val != default_val:
                     setattr(config, key, getattr(gen_config, key))
         except Exception as e:
-            print("-- ERROR", e)
-            pass
+            print(f"Error: {e}")
 
         # Create inputs dict
         inputs = {}
@@ -1772,13 +1771,6 @@ class Model:
             return float(_get_mscale(mscale, config_mscale) / _get_mscale(mscale, config_mscale_all_dim))
         if config_mscale > 0:
             return float(config_mscale)
-        if self.rope_attrs["mscale_policy"] in {"su", "longrope"}:
-            return self.make_mscale_su(mscale)
-        elif self.rope_attrs["mscale_policy"] == "yarn":
-            return self.make_mscale_yarn(mscale)
-        else:
-            return float(mscale)
-
         if self.rope_attrs["mscale_policy"] in {"su", "longrope"}:
             return self.make_mscale_su(mscale)
         elif self.rope_attrs["mscale_policy"] == "yarn":
@@ -3632,7 +3624,7 @@ class Model:
         output = f"{gelu_name}/output_0"
 
         if activation == "Gelu":
-            self.make_node("Gelu", inputs=[root_input], outputs=[output], name=gelu_name)
+            self.make_node("Gelu", inputs=[root_input], outputs=[output], name=gelu_name, approximate="none")
         elif activation == "FastGelu":
             self.make_node("Gelu", inputs=[root_input], outputs=[output], name=gelu_name, approximate="tanh")
         else:
@@ -4188,7 +4180,7 @@ class Model:
 
         expand_name = self.make_common_mask_reformat_subgraph(
             basename,
-            root_input=(self.input_names["input_ids"] if not self.exclude_embeds else self.input_names["inputs_embeds"]),
+            root_input=self.input_names["input_ids"] if not self.exclude_embeds else self.input_names["inputs_embeds"],
             unsqueeze_for_concat=unsqueeze_3_name,
             unsqueeze_for_expand=unsqueeze_9_name,
             input_ids_subgraph=True,
