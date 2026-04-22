@@ -63,8 +63,8 @@ class LocalFunctionsMixin:
     # CausalConvWithState local function
     # ------------------------------------------------------------------
 
-    @staticmethod
-    def _make_causal_conv_local_function(K: int, io_dtype: ir.DataType) -> ir.Function:
+    @classmethod
+    def _make_causal_conv_local_function(cls, K: int, io_dtype: ir.DataType) -> ir.Function:
         """Build an ONNX local function that implements ``com.microsoft:CausalConvWithState``.
 
         The function body uses only standard ONNX opset-21 primitives so that
