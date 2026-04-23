@@ -1075,21 +1075,444 @@ class Qwen25OmniVisionEncoderModel(VisionEncoderModel):
         self.graph.sort()
 
 
+class Qwen25OmniAudioEncoderModel(Model):
+    """ONNX graph builder for the Qwen2.5-Omni audio encoder.
+
+    Exports the Whisper-style audio tower (two Conv1d layers + sinusoidal
+    positional embedding + transformer blocks + average pooling + layer norm +
+    linear projection) to ``audio_encoder.onnx``.
+
+    Inputs
+    ------
+    input_features : float32 [num_mel_bins, n_frames]
+        Mel-spectrogram features for a single audio item (variable length).
+
+    Outputs
+    -------
+    audio_features : io_dtype [n_audio_tokens, output_dim]
+        Pooled and projected audio features suitable for injection into the
+        text embedding model at ``audio_token_id`` placeholder positions.
+    """
+
+    FILENAME = "audio_encoder.onnx"
+
+    def __init__(self, config, io_dtype, onnx_dtype, ep, cache_dir, extra_options):
+        ac = config.audio_config
+
+        # Patch a minimal LLM-style config so that Model.__init__ does not error.
+        audio_obj_config = copy.deepcopy(config)
+        audio_obj_config.hidden_size = ac.d_model
+        audio_obj_config.intermediate_size = ac.encoder_ffn_dim
+        audio_obj_config.num_attention_heads = ac.encoder_attention_heads
+        audio_obj_config.num_key_value_heads = ac.encoder_attention_heads
+        audio_obj_config.num_hidden_layers = ac.encoder_layers
+        audio_obj_config.head_dim = ac.d_model // ac.encoder_attention_heads
+        audio_obj_config.hidden_act = "gelu"
+        audio_obj_config.vocab_size = 1
+        audio_obj_config.max_position_embeddings = 1
+        audio_obj_config.rms_norm_eps = 1e-5
+        audio_obj_config.rope_scaling = None
+
+        extra_options = {**extra_options, "filename": self.FILENAME, "exclude_lm_head": True, "exclude_embeds": True}
+        super().__init__(audio_obj_config, io_dtype, onnx_dtype, ep, cache_dir, extra_options)
+
+        self.graph.name = "qwen25omni_audio_encoder"
+        self.config = config
+        self.audio_config = ac
+
+        self.num_mel_bins = ac.num_mel_bins
+        self.d_model = ac.d_model
+        self.num_heads = ac.encoder_attention_heads
+        self.head_dim = ac.d_model // ac.encoder_attention_heads
+        self.num_layers = ac.encoder_layers
+        self.max_source_positions = ac.max_source_positions
+        self.output_dim = ac.output_dim
+        self.ffn_dim = ac.encoder_ffn_dim
+
+    # ------------------------------------------------------------------
+    # LayerNorm helper (standard LN with weight and bias)
+    # ------------------------------------------------------------------
+
+    def _make_audio_layer_norm(self, name, root_input, weight, bias, shape):
+        """Build a LayerNormalization node with weight and bias."""
+        w_name = f"{name}.weight"
+        b_name = f"{name}.bias"
+        self.make_initializer(weight.detach(), w_name, to=self.io_dtype)
+        self.make_initializer(bias.detach(), b_name, to=self.io_dtype)
+        out = f"{name}/output_0"
+        self.make_node(
+            "LayerNormalization", inputs=[root_input, w_name, b_name], outputs=[out], name=name, axis=-1, epsilon=1e-5, stash_type=1
+        )
+        self.make_value(out, self.io_dtype, shape=shape)
+        return out
+
+    # ------------------------------------------------------------------
+    # Audio attention (full bidirectional attention, no RoPE)
+    # ------------------------------------------------------------------
+
+    def _make_audio_attention(self, layer_id, attn, root_input):
+        """Build the audio encoder self-attention block.
+
+        Input/output: [seq_len, d_model].
+        Full bidirectional attention (no causal mask, no rotary embeddings).
+        k_proj has no bias; q_proj, v_proj, out_proj have bias.
+        """
+        b = f"/audio/layers.{layer_id}/self_attn"
+        n = None  # seq_len is dynamic
+        d = self.d_model
+        nh = self.num_heads
+        hd = self.head_dim
+
+        # Q projection (with bias)
+        q_w = f"{b[1:].replace('/', '.')}.q_proj.MatMul.weight"
+        self.make_initializer(attn.q_proj.weight.T.detach(), q_w, to=self.io_dtype)
+        q_mm = f"{b}/q_proj/MatMul/output_0"
+        self.make_node("MatMul", inputs=[root_input, q_w], outputs=[q_mm], name=f"{b}/q_proj/MatMul")
+        self.make_value(q_mm, self.io_dtype, shape=[n, d])
+        q_bias = f"{b[1:].replace('/', '.')}.q_proj.Add.bias"
+        self.make_initializer(attn.q_proj.bias.detach(), q_bias, to=self.io_dtype)
+        q = f"{b}/q_proj/Add/output_0"
+        self.make_node("Add", inputs=[q_mm, q_bias], outputs=[q], name=f"{b}/q_proj/Add")
+        self.make_value(q, self.io_dtype, shape=[n, d])
+
+        # K projection (no bias)
+        k_w = f"{b[1:].replace('/', '.')}.k_proj.MatMul.weight"
+        self.make_initializer(attn.k_proj.weight.T.detach(), k_w, to=self.io_dtype)
+        k = f"{b}/k_proj/MatMul/output_0"
+        self.make_node("MatMul", inputs=[root_input, k_w], outputs=[k], name=f"{b}/k_proj/MatMul")
+        self.make_value(k, self.io_dtype, shape=[n, d])
+
+        # V projection (with bias)
+        v_w = f"{b[1:].replace('/', '.')}.v_proj.MatMul.weight"
+        self.make_initializer(attn.v_proj.weight.T.detach(), v_w, to=self.io_dtype)
+        v_mm = f"{b}/v_proj/MatMul/output_0"
+        self.make_node("MatMul", inputs=[root_input, v_w], outputs=[v_mm], name=f"{b}/v_proj/MatMul")
+        self.make_value(v_mm, self.io_dtype, shape=[n, d])
+        v_bias = f"{b[1:].replace('/', '.')}.v_proj.Add.bias"
+        self.make_initializer(attn.v_proj.bias.detach(), v_bias, to=self.io_dtype)
+        v = f"{b}/v_proj/Add/output_0"
+        self.make_node("Add", inputs=[v_mm, v_bias], outputs=[v], name=f"{b}/v_proj/Add")
+        self.make_value(v, self.io_dtype, shape=[n, d])
+
+        # Reshape to [seq_len, num_heads, head_dim]
+        q_3d = self.make_reshape(f"{b}/q_reshape", [q, [0, nh, hd]], self.io_dtype, [n, nh, hd])
+        k_3d = self.make_reshape(f"{b}/k_reshape", [k, [0, nh, hd]], self.io_dtype, [n, nh, hd])
+        v_3d = self.make_reshape(f"{b}/v_reshape", [v, [0, nh, hd]], self.io_dtype, [n, nh, hd])
+
+        # Transpose to [num_heads, seq_len, head_dim]
+        q_t = self.make_transpose(f"{b}/q_t", q_3d, self.io_dtype, [nh, n, hd], perm=[1, 0, 2])
+        k_t = self.make_transpose(f"{b}/k_t", k_3d, self.io_dtype, [nh, n, hd], perm=[1, 0, 2])
+        v_t = self.make_transpose(f"{b}/v_t", v_3d, self.io_dtype, [nh, n, hd], perm=[1, 0, 2])
+
+        # Attention scale constant (1/sqrt(head_dim)) in io_dtype
+        scale_val = float(hd) ** -0.5
+        scale_name = f"{b}/attn_scale"
+        np_dtype = np.float32 if self.io_dtype in (ir.DataType.FLOAT, ir.DataType.BFLOAT16) else np.float16
+        _scale_t = ir.Tensor(np.array(scale_val, dtype=np_dtype), name=scale_name)
+        self.make_node("Constant", inputs=[], outputs=[scale_name], name=f"{scale_name}/Constant", value=_scale_t)
+        self.make_value(scale_name, self.io_dtype, shape=[])
+
+        # K^T for MatMul: transpose to [num_heads, head_dim, seq_len]
+        k_t2 = self.make_transpose(f"{b}/k_t2", k_t, self.io_dtype, [nh, hd, n], perm=[0, 2, 1])
+
+        # Q @ K^T → [num_heads, seq_len, seq_len]
+        attn_w = f"{b}/attn_weights/MatMul/output_0"
+        self.make_node("MatMul", inputs=[q_t, k_t2], outputs=[attn_w], name=f"{b}/attn_weights/MatMul")
+        self.make_value(attn_w, self.io_dtype, shape=[nh, n, n])
+
+        attn_ws = self.make_mul(f"{b}/attn_scale_mul", [attn_w, scale_name], self.io_dtype, [nh, n, n])
+        attn_probs = self.make_softmax(f"{b}/attn_softmax", attn_ws, self.io_dtype, [nh, n, n])
+
+        # Attn @ V → [num_heads, seq_len, head_dim]
+        attn_out = f"{b}/attn_out/MatMul/output_0"
+        self.make_node("MatMul", inputs=[attn_probs, v_t], outputs=[attn_out], name=f"{b}/attn_out/MatMul")
+        self.make_value(attn_out, self.io_dtype, shape=[nh, n, hd])
+
+        # Transpose back to [seq_len, num_heads, head_dim] and flatten to [seq_len, d_model]
+        attn_back = self.make_transpose(f"{b}/attn_back", attn_out, self.io_dtype, [n, nh, hd], perm=[1, 0, 2])
+        attn_flat = self.make_reshape(f"{b}/attn_flat", [attn_back, [0, d]], self.io_dtype, [n, d])
+
+        # out_proj (with bias)
+        out_w = f"{b[1:].replace('/', '.')}.out_proj.MatMul.weight"
+        self.make_initializer(attn.out_proj.weight.T.detach(), out_w, to=self.io_dtype)
+        out_mm = f"{b}/out_proj/MatMul/output_0"
+        self.make_node("MatMul", inputs=[attn_flat, out_w], outputs=[out_mm], name=f"{b}/out_proj/MatMul")
+        self.make_value(out_mm, self.io_dtype, shape=[n, d])
+        out_bias = f"{b[1:].replace('/', '.')}.out_proj.Add.bias"
+        self.make_initializer(attn.out_proj.bias.detach(), out_bias, to=self.io_dtype)
+        out_add = f"{b}/out_proj/Add/output_0"
+        self.make_node("Add", inputs=[out_mm, out_bias], outputs=[out_add], name=f"{b}/out_proj/Add")
+        self.make_value(out_add, self.io_dtype, shape=[n, d])
+
+        return out_add
+
+    # ------------------------------------------------------------------
+    # Single transformer layer
+    # ------------------------------------------------------------------
+
+    def _make_audio_layer(self, layer_id, layer, root_input):
+        """Build one Qwen2_5OmniAudioEncoderLayer.
+
+        Pattern: LN1 → Attention → residual → LN2 → MLP → residual.
+        """
+        n = None
+        d = self.d_model
+        ff = self.ffn_dim
+        b = f"/audio/layers.{layer_id}"
+
+        # Pre-attention LayerNorm
+        ln1_out = self._make_audio_layer_norm(
+            f"{b}/self_attn_layer_norm", root_input, layer.self_attn_layer_norm.weight, layer.self_attn_layer_norm.bias, [n, d]
+        )
+
+        # Attention
+        attn_out = self._make_audio_attention(layer_id, layer.self_attn, ln1_out)
+
+        # Residual 1
+        residual1 = self.make_add(f"{b}/residual1/Add", [root_input, attn_out], self.io_dtype, [n, d])
+
+        # Pre-MLP LayerNorm
+        ln2_out = self._make_audio_layer_norm(
+            f"{b}/final_layer_norm", residual1, layer.final_layer_norm.weight, layer.final_layer_norm.bias, [n, d]
+        )
+
+        # MLP: fc1 → GELU → fc2
+        fc1_w = f"{b[1:].replace('/', '.')}.fc1.MatMul.weight"
+        self.make_initializer(layer.fc1.weight.T.detach(), fc1_w, to=self.io_dtype)
+        fc1_mm = f"{b}/fc1/MatMul/output_0"
+        self.make_node("MatMul", inputs=[ln2_out, fc1_w], outputs=[fc1_mm], name=f"{b}/fc1/MatMul")
+        self.make_value(fc1_mm, self.io_dtype, shape=[n, ff])
+        fc1_b = f"{b[1:].replace('/', '.')}.fc1.Add.bias"
+        self.make_initializer(layer.fc1.bias.detach(), fc1_b, to=self.io_dtype)
+        fc1_out = f"{b}/fc1/Add/output_0"
+        self.make_node("Add", inputs=[fc1_mm, fc1_b], outputs=[fc1_out], name=f"{b}/fc1/Add")
+        self.make_value(fc1_out, self.io_dtype, shape=[n, ff])
+
+        gelu_out = f"{b}/gelu/output_0"
+        self.make_node("Gelu", inputs=[fc1_out], outputs=[gelu_out], name=f"{b}/gelu")
+        self.make_value(gelu_out, self.io_dtype, shape=[n, ff])
+
+        fc2_w = f"{b[1:].replace('/', '.')}.fc2.MatMul.weight"
+        self.make_initializer(layer.fc2.weight.T.detach(), fc2_w, to=self.io_dtype)
+        fc2_mm = f"{b}/fc2/MatMul/output_0"
+        self.make_node("MatMul", inputs=[gelu_out, fc2_w], outputs=[fc2_mm], name=f"{b}/fc2/MatMul")
+        self.make_value(fc2_mm, self.io_dtype, shape=[n, d])
+        fc2_b = f"{b[1:].replace('/', '.')}.fc2.Add.bias"
+        self.make_initializer(layer.fc2.bias.detach(), fc2_b, to=self.io_dtype)
+        fc2_out = f"{b}/fc2/Add/output_0"
+        self.make_node("Add", inputs=[fc2_mm, fc2_b], outputs=[fc2_out], name=f"{b}/fc2/Add")
+        self.make_value(fc2_out, self.io_dtype, shape=[n, d])
+
+        # Residual 2
+        return self.make_add(f"{b}/residual2/Add", [residual1, fc2_out], self.io_dtype, [n, d])
+
+    # ------------------------------------------------------------------
+    # Weight loading
+    # ------------------------------------------------------------------
+
+    def load_hf_model(self, input_path):
+        from transformers import Qwen2_5OmniThinkerForConditionalGeneration
+
+        src = input_path if os.path.isdir(input_path) else self.model_name_or_path
+        extra_kwargs = {} if os.path.isdir(input_path) else {"cache_dir": self.cache_dir}
+        return Qwen2_5OmniThinkerForConditionalGeneration.from_pretrained(
+            src, token=self.hf_token, trust_remote_code=self.hf_remote, **extra_kwargs
+        )
+
+    # ------------------------------------------------------------------
+    # Main entry point
+    # ------------------------------------------------------------------
+
+    def make_model(self, input_path):
+        """Load HF weights and build the audio encoder ONNX graph."""
+        hf_model = self.load_hf_model(input_path)
+        hf_model.eval()
+        audio = hf_model.audio_tower
+
+        n = None  # dynamic sequence length
+
+        # --- Graph input: float32 mel-spectrogram [num_mel_bins, n_frames] ---
+        in_val = self.make_value("input_features", ir.DataType.FLOAT, shape=[self.num_mel_bins, n])
+        self.graph.inputs.append(in_val)
+
+        # Constant axes tensor for Unsqueeze/Squeeze at batch dim 0.
+        _bax = ir.Tensor(np.array([0], dtype=np.int64), name="/audio/batch_ax")
+        self.make_node("Constant", inputs=[], outputs=["/audio/batch_ax"], name="/audio/batch_ax/Constant", value=_bax)
+        self.make_value("/audio/batch_ax", ir.DataType.INT64, shape=[1])
+
+        # --- Unsqueeze to [1, num_mel_bins, n_frames] for Conv1d ---
+        self.make_unsqueeze("/audio/unsqueeze_input", ["input_features", "/audio/batch_ax"], ir.DataType.FLOAT, [1, self.num_mel_bins, n])
+        feat = "/audio/unsqueeze_input/output_0"
+
+        # Cast to io_dtype if needed (Conv weights are stored in io_dtype)
+        if self.io_dtype != ir.DataType.FLOAT:
+            self.make_cast("/audio/pv_cast", feat, self.io_dtype, [1, self.num_mel_bins, n])
+            feat = "/audio/pv_cast/output_0"
+
+        # --- Conv1: [1, num_mel_bins, n_frames] → [1, d_model, n_frames] + GELU ---
+        conv1_w = "audio.conv1.Conv.weight"
+        conv1_b = "audio.conv1.Conv.bias"
+        self.make_initializer(audio.conv1.weight.detach(), conv1_w, to=self.io_dtype)
+        self.make_initializer(audio.conv1.bias.detach(), conv1_b, to=self.io_dtype)
+        self.make_conv(
+            "/audio/conv1",
+            [feat, conv1_w, conv1_b],
+            self.io_dtype,
+            [1, self.d_model, n],
+            dilations=[1],
+            group=1,
+            kernel_shape=[3],
+            pads=[1, 1],
+            strides=[1],
+        )
+        conv1_gelu = "/audio/conv1_gelu/output_0"
+        self.make_node("Gelu", inputs=["/audio/conv1/output_0"], outputs=[conv1_gelu], name="/audio/conv1_gelu")
+        self.make_value(conv1_gelu, self.io_dtype, shape=[1, self.d_model, n])
+
+        # --- Conv2: [1, d_model, n_frames] → [1, d_model, n_conv_out] + GELU (stride=2) ---
+        conv2_w = "audio.conv2.Conv.weight"
+        conv2_b = "audio.conv2.Conv.bias"
+        self.make_initializer(audio.conv2.weight.detach(), conv2_w, to=self.io_dtype)
+        self.make_initializer(audio.conv2.bias.detach(), conv2_b, to=self.io_dtype)
+        self.make_conv(
+            "/audio/conv2",
+            [conv1_gelu, conv2_w, conv2_b],
+            self.io_dtype,
+            [1, self.d_model, n],
+            dilations=[1],
+            group=1,
+            kernel_shape=[3],
+            pads=[1, 1],
+            strides=[2],
+        )
+        conv2_gelu = "/audio/conv2_gelu/output_0"
+        self.make_node("Gelu", inputs=["/audio/conv2/output_0"], outputs=[conv2_gelu], name="/audio/conv2_gelu")
+        self.make_value(conv2_gelu, self.io_dtype, shape=[1, self.d_model, n])
+
+        # --- Transpose: [1, d_model, n_conv_out] → [1, n_conv_out, d_model] ---
+        self.make_transpose("/audio/conv_transpose", conv2_gelu, self.io_dtype, [1, n, self.d_model], perm=[0, 2, 1])
+
+        # --- Squeeze batch: [1, n_conv_out, d_model] → [n_conv_out, d_model] ---
+        self.make_squeeze("/audio/squeeze_batch", ["/audio/conv_transpose/output_0", "/audio/batch_ax"], self.io_dtype, [n, self.d_model])
+        hidden = "/audio/squeeze_batch/output_0"
+
+        # --- Positional embedding (sinusoidal, pre-computed) ---
+        # Shape: [max_source_positions, d_model] stored as float32.
+        pos_emb_np = audio.positional_embedding.positional_embedding.detach().float().numpy()
+        pos_emb_name = "audio.positional_embedding.weight"
+        self.make_initializer(pos_emb_np, pos_emb_name)
+
+        # Dynamically slice to [n_conv_out, d_model] using Shape + Gather + Slice.
+        self.make_shape("/audio/hidden_shape", hidden, [2])
+        _idx = ir.Tensor(np.array(0, dtype=np.int64), name="/audio/seq_len_idx")
+        self.make_node("Constant", inputs=[], outputs=["/audio/seq_len_idx"], name="/audio/seq_len_idx/Constant", value=_idx)
+        self.make_value("/audio/seq_len_idx", ir.DataType.INT64, shape=[])
+        self.make_gather("/audio/seq_len", ["/audio/hidden_shape/output_0", "/audio/seq_len_idx"], ir.DataType.INT64, [], axis=0)
+
+        # Unsqueeze scalar → [1] for use as Slice ends
+        self.make_unsqueeze("/audio/seq_len_1d", ["/audio/seq_len/output_0", "/audio/batch_ax"], ir.DataType.INT64, [1])
+
+        _starts = ir.Tensor(np.array([0], dtype=np.int64), name="/audio/pos_emb_starts")
+        self.make_node("Constant", inputs=[], outputs=["/audio/pos_emb_starts"], name="/audio/pos_emb_starts/Constant", value=_starts)
+        self.make_value("/audio/pos_emb_starts", ir.DataType.INT64, shape=[1])
+        _axes = ir.Tensor(np.array([0], dtype=np.int64), name="/audio/pos_emb_axes")
+        self.make_node("Constant", inputs=[], outputs=["/audio/pos_emb_axes"], name="/audio/pos_emb_axes/Constant", value=_axes)
+        self.make_value("/audio/pos_emb_axes", ir.DataType.INT64, shape=[1])
+
+        pos_sliced = "/audio/pos_emb_sliced/output_0"
+        self.make_node(
+            "Slice",
+            inputs=[pos_emb_name, "/audio/pos_emb_starts", "/audio/seq_len_1d/output_0", "/audio/pos_emb_axes"],
+            outputs=[pos_sliced],
+            name="/audio/pos_emb_sliced",
+        )
+        self.make_value(pos_sliced, ir.DataType.FLOAT, shape=[n, self.d_model])
+
+        # Cast positional embedding to io_dtype if needed
+        if self.io_dtype != ir.DataType.FLOAT:
+            self.make_cast("/audio/pos_emb_cast", pos_sliced, self.io_dtype, [n, self.d_model])
+            pos_sliced = "/audio/pos_emb_cast/output_0"
+
+        # Add positional embedding to hidden states
+        hidden = self.make_add("/audio/pos_emb_add", [hidden, pos_sliced], self.io_dtype, [n, self.d_model])
+
+        # --- Transformer layers ---
+        for i, layer in enumerate(audio.layers):
+            hidden = self._make_audio_layer(i, layer, hidden)
+
+        # --- AvgPool1d: [seq_len, d_model] → pool along seq_len → [pooled, d_model] ---
+        # Transpose: [seq_len, d_model] → [d_model, seq_len]
+        self.make_transpose("/audio/pool_pre_t", hidden, self.io_dtype, [self.d_model, n], perm=[1, 0])
+        # Unsqueeze: [d_model, seq_len] → [1, d_model, seq_len]
+        self.make_unsqueeze("/audio/pool_unsqueeze", ["/audio/pool_pre_t/output_0", "/audio/batch_ax"], self.io_dtype, [1, self.d_model, n])
+        # AveragePool (kernel=2, stride=2)
+        pool_out = "/audio/avg_pool/output_0"
+        self.make_node(
+            "AveragePool",
+            inputs=["/audio/pool_unsqueeze/output_0"],
+            outputs=[pool_out],
+            name="/audio/avg_pool",
+            kernel_shape=[2],
+            strides=[2],
+        )
+        self.make_value(pool_out, self.io_dtype, shape=[1, self.d_model, n])
+        # Squeeze: [1, d_model, pooled] → [d_model, pooled]
+        self.make_squeeze("/audio/pool_squeeze", [pool_out, "/audio/batch_ax"], self.io_dtype, [self.d_model, n])
+        # Transpose: [d_model, pooled] → [pooled, d_model]
+        self.make_transpose("/audio/pool_post_t", "/audio/pool_squeeze/output_0", self.io_dtype, [n, self.d_model], perm=[1, 0])
+        hidden = "/audio/pool_post_t/output_0"
+
+        # --- ln_post (LayerNorm) ---
+        hidden = self._make_audio_layer_norm("/audio/ln_post", hidden, audio.ln_post.weight, audio.ln_post.bias, [n, self.d_model])
+
+        # --- Linear projection: [pooled, d_model] → [pooled, output_dim] ---
+        proj_w = "audio.proj.MatMul.weight"
+        self.make_initializer(audio.proj.weight.T.detach(), proj_w, to=self.io_dtype)
+        proj_mm = "/audio/proj/MatMul/output_0"
+        self.make_node("MatMul", inputs=[hidden, proj_w], outputs=[proj_mm], name="/audio/proj/MatMul")
+        self.make_value(proj_mm, self.io_dtype, shape=[n, self.output_dim])
+        proj_b = "audio.proj.Add.bias"
+        self.make_initializer(audio.proj.bias.detach(), proj_b, to=self.io_dtype)
+        audio_feat = "/audio/proj/Add/output_0"
+        self.make_node("Add", inputs=[proj_mm, proj_b], outputs=[audio_feat], name="/audio/proj/Add")
+        self.make_value(audio_feat, self.io_dtype, shape=[n, self.output_dim])
+
+        # --- Graph output ---
+        self.make_node("Identity", inputs=[audio_feat], outputs=["audio_features"], name="/audio/output/Identity")
+        out_val = self.make_value("audio_features", self.io_dtype, shape=[n, self.output_dim])
+        self.graph.outputs.append(out_val)
+
+        self.graph.sort()
+
+
 class Qwen25OmniEmbeddingModel(EmbeddingModel):
     """ONNX embedding model for the Qwen2.5-Omni ``phi3v``-style multimodal pipeline.
 
+    Extends the base ScatterND embedding graph to handle both image and audio
+    token placeholders.  Image features are scattered at ``image_token_id``
+    positions; audio features are scattered at ``audio_token_id`` positions.
+
     Graph (2-D ``input_ids [1, T]`` from ORT-GenAI's ``EmbeddingState``)::
 
-        text_embeds  = Gather(embed_tokens_weight, input_ids)  # [1, T, H]
-        text_2d      = Squeeze(text_embeds, [0])               # [T, H]
-        flat_ids     = Squeeze(input_ids, [0])                 # [T]
-        is_img       = Equal(flat_ids, image_token_id_const)   # [T] bool
-        img_pos      = NonZero(is_img)                         # [1, N]
-        img_pos_idx  = Transpose(img_pos, [1, 0])              # [N, 1]
-        scattered_2d = ScatterND(text_2d, img_pos_idx,
-                                 image_features)               # [T, H]
-        inputs_embeds = Unsqueeze(scattered_2d, [0])           # [1, T, H]
+        text_embeds   = Gather(embed_tokens_weight, input_ids)   # [1, T, H]
+        text_2d       = Squeeze(text_embeds, [0])                # [T, H]
+        flat_ids      = Squeeze(input_ids, [0])                  # [T]
+        is_img        = Equal(flat_ids, image_token_id_const)    # [T] bool
+        img_pos       = NonZero(is_img)                          # [1, N_img]
+        img_pos_idx   = Transpose(img_pos, [1, 0])               # [N_img, 1]
+        scattered_img = ScatterND(text_2d, img_pos_idx,
+                                  image_features)                # [T, H]
+        is_audio      = Equal(flat_ids, audio_token_id_const)    # [T] bool
+        aud_pos       = NonZero(is_audio)                        # [1, N_aud]
+        aud_pos_idx   = Transpose(aud_pos, [1, 0])               # [N_aud, 1]
+        scattered_2d  = ScatterND(scattered_img, aud_pos_idx,
+                                  audio_features)                # [T, H]
+        inputs_embeds = Unsqueeze(scattered_2d, [0])             # [1, T, H]
     """
+
+    def __init__(self, config, io_dtype, onnx_dtype, ep, cache_dir, extra_options):
+        super().__init__(config, io_dtype, onnx_dtype, ep, cache_dir, extra_options)
+        self.audio_token_id = extra_options.get("audio_token_id", 151646)
 
     def load_hf_model(self, input_path):
         from transformers import Qwen2_5OmniThinkerForConditionalGeneration
@@ -1103,15 +1526,74 @@ class Qwen25OmniEmbeddingModel(EmbeddingModel):
     def get_embed_weight(self, hf_model):
         return hf_model.model.embed_tokens.weight.detach().float().numpy()
 
+    def make_model(self, input_path):
+        """Load HF weights and build the embedding+scatter ONNX graph."""
+        hf_model = self.load_hf_model(input_path)
+        hf_model.eval()
+        embed_weight = self.get_embed_weight(hf_model)
+
+        # Initializers
+        self.make_initializer(embed_weight, name="embed_tokens_weight")
+        self.make_initializer(np.array(self.image_token_id, dtype=np.int64), name="image_token_id_const")
+        self.make_initializer(np.array(self.audio_token_id, dtype=np.int64), name="audio_token_id_const")
+
+        _squeeze_axes = ir.Tensor(np.array([0], dtype=np.int64), name="squeeze_batch_axes")
+        self.make_node(
+            "Constant", inputs=[], outputs=["squeeze_batch_axes"], name="/embed/squeeze_batch_axes/Constant", value=_squeeze_axes
+        )
+        self.make_value("squeeze_batch_axes", ir.DataType.INT64, shape=[1])
+
+        # Graph inputs
+        self.graph.inputs.append(self.make_value("input_ids", ir.DataType.INT64, shape=[None, None]))
+        self.graph.inputs.append(self.make_value("image_features", self.io_dtype, shape=[None, self.hidden_size]))
+        self.graph.inputs.append(self.make_value("audio_features", self.io_dtype, shape=[None, self.hidden_size]))
+
+        # 1. Embed all tokens: [1, T] → [1, T, H] (float32)
+        self.make_node("Gather", inputs=["embed_tokens_weight", "input_ids"], outputs=["text_embeds"], name="/embed/Gather", axis=0)
+        # 2. Squeeze batch dim: [1, T, H] → [T, H]
+        self.make_node("Squeeze", inputs=["text_embeds", "squeeze_batch_axes"], outputs=["text_2d_fp32"], name="/embed/Squeeze_3d")
+        # 3. Cast to io_dtype
+        self.make_cast("/embed/Cast_text_2d", "text_2d_fp32", self.io_dtype, [None, self.hidden_size])
+        # 4. Flatten input_ids: [1, T] → [T]
+        self.make_node("Squeeze", inputs=["input_ids", "squeeze_batch_axes"], outputs=["flat_ids"], name="/embed/Squeeze_ids")
+
+        # 5. Scatter image features at image_token_id positions
+        self.make_node("Equal", inputs=["flat_ids", "image_token_id_const"], outputs=["is_image"], name="/embed/Equal_img")
+        self.make_node("NonZero", inputs=["is_image"], outputs=["img_pos"], name="/embed/NonZero_img")
+        self.make_node("Transpose", inputs=["img_pos"], outputs=["img_pos_idx"], name="/embed/Transpose_img", perm=[1, 0])
+        self.make_node(
+            "ScatterND",
+            inputs=["/embed/Cast_text_2d/output_0", "img_pos_idx", "image_features"],
+            outputs=["scattered_img"],
+            name="/embed/ScatterND_img",
+        )
+
+        # 6. Scatter audio features at audio_token_id positions
+        self.make_node("Equal", inputs=["flat_ids", "audio_token_id_const"], outputs=["is_audio"], name="/embed/Equal_aud")
+        self.make_node("NonZero", inputs=["is_audio"], outputs=["aud_pos"], name="/embed/NonZero_aud")
+        self.make_node("Transpose", inputs=["aud_pos"], outputs=["aud_pos_idx"], name="/embed/Transpose_aud", perm=[1, 0])
+        self.make_node(
+            "ScatterND", inputs=["scattered_img", "aud_pos_idx", "audio_features"], outputs=["scattered_2d"], name="/embed/ScatterND_aud"
+        )
+
+        # 7. Re-add batch dimension: [T, H] → [1, T, H]
+        self.make_node("Unsqueeze", inputs=["scattered_2d", "squeeze_batch_axes"], outputs=["inputs_embeds"], name="/embed/Unsqueeze")
+
+        # Graph output
+        self.graph.outputs.append(self.make_value("inputs_embeds", self.io_dtype, shape=[1, None, self.hidden_size]))
+
+        self.graph.sort()
+
 
 class Qwen25OmniConditionalGenerationModel(Model):
-    """Orchestrates exporting the vision encoder, embedding model, and thinker
-    (text decoder) for ``Qwen2_5OmniThinkerForConditionalGeneration``.
+    """Orchestrates exporting vision encoder, audio encoder, embedding model,
+    and thinker (text decoder) for ``Qwen2_5OmniThinkerForConditionalGeneration``.
 
     The exported artifacts are:
 
     * ``vision_encoder.onnx`` – Qwen2.5-Omni vision tower + patch merger.
-    * ``embedding.onnx`` – token-embedding table + image-feature scatter.
+    * ``audio_encoder.onnx`` – Qwen2.5-Omni audio tower (Conv1d + transformer + projection).
+    * ``embedding.onnx`` – token-embedding table + image/audio feature scatter.
     * ``model.onnx`` – Qwen2.5-Omni thinker text decoder.
     * ``genai_config.json`` – ``phi3v``-type VLM config for ORT-GenAI.
     """
@@ -1119,6 +1601,9 @@ class Qwen25OmniConditionalGenerationModel(Model):
     def __init__(self, config, io_dtype, onnx_dtype, ep, cache_dir, extra_options):
         # --- Vision encoder ---
         self.vision_encoder = Qwen25OmniVisionEncoderModel(config, io_dtype, onnx_dtype, ep, cache_dir, extra_options)
+
+        # --- Audio encoder ---
+        self.audio_encoder = Qwen25OmniAudioEncoderModel(config, io_dtype, onnx_dtype, ep, cache_dir, extra_options)
 
         # --- Flatten text config onto a working config copy for remaining models ---
         text_obj_config = copy.deepcopy(config)
@@ -1135,12 +1620,14 @@ class Qwen25OmniConditionalGenerationModel(Model):
                 if not hasattr(text_obj_config, key) or getattr(text_obj_config, key) is None:
                     setattr(text_obj_config, key, getattr(text_config, key))
 
-        # image_token_id is stored at the top-level Qwen2_5OmniThinkerConfig.
+        # image_token_id and audio_token_id are stored at the top-level config.
         image_token_id = getattr(config, "image_token_id", getattr(config, "image_token_index", 151655))
+        audio_token_id = getattr(config, "audio_token_id", getattr(config, "audio_token_index", 151646))
 
         # --- Embedding model (always float32 for the embedding table) ---
         embed_extra_options = dict(extra_options)
         embed_extra_options["image_token_id"] = image_token_id
+        embed_extra_options["audio_token_id"] = audio_token_id
         self.embedding_model = Qwen25OmniEmbeddingModel(text_obj_config, io_dtype, ir.DataType.FLOAT, ep, cache_dir, embed_extra_options)
 
         # --- Thinker (text decoder) ---
@@ -1155,6 +1642,8 @@ class Qwen25OmniConditionalGenerationModel(Model):
     def make_model(self, input_path):
         print("Building vision encoder for Qwen2.5-Omni...")
         self.vision_encoder.make_model(input_path)
+        print("Building audio encoder for Qwen2.5-Omni...")
+        self.audio_encoder.make_model(input_path)
         print("Building embedding model for Qwen2.5-Omni...")
         self.embedding_model.make_model(input_path)
         print("Building thinker text decoder for Qwen2.5-Omni...")
@@ -1162,6 +1651,7 @@ class Qwen25OmniConditionalGenerationModel(Model):
 
     def save_model(self, out_dir):
         self.vision_encoder.save_model(out_dir)
+        self.audio_encoder.save_model(out_dir)
         self.embedding_model.save_model(out_dir)
         self.text_model.save_model(out_dir)
 
@@ -1185,9 +1675,15 @@ class Qwen25OmniConditionalGenerationModel(Model):
             "outputs": {"image_features": "image_features"},
         }
 
+        genai_config["model"]["audio"] = {
+            "filename": self.audio_encoder.FILENAME,
+            "inputs": {"input_features": "input_features"},
+            "outputs": {"audio_features": "audio_features"},
+        }
+
         genai_config["model"]["embedding"] = {
             "filename": self.embedding_model.FILENAME,
-            "inputs": {"input_ids": "input_ids", "image_features": "image_features"},
+            "inputs": {"input_ids": "input_ids", "image_features": "image_features", "audio_features": "audio_features"},
             "outputs": {"inputs_embeds": "inputs_embeds"},
         }
 

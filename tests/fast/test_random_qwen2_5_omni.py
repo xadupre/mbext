@@ -174,15 +174,20 @@ class TestRandomQwen25Omni(ExtTestCase):
 
 @requires_transformers("5")
 class TestRandomQwen25OmniVision(ExtTestCase):
-    """Tests for the Qwen2.5-Omni multimodal pipeline (vision encoder + embedding + thinker).
+    """Tests for the Qwen2.5-Omni multimodal pipeline (vision + audio encoders +
+    embedding model + thinker text decoder).
 
     The vision encoder takes:
 
     * ``pixel_values`` [n_patches, in_feat_dim] – flat image patches from the image processor.
     * ``rotary_pos_emb`` [n_patches, head_dim // 2] – 2-D RoPE frequencies (float32).
 
-    The embedding model replaces ``image_token_id`` placeholders in ``input_ids``
-    with the vision-encoder ``image_features``.
+    The audio encoder takes:
+
+    * ``input_features`` [num_mel_bins, n_frames] – mel-spectrogram for a single audio item.
+
+    The embedding model replaces ``image_token_id`` and ``audio_token_id`` placeholders
+    in ``input_ids`` with the corresponding encoder outputs.
     """
 
     def common_qwen25omni_conditional_generation(self, precision, provider):
@@ -190,11 +195,14 @@ class TestRandomQwen25OmniVision(ExtTestCase):
 
         Verifies that:
 
-        * ``vision_encoder.onnx``, ``embedding.onnx``, and ``model.onnx`` are written.
-        * ``genai_config.json`` has the ``phi3v`` type with ``vision`` and ``embedding``
-          sections.
+        * ``vision_encoder.onnx``, ``audio_encoder.onnx``, ``embedding.onnx``,
+          and ``model.onnx`` are written.
+        * ``genai_config.json`` has the ``phi3v`` type with ``vision``, ``audio``,
+          and ``embedding`` sections.
         * The vision encoder produces output of the correct shape and matches the
           PyTorch reference.
+        * The audio encoder produces output of the correct shape and matches the
+          PyTorch reference (single-chunk audio, within one window).
         * The text decoder produces logits when fed ``inputs_embeds``.
         """
         import json
@@ -263,10 +271,11 @@ class TestRandomQwen25OmniVision(ExtTestCase):
 
         # --- Verify all ONNX artefacts exist ---
         vision_onnx_path = os.path.join(output_dir, "vision_encoder.onnx")
+        audio_onnx_path = os.path.join(output_dir, "audio_encoder.onnx")
         embedding_onnx_path = os.path.join(output_dir, "embedding.onnx")
         text_onnx_path = os.path.join(output_dir, "model.onnx")
         genai_config_path = os.path.join(output_dir, "genai_config.json")
-        for p in [vision_onnx_path, embedding_onnx_path, text_onnx_path, genai_config_path]:
+        for p in [vision_onnx_path, audio_onnx_path, embedding_onnx_path, text_onnx_path, genai_config_path]:
             self.assertExists(p)
 
         # --- Verify genai_config.json ---
@@ -275,8 +284,12 @@ class TestRandomQwen25OmniVision(ExtTestCase):
         self.assertEqual(genai_config["model"]["type"], "phi3v")
         self.assertIn("vision", genai_config["model"])
         self.assertEqual(genai_config["model"]["vision"]["filename"], "vision_encoder.onnx")
+        self.assertIn("audio", genai_config["model"])
+        self.assertEqual(genai_config["model"]["audio"]["filename"], "audio_encoder.onnx")
         self.assertIn("embedding", genai_config["model"])
         self.assertEqual(genai_config["model"]["embedding"]["filename"], "embedding.onnx")
+
+        np_dtype = np.float16 if precision == "fp16" else np.float32
 
         # --- Run vision encoder and compare to PyTorch ---
         vc = config.vision_config
@@ -288,15 +301,14 @@ class TestRandomQwen25OmniVision(ExtTestCase):
         grid_thw = torch.tensor([[t, h, w]], dtype=torch.int32)
         n_merged = n_patches // (spatial_merge_size**2)
 
-        np_dtype = np.float16 if precision == "fp16" else np.float32
         torch.manual_seed(0)
         pixel_values = torch.randn(n_patches, in_feat_dim)
 
         # Compute PyTorch reference (always in float32).
         with torch.no_grad():
             rotary_pos_emb = model.visual.rot_pos_emb(grid_thw)
-            pt_out = model.visual(hidden_states=pixel_values, grid_thw=grid_thw)
-            pt_features = pt_out.pooler_output.numpy().astype(np.float32)
+            pt_vis_out = model.visual(hidden_states=pixel_values, grid_thw=grid_thw)
+            pt_vis_features = pt_vis_out.pooler_output.numpy().astype(np.float32)
 
         vision_sess = self.check_ort(vision_onnx_path)
         vision_out = vision_sess.run(
@@ -307,7 +319,34 @@ class TestRandomQwen25OmniVision(ExtTestCase):
         self.assertEqual(vision_out[0].shape[1], vc.out_hidden_size)
 
         atol = 1e-2 if precision == "fp16" else 1e-4
-        np.testing.assert_allclose(pt_features, vision_out[0].astype(np.float32), atol=atol)
+        np.testing.assert_allclose(pt_vis_features, vision_out[0].astype(np.float32), atol=atol)
+
+        # --- Run audio encoder and compare to PyTorch ---
+        # Use n_frames=100 (single chunk, well within n_window * 2 = 200).
+        ac = config.audio_config
+        n_frames = 100  # single chunk: n_frames <= n_window * 2 = 200
+        n_conv_out = (n_frames - 1) // 2 + 1  # after conv2 with stride=2
+        n_pooled = (n_conv_out - 2) // 2 + 1  # after AvgPool1d(kernel=2, stride=2)
+
+        torch.manual_seed(1)
+        # input_features: [num_mel_bins, n_frames] for audio_tower (single audio, 2D transposed)
+        input_features_2d = torch.randn(ac.num_mel_bins, n_frames)
+
+        # PyTorch reference: call audio_tower directly with single-chunk inputs.
+        feature_lens = torch.tensor([n_frames], dtype=torch.long)
+        aftercnn_lens = torch.tensor([n_conv_out], dtype=torch.long)
+        with torch.no_grad():
+            pt_aud_out = model.audio_tower(input_features_2d, feature_lens=feature_lens, aftercnn_lens=aftercnn_lens)
+        pt_aud_features = pt_aud_out.last_hidden_state.numpy().astype(np.float32)
+
+        audio_sess = self.check_ort(audio_onnx_path)
+        audio_out = audio_sess.run(None, {"input_features": input_features_2d.numpy().astype(np.float32)})
+        self.assertIsNotNone(audio_out[0])
+        self.assertEqual(audio_out[0].shape[0], n_pooled)
+        self.assertEqual(audio_out[0].shape[1], ac.output_dim)
+
+        atol_audio = 1e-2 if precision == "fp16" else 1e-4
+        np.testing.assert_allclose(pt_aud_features, audio_out[0].astype(np.float32), atol=atol_audio)
 
         # --- Run text decoder forward pass ---
         batch_size = 1
