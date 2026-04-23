@@ -887,7 +887,7 @@ class TestNemotronH(ExtTestCase):
     # ------------------------------------------------------------------ #
     # Tests: NemotronH full_attention blocks                              #
     # "full_attention" is an alias for standard NoPE multi-head attention #
-    # (identical to "attention").  The transformers library does not yet  #
+    # (identical to "attention"). The transformers library does not yet   #
     # expose "full_attention" in MIXER_TYPES, so these tests patch it in  #
     # temporarily to validate the ONNX builder support.                  #
     # ------------------------------------------------------------------ #
