@@ -803,7 +803,7 @@ class Phi4MultimodalVisionEncoderModel(VisionEncoderModel):
         Input:  x [n_crops=2, n_compressed_patches=256, d=1152]
         Output: merged [n_image_tokens=545, d=1152]
         """
-        nc = self.n_crops  # noqa: F841 – kept for readability alongside n_cp/n_cs/d
+        nc = self.n_crops  # noqa: F841 - kept for readability alongside n_cp/n_cs/d
         n_cp = self.n_compressed_patches  # 256
         n_cs = self.n_compressed_per_side  # 16
         d = self.vis_hidden_size  # 1152
@@ -860,7 +860,7 @@ class Phi4MultimodalVisionEncoderModel(VisionEncoderModel):
         Output:   [n_image_tokens, text_hidden_size] e.g. [545, 3072]
         """
         n_tok = self.n_image_tokens  # 545
-        d = self.vis_hidden_size  # noqa: F841 – kept for symmetry with n_tok/t_hid
+        d = self.vis_hidden_size  # noqa: F841 - kept for symmetry with n_tok/t_hid
         t_hid = self.text_hidden_size  # 3072
 
         # img_projection_up: Linear(d, t_hid)
