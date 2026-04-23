@@ -884,6 +884,266 @@ class TestNemotronH(ExtTestCase):
         # not supported by standard ORT/transformers reference generation.
         self.run_genai_generation_test(output_dir, None, config.vocab_size, config.eos_token_id, prompt_ids=prompt_ids)
 
+    # ------------------------------------------------------------------ #
+    # Tests: NemotronH full_attention blocks                              #
+    # "full_attention" is an alias for standard NoPE multi-head attention #
+    # (identical to "attention").  The transformers library does not yet  #
+    # expose "full_attention" in MIXER_TYPES, so these tests patch it in  #
+    # temporarily to validate the ONNX builder support.                  #
+    # ------------------------------------------------------------------ #
+
+    @staticmethod
+    def _full_attention_patches():
+        """Context manager that enables "full_attention" support in transformers.
+
+        Two patches are applied simultaneously:
+
+        1. ``MIXER_TYPES`` gains a ``"full_attention"`` entry that maps to the
+           standard ``NemotronHAttention`` class.
+        2. The ``validate_layer_type`` class-validator on ``NemotronHConfig`` is
+           replaced with a relaxed version that also accepts ``"full_attention"``.
+
+        Both patches are restored automatically when the context exits.
+        """
+        import contextlib
+
+        import transformers.models.nemotron_h.modeling_nemotron_h as modeling
+        from transformers.models.nemotron_h import NemotronHConfig
+
+        _VALID_WITH_FULL = {"mamba", "attention", "moe", "mlp", "full_attention"}
+
+        def _relaxed_validator(self):
+            if not isinstance(self.layer_types, list):
+                raise ValueError(f"`layers_block_type` must be a list. Got: {type(self.layer_types)}")
+            invalid = set(self.layer_types) - _VALID_WITH_FULL
+            if invalid:
+                raise ValueError(f"`layers_block_type` contains invalid types: {invalid}")
+
+        @contextlib.contextmanager
+        def _apply():
+            # Patch 1: add "full_attention" to the MIXER_TYPES registry so that
+            # NemotronHBlock.__init__ can instantiate the mixer.
+            original_mixer = dict(modeling.MIXER_TYPES)
+            modeling.MIXER_TYPES["full_attention"] = modeling.NemotronHAttention
+            # Patch 2: replace the strict layer-type validator with a relaxed one.
+            validators = NemotronHConfig.__class_validators__
+            original_validators = list(validators)
+            for i, v in enumerate(validators):
+                if v.__name__ == "validate_layer_type":
+                    validators[i] = _relaxed_validator
+            try:
+                yield
+            finally:
+                modeling.MIXER_TYPES.clear()
+                modeling.MIXER_TYPES.update(original_mixer)
+                validators[:] = original_validators
+
+        return _apply()
+
+    def _make_nemotronh_full_attention_config(self, layers_block_type=None):
+        """Return a small NemotronHConfig with full_attention layers for fast tests."""
+        from transformers.models.nemotron_h import NemotronHConfig
+
+        if layers_block_type is None:
+            layers_block_type = ["full_attention"]
+        num_hidden_layers = len(layers_block_type)
+        with self._full_attention_patches():
+            return NemotronHConfig(
+                architectures=["NemotronHForCausalLM"],
+                bos_token_id=1,
+                eos_token_id=2,
+                hidden_size=256,
+                head_dim=64,
+                intermediate_size=512,
+                max_position_embeddings=2048,
+                model_type="nemotron_h",
+                num_attention_heads=4,
+                num_hidden_layers=num_hidden_layers,
+                num_key_value_heads=2,
+                layer_norm_epsilon=1e-05,
+                vocab_size=32000,
+                layers_block_type=layers_block_type,
+                use_mamba_kernels=False,
+            )
+
+    def _build_full_attention_model(self, config, precision, provider, prefix):
+        """Build a full_attention ONNX model (patching MIXER_TYPES) and return dirs."""
+        import torch
+        from transformers import AutoModelForCausalLM
+
+        from modelbuilder.builder import create_model
+
+        model_dir = self.get_model_dir(prefix, clean=False)
+        output_dir, cache_dir = self.get_dirs(prefix, clean=False)
+
+        # "full_attention" is not yet in transformers MIXER_TYPES; apply patches
+        # while creating the model, saving it, and running the ONNX export.
+        with self._full_attention_patches():
+            torch.manual_seed(42)
+            model = AutoModelForCausalLM.from_config(config)
+            model.eval()
+            model.save_pretrained(model_dir)
+            self.make_word_level_tokenizer().save_pretrained(model_dir)
+
+            create_model(
+                model_name=MODEL_NAME,
+                input_path=model_dir,
+                output_dir=output_dir,
+                precision=precision,
+                execution_provider=provider,
+                cache_dir=cache_dir,
+                num_hidden_layers=config.num_hidden_layers,
+            )
+        return model, model_dir, output_dir
+
+    @hide_stdout()
+    def test_nemotron_h_full_attention_fp32_cpu_build(self):
+        """Build a NemotronH model with full_attention layers (fp32/CPU).
+
+        Verifies that the ONNX builder correctly handles the ``full_attention``
+        block type, treating it identically to the standard ``attention`` block.
+        """
+        import onnx
+
+        config = self._make_nemotronh_full_attention_config(["full_attention"])
+        prefix = "test_nemotron_h_full_attention_fp32_cpu_build"
+        _, _, output_dir = self._build_full_attention_model(config, "fp32", "cpu", prefix)
+
+        onnx_path = os.path.join(output_dir, "model.onnx")
+        self.assertExists(onnx_path)
+
+        onnx_model = onnx.load(onnx_path)
+        self.assertIsNotNone(onnx_model)
+        # The "full_attention" layer must produce an attention op. Because the
+        # config has num_key_value_heads=2 < num_attention_heads=4 (GQA), the
+        # builder emits GroupQueryAttention rather than MultiHeadAttention.
+        op_types = {node.op_type for node in onnx_model.graph.node}
+        self.assertTrue(op_types & {"MultiHeadAttention", "GroupQueryAttention"}, f"Expected an attention op in {op_types}")
+
+    @hide_stdout()
+    def test_nemotron_h_full_attention_fp32_cpu_inference(self):
+        """Build and run a NemotronH full_attention model (fp32/CPU).
+
+        Verifies that the exported ONNX model for ``full_attention`` layers
+        produces output numerically identical to the equivalent ``attention``
+        layer ONNX model (same weights, same computation).
+        """
+        import torch
+        from transformers import AutoModelForCausalLM
+        from transformers.models.nemotron_h import NemotronHConfig
+
+        from modelbuilder.builder import create_model
+
+        num_hidden_layers = 1
+        head_size = 64
+        batch_size = 1
+        seq_len = 5
+
+        # --- Build the "full_attention" ONNX model ---
+        config_fa = self._make_nemotronh_full_attention_config(["full_attention"] * num_hidden_layers)
+        prefix_fa = "test_nemotron_h_full_attention_fp32_cpu_inference_fa"
+        _, _, output_dir_fa = self._build_full_attention_model(config_fa, "fp32", "cpu", prefix_fa)
+
+        # --- Build an equivalent "attention" ONNX model with the same weights ---
+        # Use "attention" block type so no patching is needed for model creation.
+        config_attn = NemotronHConfig(
+            architectures=["NemotronHForCausalLM"],
+            bos_token_id=1,
+            eos_token_id=2,
+            hidden_size=256,
+            head_dim=head_size,
+            intermediate_size=512,
+            max_position_embeddings=2048,
+            model_type="nemotron_h",
+            num_attention_heads=4,
+            num_hidden_layers=num_hidden_layers,
+            num_key_value_heads=2,
+            layer_norm_epsilon=1e-05,
+            vocab_size=32000,
+            layers_block_type=["attention"] * num_hidden_layers,
+            use_mamba_kernels=False,
+        )
+        prefix_attn = "test_nemotron_h_full_attention_fp32_cpu_inference_attn"
+        model_dir_attn = self.get_model_dir(prefix_attn, clean=False)
+        output_dir_attn, cache_dir_attn = self.get_dirs(prefix_attn, clean=False)
+
+        # Load the full_attention model weights and re-save under the "attention"
+        # config so that both ONNX models share identical weights.
+        with self._full_attention_patches():
+            model_fa_dir = self.get_model_dir(prefix_fa, clean=False)
+            model_fa = AutoModelForCausalLM.from_pretrained(model_fa_dir)
+
+        model_attn = AutoModelForCausalLM.from_config(config_attn)
+        # Copy weights (both configs are identical except block_type).
+        model_attn.load_state_dict(model_fa.state_dict())
+        model_attn.eval()
+        model_attn.save_pretrained(model_dir_attn)
+        self.make_word_level_tokenizer().save_pretrained(model_dir_attn)
+
+        create_model(
+            model_name=MODEL_NAME,
+            input_path=model_dir_attn,
+            output_dir=output_dir_attn,
+            precision="fp32",
+            execution_provider="cpu",
+            cache_dir=cache_dir_attn,
+            num_hidden_layers=num_hidden_layers,
+        )
+
+        # --- Run both ONNX models with the same input and compare outputs ---
+        onnx_path_fa = os.path.join(output_dir_fa, "model.onnx")
+        onnx_path_attn = os.path.join(output_dir_attn, "model.onnx")
+        self.assertExists(onnx_path_fa)
+        self.assertExists(onnx_path_attn)
+
+        sess_fa = self._check_with_ort(onnx_path_fa, cpu=True)
+        sess_attn = self._check_with_ort(onnx_path_attn, cpu=True)
+
+        torch.manual_seed(0)
+        input_ids = torch.randint(0, config_fa.vocab_size, (batch_size, seq_len))
+
+        def _make_feed(sess, attn_layer_ids):
+            feed = {
+                "input_ids": input_ids.numpy().astype(np.int64),
+                "attention_mask": np.ones((batch_size, seq_len), dtype=np.int64),
+                "position_ids": np.arange(seq_len, dtype=np.int64).reshape(batch_size, seq_len),
+            }
+            for i in attn_layer_ids:
+                feed[f"past_key_values.{i}.key"] = np.zeros((batch_size, config_fa.num_key_value_heads, 0, head_size), dtype=np.float32)
+                feed[f"past_key_values.{i}.value"] = np.zeros((batch_size, config_fa.num_key_value_heads, 0, head_size), dtype=np.float32)
+            input_names = {inp.name for inp in sess.get_inputs()}
+            return {k: v for k, v in feed.items() if k in input_names}
+
+        attn_layer_ids = list(range(num_hidden_layers))
+        results_fa = sess_fa.run(None, _make_feed(sess_fa, attn_layer_ids))
+        results_attn = sess_attn.run(None, _make_feed(sess_attn, attn_layer_ids))
+
+        # Logits from both models must match (same weights, same computation).
+        np.testing.assert_allclose(results_fa[0], results_attn[0], atol=1e-5, rtol=1e-5)
+
+    @hide_stdout()
+    def test_nemotron_h_full_attention_hybrid_fp32_cpu_build(self):
+        """Build a hybrid full_attention+mamba NemotronH model (fp32/CPU).
+
+        Verifies that the ONNX builder correctly handles a mixed model containing
+        both ``full_attention`` and ``mamba`` block types.
+        """
+        import onnx
+
+        with self._full_attention_patches():
+            config = self._make_nemotronh_mamba_config(["full_attention", "mamba"])
+        prefix = "test_nemotron_h_full_attention_hybrid_fp32_cpu_build"
+        _, _, output_dir = self._build_full_attention_model(config, "fp32", "cpu", prefix)
+
+        onnx_path = os.path.join(output_dir, "model.onnx")
+        self.assertExists(onnx_path)
+
+        onnx_model = onnx.load(onnx_path)
+        self.assertIsNotNone(onnx_model)
+        op_types = {node.op_type for node in onnx_model.graph.node}
+        self.assertTrue(op_types & {"MultiHeadAttention", "GroupQueryAttention"}, f"Expected an attention op in {op_types}")
+        self.assertIn("CausalConvWithState", op_types)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

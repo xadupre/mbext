@@ -34,8 +34,10 @@ class NemotronHModel(LlamaModel):
         # Determine which layers have attention (and therefore need KV cache).
         # KV cache input/output names are re-indexed to only cover attention layers,
         # using the original layer index as the suffix so the names remain stable.
+        # Both "attention" and "full_attention" block types use the same NoPE
+        # multi-head attention and require a KV cache slot.
         layers_block_type = getattr(config, "layers_block_type", ["attention"] * config.num_hidden_layers)
-        self._attn_layer_ids = [i for i, t in enumerate(layers_block_type) if t == "attention"]
+        self._attn_layer_ids = [i for i, t in enumerate(layers_block_type) if t in ("attention", "full_attention")]
         self._mamba_layer_ids = [i for i, t in enumerate(layers_block_type) if t == "mamba"]
 
         # Override KV cache inputs/outputs to only include attention layers.
@@ -90,9 +92,9 @@ class NemotronHModel(LlamaModel):
 
     def make_layer(self, layer_id, layer):
         # Each NemotronH decoder block is defined as:
-        # pre_norm --> mixer (attention / mamba / moe) --> residual add
+        # pre_norm --> mixer (attention / full_attention / mamba / moe) --> residual add
 
-        if layer.block_type == "attention":
+        if layer.block_type in ("attention", "full_attention"):
             self.make_layernorm(layer_id, layer.norm, skip=not self.layernorm_attrs["first_layernorm"], simple=True, location="input")
             self.make_attention(layer_id, layer.mixer, root_input=self.layernorm_attrs["output_0"])
         elif layer.block_type == "moe":
@@ -104,7 +106,7 @@ class NemotronHModel(LlamaModel):
         else:
             raise NotImplementedError(
                 f"NemotronH block type '{layer.block_type}' is not supported for ONNX export. "
-                "Only 'attention', 'mamba' and 'MoE' layers are currently supported."
+                "Only 'attention', 'full_attention', 'mamba' and 'moe' layers are currently supported."
             )
 
         self.layernorm_attrs["first_layernorm"] = False
