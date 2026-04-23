@@ -66,3 +66,35 @@ jobs:
                 body,
               });
             }
+
+            // Update the PR title when exactly one file in modelbuilder/builders/ is changed
+            const EXCLUDED_BUILDERS = new Set(['base.py', '__init__.py']);
+            const builderFiles = files.filter(f =>
+              f.filename.startsWith('modelbuilder/builders/') &&
+              f.filename.endsWith('.py') &&
+              !EXCLUDED_BUILDERS.has(f.filename.split('/').pop())
+            );
+
+            if (builderFiles.length === 1) {
+              const filename = builderFiles[0].filename;
+              const basename = filename.split('/').pop();
+              const modelName = basename.replace(/\.py$/, '');
+              const prefix = `[${modelName}] `;
+
+              const { data: pr } = await github.rest.pulls.get({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: context.issue.number,
+              });
+
+              // Strip any existing [model] prefix so it can be replaced cleanly
+              const cleanTitle = pr.title.replace(/^\[[^\]]+\]\s*/, '');
+              if (!pr.title.startsWith(prefix)) {
+                await github.rest.pulls.update({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  pull_number: context.issue.number,
+                  title: prefix + cleanTitle,
+                });
+              }
+            }
