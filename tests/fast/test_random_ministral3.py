@@ -695,6 +695,10 @@ class TestMinistral3(ExtTestCase):
         self.common_ministral3_apply_chat_template_cpu_genai("fp32")
 
     @hide_stdout()
+    def test_ministral3_apply_chat_template_fp16_cpu_genai(self):
+        self.common_ministral3_apply_chat_template_cpu_genai("fp16")
+
+    @hide_stdout()
     def test_ministral3_apply_chat_template_int4_cpu_genai(self):
         self.common_ministral3_apply_chat_template_cpu_genai("int4")
 
