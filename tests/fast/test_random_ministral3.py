@@ -655,13 +655,16 @@ class TestMinistral3(ExtTestCase):
         # num_image_tokens so the runtime calls the vision encoder.
         # The embedding model replaces the image placeholder positions with actual
         # image features from the vision encoder, matching the HF merged sequence.
+        # The vision encoder dtype follows the model precision: fp16 models
+        # expect float16 pixel_values; fp32 and int4 models expect float32.
+        genai_pixel_dtype = np.float16 if precision == "fp16" else np.float32
         og_model = og.Model(output_dir)
         full_prompt_ids = np.array([image_token_id] * n_merged_patches + text_ids, dtype=np.int64)
         params = og.GeneratorParams(og_model)
         params.set_search_options(do_sample=False, max_length=n_merged_patches + len(text_ids) + max_new_tokens, temperature=1.0, top_k=1)
         generator = og.Generator(og_model, params)
         named_tensors = og.NamedTensors()
-        named_tensors["pixel_values"] = cross_image
+        named_tensors["pixel_values"] = cross_image.astype(genai_pixel_dtype)
         named_tensors["num_image_tokens"] = np.array([n_merged_patches], dtype=np.int64)
         generator.set_inputs(named_tensors)
         generator.append_tokens(full_prompt_ids)
@@ -880,13 +883,18 @@ class TestMinistral3(ExtTestCase):
         pt_generated = pt_output[0].tolist()[hf_prompt.shape[1] :]
 
         # --- genai: same pixel_values + expanded prompt ---
+        # The vision encoder dtype follows the model precision: fp16 models
+        # expect float16 pixel_values; fp32 and int4 models expect float32.
+        genai_pixel_dtype = np.float16 if precision == "fp16" else np.float32
+        genai_pixel_values = cross_image.astype(genai_pixel_dtype)
+
         og_model = og.Model(output_dir)
         full_prompt_ids = np.array(expanded_ids, dtype=np.int64)
         params = og.GeneratorParams(og_model)
         params.set_search_options(do_sample=False, max_length=len(expanded_ids) + max_new_tokens, temperature=1.0, top_k=1)
         generator = og.Generator(og_model, params)
         named_tensors = og.NamedTensors()
-        named_tensors["pixel_values"] = cross_image
+        named_tensors["pixel_values"] = genai_pixel_values
         named_tensors["num_image_tokens"] = np.array([n_merged_patches], dtype=np.int64)
         generator.set_inputs(named_tensors)
         generator.append_tokens(full_prompt_ids)
