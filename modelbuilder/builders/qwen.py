@@ -1089,9 +1089,12 @@ class Qwen25OmniVisionEncoderModel(Model):
             self.make_cast("/vision/pv_cast", "pixel_values", self.io_dtype, [None, self.in_feat_dim])
             pv_cast = "/vision/pv_cast/output_0"
 
-        # Conv3d(in_channels, embed_dim, kernel_size=[T,P,P]) acts as a Linear
-        # when kernel_size == stride (no overlap). Reshape weight [embed_dim, in_channels, T, P, P]
-        # → [embed_dim, in_feat_dim] then transpose to [in_feat_dim, embed_dim].
+        # Conv3d(in_channels, embed_dim, kernel_size=[T,P,P]) with kernel_size==stride
+        # (non-overlapping patches) is equivalent to a Linear layer:
+        #   weight shape [embed_dim, in_channels, T, P, P]
+        #   → reshape to [embed_dim, in_feat_dim] to collapse all spatial/temporal dims
+        #   → _linear() transposes to [in_feat_dim, embed_dim] for the ONNX MatMul.
+        # No bias: Qwen2_5_VisionPatchEmbed.proj has bias=False.
         patch_weight = vis.patch_embed.proj.weight.detach().reshape(self.vis_hidden_size, self.in_feat_dim)
         patch_emb = self._linear("/vision/patch_embed", pv_cast, patch_weight, out_shape=[None, self.vis_hidden_size])
 
@@ -1216,6 +1219,8 @@ class Qwen25OmniConditionalGenerationModel(Model):
         else:
             text_config = None
         if text_config is not None:
+            # HF PretrainedConfig.__iter__ yields attribute names (same as dict-style
+            # iteration used in builder.py for Qwen2_5_VLForConditionalGeneration).
             for key in text_config:
                 if not hasattr(text_obj_config, key) or getattr(text_obj_config, key) is None:
                     setattr(text_obj_config, key, getattr(text_config, key))
