@@ -594,6 +594,108 @@ class Qwen25VLTextModel(Model):
         )
 
 
+class Qwen25OmniThinkerModel(Qwen25VLTextModel):
+    """Qwen2.5-Omni thinker (text decoder) model builder.
+
+    Qwen2.5-Omni is a multimodal model (audio + vision + text). This builder
+    exports only the text (thinker) component.  Like Qwen2.5-VL, the thinker
+    text model uses multimodal RoPE (mRoPE) with 3-D position IDs, so this
+    class inherits from :class:`Qwen25VLTextModel`.
+
+    The HuggingFace config may be nested in two ways depending on the source:
+
+    * **Full model** (``Qwen2_5OmniConfig``): text attributes live under
+      ``config.thinker_config.text_config``.
+    * **Thinker-only** (``Qwen2_5OmniThinkerConfig``): text attributes live
+      under ``config.text_config``.
+
+    Both cases are normalised by flattening the relevant ``text_config``
+    attributes onto the top-level ``config``.  The ``mrope_section`` is read
+    from ``rope_parameters`` (where Qwen2.5-Omni stores it) and copied into
+    ``rope_scaling`` so that :class:`Qwen25VLTextModel` can locate it via the
+    standard :func:`~modelbuilder.builders.base.Model.make_rope_init` path.
+
+    Because the model is multimodal the embedding layer is excluded from the
+    ONNX export (``exclude_embeds=True``) by default.
+    """
+
+    def __init__(self, config, io_dtype, onnx_dtype, ep, cache_dir, extra_options):
+        # Flatten text_config attributes onto config so the base Model init
+        # can read hidden_size, num_attention_heads, etc.
+        # Handle two possible nesting levels:
+        #   Qwen2_5OmniConfig          → config.thinker_config.text_config
+        #   Qwen2_5OmniThinkerConfig   → config.text_config
+        if hasattr(config, "thinker_config") and hasattr(config.thinker_config, "text_config"):
+            text_config = config.thinker_config.text_config
+        elif hasattr(config, "text_config"):
+            text_config = config.text_config
+        else:
+            text_config = None
+
+        if text_config is not None:
+            for key in text_config:
+                if not hasattr(config, key) or getattr(config, key) is None:
+                    setattr(config, key, getattr(text_config, key))
+
+        # Qwen2.5-Omni stores mrope_section inside rope_parameters rather than
+        # rope_scaling.  Copy it into rope_scaling so the shared make_rope_init
+        # path in the base class picks it up.
+        rope_params = getattr(config, "rope_parameters", None)
+        if isinstance(rope_params, dict) and "mrope_section" in rope_params:
+            if not hasattr(config, "rope_scaling") or config.rope_scaling is None:
+                config.rope_scaling = {}
+            if "mrope_section" not in config.rope_scaling:
+                config.rope_scaling = dict(config.rope_scaling)
+                config.rope_scaling["mrope_section"] = rope_params["mrope_section"]
+            if "rope_theta" not in config.rope_scaling and "rope_theta" in rope_params:
+                config.rope_scaling["rope_theta"] = rope_params["rope_theta"]
+
+        if "exclude_embeds" not in extra_options:
+            extra_options["exclude_embeds"] = True
+            print("Setting exclude_embeds=True for Qwen2.5-Omni thinker model.")
+
+        super().__init__(config, io_dtype, onnx_dtype, ep, cache_dir, extra_options)
+
+    def load_weights(self, input_path):
+        # For quantized models or GGUF use the base class logic.
+        if self.quant_type is not None or input_path.endswith(".gguf"):
+            return super().load_weights(input_path)
+
+        # Qwen2_5OmniThinkerForConditionalGeneration is not registered with
+        # AutoModelForCausalLM, so load it directly.
+        print("Loading Qwen2_5OmniThinkerForConditionalGeneration model...")
+        from transformers import Qwen2_5OmniThinkerForConditionalGeneration
+
+        return Qwen2_5OmniThinkerForConditionalGeneration.from_pretrained(
+            self.model_name_or_path, cache_dir=self.cache_dir, token=self.hf_token, trust_remote_code=self.hf_remote
+        )
+
+    def make_genai_config(self, model_name_or_path, extra_kwargs, out_dir):
+        """Generate genai_config.json for the thinker (text-only) decoder.
+
+        Flattens ``bos_token_id``, ``eos_token_id``, and ``pad_token_id``
+        from the nested text config onto the top-level HF config before
+        delegating to the base class implementation.
+        """
+        hf_config = AutoConfig.from_pretrained(model_name_or_path, token=self.hf_token, trust_remote_code=self.hf_remote, **extra_kwargs)
+
+        # Resolve the text config from either nesting level.
+        if hasattr(hf_config, "thinker_config") and hasattr(hf_config.thinker_config, "text_config"):
+            text_cfg = hf_config.thinker_config.text_config
+        elif hasattr(hf_config, "text_config"):
+            text_cfg = hf_config.text_config
+        else:
+            text_cfg = hf_config
+
+        for attr in ("eos_token_id", "bos_token_id", "pad_token_id"):
+            val = getattr(text_cfg, attr, None)
+            if val is not None:
+                setattr(hf_config, attr, val)
+        hf_config.save_pretrained(out_dir)
+
+        super().make_genai_config(out_dir, {}, out_dir)
+
+
 class Qwen3VLTextModel(Qwen25VLTextModel):
     """
     Qwen3-VL text model builder. Inherits from Qwen25VLTextModel.
