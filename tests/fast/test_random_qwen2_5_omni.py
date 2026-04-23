@@ -3,8 +3,10 @@
 # Licensed under the MIT License.  See License.txt in the project root for
 # license information.
 # --------------------------------------------------------------------------
+import os
 import unittest
 
+import numpy as np
 from modelbuilder.ext_test_case import ExtTestCase, hide_stdout, requires_cuda, requires_genai, requires_transformers
 
 QWEN2_5_OMNI_MODEL_NAME = "Qwen/Qwen2.5-Omni-3B"
@@ -168,6 +170,183 @@ class TestRandomQwen25Omni(ExtTestCase):
         self.run_genai_generation_test(
             output_dir, model=None, vocab_size=config.text_config.vocab_size, eos_token_id=config.text_config.eos_token_id
         )
+
+
+@requires_transformers("5")
+class TestRandomQwen25OmniVision(ExtTestCase):
+    """Tests for the Qwen2.5-Omni multimodal pipeline (vision encoder + embedding + thinker).
+
+    The vision encoder takes:
+
+    * ``pixel_values`` [n_patches, in_feat_dim] – flat image patches from the image processor.
+    * ``rotary_pos_emb`` [n_patches, head_dim // 2] – 2-D RoPE frequencies (float32).
+
+    The embedding model replaces ``image_token_id`` placeholders in ``input_ids``
+    with the vision-encoder ``image_features``.
+    """
+
+    def common_qwen25omni_conditional_generation(self, precision, provider):
+        """Build and validate the full Qwen2.5-Omni multimodal ONNX pipeline.
+
+        Verifies that:
+
+        * ``vision_encoder.onnx``, ``embedding.onnx``, and ``model.onnx`` are written.
+        * ``genai_config.json`` has the ``phi3v`` type with ``vision`` and ``embedding``
+          sections.
+        * The vision encoder produces output of the correct shape and matches the
+          PyTorch reference.
+        * The text decoder produces logits when fed ``inputs_embeds``.
+        """
+        import json
+
+        import torch
+        from tokenizers import Tokenizer
+        from tokenizers.models import WordLevel
+        from transformers import (
+            PreTrainedTokenizerFast,
+            Qwen2_5OmniAudioEncoderConfig,
+            Qwen2_5OmniThinkerConfig,
+            Qwen2_5OmniThinkerForConditionalGeneration,
+            Qwen2_5OmniVisionEncoderConfig,
+        )
+
+        from modelbuilder.builder import create_model
+
+        num_hidden_layers = 1
+        spatial_merge_size = 2
+
+        audio_config = Qwen2_5OmniAudioEncoderConfig(
+            encoder_layers=1, encoder_attention_heads=2, encoder_ffn_dim=32, d_model=32, output_dim=256
+        )
+        vision_config = Qwen2_5OmniVisionEncoderConfig(depth=1, hidden_size=64, intermediate_size=128, num_heads=4, out_hidden_size=256)
+        config = Qwen2_5OmniThinkerConfig(audio_config=audio_config, vision_config=vision_config)
+        config.text_config.hidden_size = 256
+        config.text_config.intermediate_size = 512
+        config.text_config.num_hidden_layers = num_hidden_layers
+        config.text_config.layer_types = ["full_attention"] * num_hidden_layers
+        config.text_config.num_attention_heads = 4
+        config.text_config.num_key_value_heads = 2
+        config.text_config.vocab_size = 32000
+        config.text_config.bos_token_id = 1
+        config.text_config.eos_token_id = 2
+        config.text_config.rms_norm_eps = 1e-6
+        config.text_config.max_position_embeddings = 2048
+        config.text_config.hidden_act = "silu"
+        config.text_config.rope_parameters = {"rope_theta": 10000.0, "rope_type": "default", "mrope_section": [8, 12, 12]}
+        config.architectures = ["Qwen2_5OmniForConditionalGeneration"]
+
+        prefix = f"test_qwen25omni_conditional_generation_{precision}_{provider}"
+        model_dir = self.get_model_dir(prefix)
+        output_dir, cache_dir = self.get_dirs(prefix)
+
+        torch.manual_seed(42)
+        model = Qwen2_5OmniThinkerForConditionalGeneration(config)
+        model.eval()
+        model.save_pretrained(model_dir)
+
+        vocab = {"<unk>": 0, "<s>": 1, "</s>": 2}
+        tokenizer = PreTrainedTokenizerFast(
+            tokenizer_object=Tokenizer(WordLevel(vocab=vocab, unk_token="<unk>")), bos_token="<s>", eos_token="</s>", unk_token="<unk>"
+        )
+        tokenizer.save_pretrained(model_dir)
+
+        create_model(
+            model_name=QWEN2_5_OMNI_MODEL_NAME,
+            input_path=model_dir,
+            output_dir=output_dir,
+            precision=precision,
+            execution_provider=provider,
+            cache_dir=cache_dir,
+            num_hidden_layers=num_hidden_layers,
+            multimodal=True,
+        )
+
+        # --- Verify all ONNX artefacts exist ---
+        vision_onnx_path = os.path.join(output_dir, "vision_encoder.onnx")
+        embedding_onnx_path = os.path.join(output_dir, "embedding.onnx")
+        text_onnx_path = os.path.join(output_dir, "model.onnx")
+        genai_config_path = os.path.join(output_dir, "genai_config.json")
+        for p in [vision_onnx_path, embedding_onnx_path, text_onnx_path, genai_config_path]:
+            self.assertExists(p)
+
+        # --- Verify genai_config.json ---
+        with open(genai_config_path) as f:
+            genai_config = json.load(f)
+        self.assertEqual(genai_config["model"]["type"], "phi3v")
+        self.assertIn("vision", genai_config["model"])
+        self.assertEqual(genai_config["model"]["vision"]["filename"], "vision_encoder.onnx")
+        self.assertIn("embedding", genai_config["model"])
+        self.assertEqual(genai_config["model"]["embedding"]["filename"], "embedding.onnx")
+
+        # --- Run vision encoder and compare to PyTorch ---
+        vc = config.vision_config
+        in_feat_dim = vc.in_channels * vc.temporal_patch_size * vc.patch_size * vc.patch_size
+
+        # 2×2 LLM grid (1 temporal frame, 4×4 vision patches = 16 patches)
+        t, h, w = 1, 2 * spatial_merge_size, 2 * spatial_merge_size
+        n_patches = t * h * w
+        grid_thw = torch.tensor([[t, h, w]], dtype=torch.int32)
+        n_merged = n_patches // (spatial_merge_size**2)
+
+        np_dtype = np.float16 if precision == "fp16" else np.float32
+        torch.manual_seed(0)
+        pixel_values = torch.randn(n_patches, in_feat_dim)
+
+        # Compute PyTorch reference (always in float32).
+        with torch.no_grad():
+            rotary_pos_emb = model.visual.rot_pos_emb(grid_thw)
+            pt_out = model.visual(hidden_states=pixel_values, grid_thw=grid_thw)
+            pt_features = pt_out.pooler_output.numpy().astype(np.float32)
+
+        vision_sess = self.check_ort(vision_onnx_path)
+        vision_out = vision_sess.run(
+            None, {"pixel_values": pixel_values.numpy().astype(np.float32), "rotary_pos_emb": rotary_pos_emb.numpy().astype(np.float32)}
+        )
+        self.assertIsNotNone(vision_out[0])
+        self.assertEqual(vision_out[0].shape[0], n_merged)
+        self.assertEqual(vision_out[0].shape[1], vc.out_hidden_size)
+
+        atol = 1e-2 if precision == "fp16" else 1e-4
+        np.testing.assert_allclose(pt_features, vision_out[0].astype(np.float32), atol=atol)
+
+        # --- Run text decoder forward pass ---
+        batch_size = 1
+        seq_len = 5
+        input_ids_t = torch.randint(0, config.text_config.vocab_size, (batch_size, seq_len))
+        with torch.no_grad():
+            inputs_embeds = model.model.embed_tokens(input_ids_t).numpy().astype(np_dtype)
+
+        text_sess = self.check_ort(text_onnx_path)
+        onnx_input_names = {inp.name for inp in text_sess.get_inputs()}
+        num_kv_heads = config.text_config.num_key_value_heads
+        head_size_text = config.text_config.hidden_size // config.text_config.num_attention_heads
+
+        position_ids_3d = np.tile(np.arange(seq_len, dtype=np.int64), (3, batch_size, 1))
+        onnx_feed = {
+            "inputs_embeds": inputs_embeds,
+            "attention_mask": np.ones((batch_size, seq_len), dtype=np.int64),
+            "position_ids": position_ids_3d,
+        }
+        for i in range(num_hidden_layers):
+            onnx_feed[f"past_key_values.{i}.key"] = np.zeros((batch_size, num_kv_heads, 0, head_size_text), dtype=np_dtype)
+            onnx_feed[f"past_key_values.{i}.value"] = np.zeros((batch_size, num_kv_heads, 0, head_size_text), dtype=np_dtype)
+        onnx_feed = {k: v for k, v in onnx_feed.items() if k in onnx_input_names}
+
+        text_out = text_sess.run(None, onnx_feed)
+        self.assertIsNotNone(text_out[0])
+
+    @hide_stdout()
+    def test_qwen25omni_conditional_generation_fp32_cpu(self):
+        self.common_qwen25omni_conditional_generation("fp32", "cpu")
+
+    @hide_stdout()
+    def test_qwen25omni_conditional_generation_fp16_cpu(self):
+        self.common_qwen25omni_conditional_generation("fp16", "cpu")
+
+    @hide_stdout()
+    @requires_cuda()
+    def test_qwen25omni_conditional_generation_fp16_cuda(self):
+        self.common_qwen25omni_conditional_generation("fp16", "cuda")
 
 
 if __name__ == "__main__":

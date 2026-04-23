@@ -39,6 +39,7 @@ def check_extra_options(kv_pairs, execution_provider):
         "hf_remote",
         "disable_qkv_fusion",
         "prune_lm_head",
+        "multimodal",
     ]
     for key in bools:
         if key in kv_pairs:
@@ -312,10 +313,16 @@ def create_model(model_name, input_path, output_dir, precision, execution_provid
 
         onnx_model = QwenModel(config, io_dtype, onnx_dtype, execution_provider, cache_dir, extra_options)
     elif config.architectures[0] in ("Qwen2_5OmniForConditionalGeneration", "Qwen2_5OmniThinkerForConditionalGeneration"):
-        print("WARNING: This is only generating the text (thinker) component of the model.")
-        from .builders.qwen import Qwen25OmniThinkerModel
+        if extra_options.get("multimodal", False):
+            from .builders.qwen import Qwen25OmniConditionalGenerationModel
 
-        onnx_model = Qwen25OmniThinkerModel(config, io_dtype, onnx_dtype, execution_provider, cache_dir, extra_options)
+            onnx_model = Qwen25OmniConditionalGenerationModel(config, io_dtype, onnx_dtype, execution_provider, cache_dir, extra_options)
+        else:
+            print("WARNING: This is only generating the text (thinker) component of the model.")
+            print("Use --extra_options multimodal=true to export the full vision+embedding+text pipeline.")
+            from .builders.qwen import Qwen25OmniThinkerModel
+
+            onnx_model = Qwen25OmniThinkerModel(config, io_dtype, onnx_dtype, execution_provider, cache_dir, extra_options)
     elif config.architectures[0] == "Qwen2_5_VLForConditionalGeneration":
         text_config = config.text_config
         for key in text_config:

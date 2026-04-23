@@ -5,6 +5,10 @@
 # --------------------------------------------------------------------------
 
 
+import copy
+import json
+import os
+
 import numpy as np
 import onnx_ir as ir
 import torch
@@ -672,8 +676,10 @@ class Qwen25OmniThinkerModel(Qwen25VLTextModel):
         print("Loading Qwen2_5OmniThinkerForConditionalGeneration model...")
         from transformers import Qwen2_5OmniThinkerForConditionalGeneration
 
+        src = input_path if os.path.isdir(input_path) else self.model_name_or_path
+        extra_kwargs = {} if os.path.isdir(input_path) else {"cache_dir": self.cache_dir}
         return Qwen2_5OmniThinkerForConditionalGeneration.from_pretrained(
-            self.model_name_or_path, cache_dir=self.cache_dir, token=self.hf_token, trust_remote_code=self.hf_remote
+            src, token=self.hf_token, trust_remote_code=self.hf_remote, **extra_kwargs
         )
 
     def make_genai_config(self, model_name_or_path, extra_kwargs, out_dir):
@@ -700,6 +706,581 @@ class Qwen25OmniThinkerModel(Qwen25VLTextModel):
         hf_config.save_pretrained(out_dir)
 
         super().make_genai_config(out_dir, {}, out_dir)
+
+
+class Qwen25OmniVisionEncoderModel(Model):
+    """ONNX graph builder for the Qwen2.5-Omni vision encoder.
+
+    Exports the vision tower (patch embedding + transformer blocks + patch merger)
+    to ``vision_encoder.onnx``.
+
+    Inputs
+    ------
+    pixel_values : float [n_patches, in_feat_dim]
+        Flat image patches pre-processed by the HF image processor, where
+        ``in_feat_dim = in_channels * temporal_patch_size * patch_size * patch_size``.
+    rotary_pos_emb : float32 [n_patches, head_dim // 2]
+        Pre-computed 2-D rotary position embeddings computed by the processor
+        from ``image_grid_thw``.
+
+    Outputs
+    -------
+    image_features : io_dtype [n_merged, out_hidden_size]
+        Merged patch features suitable for injection into the text embedding.
+    """
+
+    FILENAME = "vision_encoder.onnx"
+
+    # ------------------------------------------------------------------
+    # Constructor
+    # ------------------------------------------------------------------
+
+    def __init__(self, config, io_dtype, onnx_dtype, ep, cache_dir, extra_options):
+        vc = config.vision_config
+
+        # Patch a minimal LLM-style config so that Model.__init__ does not error.
+        vis_config = copy.deepcopy(config)
+        vis_config.hidden_size = vc.hidden_size
+        vis_config.intermediate_size = vc.intermediate_size
+        vis_config.num_attention_heads = vc.num_heads
+        vis_config.num_key_value_heads = vc.num_heads
+        vis_config.num_hidden_layers = vc.depth
+        vis_config.head_dim = vc.hidden_size // vc.num_heads
+        vis_config.hidden_act = getattr(vc, "hidden_act", "silu")
+        vis_config.vocab_size = 1
+        vis_config.max_position_embeddings = 1
+        vis_config.rms_norm_eps = 1e-6
+        vis_config.rope_scaling = None
+
+        extra_options = {**extra_options, "filename": self.FILENAME, "exclude_lm_head": True, "exclude_embeds": True}
+        super().__init__(vis_config, io_dtype, onnx_dtype, ep, cache_dir, extra_options)
+
+        self.graph.name = "qwen25omni_vision_encoder"
+        self.config = config
+        self.vision_config = vc
+
+        self.vis_hidden_size = vc.hidden_size
+        self.vis_intermediate_size = vc.intermediate_size
+        self.vis_num_heads = vc.num_heads
+        self.vis_head_dim = vc.hidden_size // vc.num_heads
+        self.vis_num_layers = vc.depth
+        self.spatial_merge_size = vc.spatial_merge_size
+        self.out_hidden_size = vc.out_hidden_size
+        self.in_channels = vc.in_channels
+        self.patch_size = vc.patch_size
+        self.temporal_patch_size = vc.temporal_patch_size
+        self.in_feat_dim = vc.in_channels * vc.temporal_patch_size * vc.patch_size * vc.patch_size
+
+        # Resolve text hidden size from potentially nested configs.
+        if hasattr(config, "thinker_config") and hasattr(config.thinker_config, "text_config"):
+            self.text_hidden_size = config.thinker_config.text_config.hidden_size
+        elif hasattr(config, "text_config"):
+            self.text_hidden_size = config.text_config.hidden_size
+        else:
+            self.text_hidden_size = self.out_hidden_size
+
+    # ------------------------------------------------------------------
+    # Low-level ONNX helpers
+    # ------------------------------------------------------------------
+
+    def _linear(self, name, root_input, weight, bias=None, out_shape=None):
+        """MatMul (+ optional Add) for vision encoder subgraphs.
+
+        ``weight`` follows the PyTorch convention [out_feat, in_feat]; it is
+        transposed before storing as an ONNX initialiser.
+        """
+        w_name = f"{name}.weight"
+        self.make_initializer(weight.T, w_name, to=self.io_dtype)
+        mm_out = f"{name}/output_0"
+        self.make_node("MatMul", inputs=[root_input, w_name], outputs=[mm_out], name=name)
+        if out_shape is not None:
+            self.make_value(mm_out, self.io_dtype, shape=out_shape)
+        if bias is not None:
+            b_name = f"{name}.bias"
+            self.make_initializer(bias, b_name, to=self.io_dtype)
+            add_out = f"{name}_add_bias/output_0"
+            self.make_node("Add", inputs=[mm_out, b_name], outputs=[add_out], name=f"{name}_add_bias")
+            if out_shape is not None:
+                self.make_value(add_out, self.io_dtype, shape=out_shape)
+            return add_out
+        return mm_out
+
+    def _rms_norm(self, name, root_input, weight, shape):
+        """SimplifiedLayerNormalization (Qwen2_5OmniRMSNorm)."""
+        w_name = f"{name}.weight"
+        self.make_initializer(weight, w_name, to=self.io_dtype)
+        out = f"{name}/output_0"
+        self.make_node(
+            "SimplifiedLayerNormalization", inputs=[root_input, w_name], outputs=[out], name=name, axis=-1, epsilon=1e-6, stash_type=1
+        )
+        self.make_value(out, self.io_dtype, shape=shape)
+        return out
+
+    # ------------------------------------------------------------------
+    # 2-D RoPE application
+    # ------------------------------------------------------------------
+
+    def _make_inline_const(self, name, data):
+        """Create an inline ONNX Constant node for a small integer tensor.
+
+        Using Constant nodes (rather than initializers) avoids external-data
+        serialisation for small shape-defining tensors.
+        """
+        ir_t = ir.Tensor(np.array(data, dtype=np.int64), name=name)
+        self.make_node("Constant", inputs=[], outputs=[name], name=f"{name}/Constant", value=ir_t)
+        self.make_value(name, ir.DataType.INT64, shape=list(ir_t.shape))
+
+    def _apply_rope(self, name, x, rope_input, n_patches, head_dim):
+        """Apply 2-D vision RoPE to Q or K tensor.
+
+        Parameters
+        ----------
+        x : str
+            Name of tensor [n_patches, vis_num_heads, vis_head_dim] in io_dtype.
+        rope_input : str
+            Name of rotary_pos_emb [n_patches, head_dim // 2] in float32.
+        Returns output name with same shape as ``x``.
+        """
+        half = head_dim // 2
+        num_heads = self.vis_num_heads
+
+        # Compute cos/sin from frequencies (always in float32).
+        cos_raw = f"{name}/cos_raw/output_0"
+        sin_raw = f"{name}/sin_raw/output_0"
+        self.make_node("Cos", inputs=[rope_input], outputs=[cos_raw], name=f"{name}/cos_raw")
+        self.make_value(cos_raw, ir.DataType.FLOAT, shape=[None, half])
+        self.make_node("Sin", inputs=[rope_input], outputs=[sin_raw], name=f"{name}/sin_raw")
+        self.make_value(sin_raw, ir.DataType.FLOAT, shape=[None, half])
+
+        # Tile [n_patches, head_dim//2] → [n_patches, head_dim]
+        tile_const = f"{name}/tile_repeats"
+        self._make_inline_const(tile_const, [1, 2])
+        self.make_tile(f"{name}/cos_full", [cos_raw, tile_const], ir.DataType.FLOAT, [None, head_dim])
+        self.make_tile(f"{name}/sin_full", [sin_raw, tile_const], ir.DataType.FLOAT, [None, head_dim])
+        cos_full_out = f"{name}/cos_full/output_0"
+        sin_full_out = f"{name}/sin_full/output_0"
+
+        # Unsqueeze to [n_patches, 1, head_dim] for broadcasting with [n_patches, num_heads, head_dim].
+        ax_1 = f"{name}/ax1_const"
+        self._make_inline_const(ax_1, [1])
+        self.make_unsqueeze(f"{name}/cos_3d", [cos_full_out, ax_1], ir.DataType.FLOAT, [None, 1, head_dim])
+        self.make_unsqueeze(f"{name}/sin_3d", [sin_full_out, ax_1], ir.DataType.FLOAT, [None, 1, head_dim])
+        cos_3d_out = f"{name}/cos_3d/output_0"
+        sin_3d_out = f"{name}/sin_3d/output_0"
+
+        # When io_dtype != float32: cast x to fp32 for the rotation computation,
+        # and cast the result back.  cos/sin stay in float32 throughout.
+        if self.io_dtype != ir.DataType.FLOAT:
+            self.make_cast(f"{name}/x_fp32", x, ir.DataType.FLOAT, [None, num_heads, head_dim])
+            x_fp32 = f"{name}/x_fp32/output_0"
+        else:
+            x_fp32 = x
+
+        # rotate_half: split x into two halves, negate second, concat [-x2, x1].
+        split_out_1 = f"{name}/split_1/output_0"
+        split_out_2 = f"{name}/split_2/output_0"
+        half_const = f"{name}/half_const"
+        self._make_inline_const(half_const, [half, half])
+        self.make_node("Split", inputs=[x_fp32, half_const], outputs=[split_out_1, split_out_2], name=f"{name}/Split", axis=-1)
+        self.make_value(split_out_1, ir.DataType.FLOAT, shape=[None, num_heads, half])
+        self.make_value(split_out_2, ir.DataType.FLOAT, shape=[None, num_heads, half])
+
+        neg_x2 = self.make_neg(f"{name}/neg_x2", split_out_2, ir.DataType.FLOAT, [None, num_heads, half])
+        x_rot = self.make_concat(f"{name}/x_rot", [neg_x2, split_out_1], ir.DataType.FLOAT, [None, num_heads, head_dim], axis=-1)
+
+        # output = x * cos + rotate_half(x) * sin
+        xcos = self.make_mul(f"{name}/xcos", [x_fp32, cos_3d_out], ir.DataType.FLOAT, [None, num_heads, head_dim])
+        xrot_sin = self.make_mul(f"{name}/xrot_sin", [x_rot, sin_3d_out], ir.DataType.FLOAT, [None, num_heads, head_dim])
+        out_fp32 = self.make_add(f"{name}/out_fp32", [xcos, xrot_sin], ir.DataType.FLOAT, [None, num_heads, head_dim])
+
+        # Cast back to io_dtype.
+        if self.io_dtype != ir.DataType.FLOAT:
+            self.make_cast(f"{name}/out_cast", out_fp32, self.io_dtype, [None, num_heads, head_dim])
+            return f"{name}/out_cast/output_0"
+        return out_fp32
+
+    # ------------------------------------------------------------------
+    # Vision attention layer
+    # ------------------------------------------------------------------
+
+    def _make_attention(self, layer_id, attn, root_input, rope_input):
+        """Build one Qwen2_5OmniVisionAttention block.
+
+        Parameters
+        ----------
+        root_input : str
+            Hidden states [n_patches, vis_hidden_size].
+        rope_input : str
+            rotary_pos_emb [n_patches, head_dim // 2] in float32.
+
+        Stores attention output in ``self.layernorm_attrs["skip_input"]``.
+        """
+        b = f"/vision/layers.{layer_id}/attn"
+        n = None  # n_patches is dynamic
+        d = self.vis_hidden_size
+        nh = self.vis_num_heads
+        hd = self.vis_head_dim
+
+        # QKV projections (with bias).
+        q_proj = self._linear(f"{b}/q_proj", root_input, attn.q.weight, attn.q.bias, out_shape=[n, d])
+        k_proj = self._linear(f"{b}/k_proj", root_input, attn.k.weight, attn.k.bias, out_shape=[n, d])
+        v_proj = self._linear(f"{b}/v_proj", root_input, attn.v.weight, attn.v.bias, out_shape=[n, d])
+
+        # Reshape to [n_patches, num_heads, head_dim].
+        q_4d = self.make_reshape(f"{b}/q_reshape", [q_proj, [0, nh, hd]], self.io_dtype, [n, nh, hd])
+        k_4d = self.make_reshape(f"{b}/k_reshape", [k_proj, [0, nh, hd]], self.io_dtype, [n, nh, hd])
+        v_4d = self.make_reshape(f"{b}/v_reshape", [v_proj, [0, nh, hd]], self.io_dtype, [n, nh, hd])
+
+        # Apply 2-D RoPE to Q and K.
+        q_rope = self._apply_rope(f"{b}/q_rope", q_4d, rope_input, n, hd)
+        k_rope = self._apply_rope(f"{b}/k_rope", k_4d, rope_input, n, hd)
+
+        # Transpose to [num_heads, n_patches, head_dim] for matmul.
+        q_t = self.make_transpose(f"{b}/q_t", q_rope, self.io_dtype, [nh, n, hd], perm=[1, 0, 2])
+        k_t = self.make_transpose(f"{b}/k_t", k_rope, self.io_dtype, [nh, n, hd], perm=[1, 0, 2])
+        v_t = self.make_transpose(f"{b}/v_t", v_4d, self.io_dtype, [nh, n, hd], perm=[1, 0, 2])
+
+        # Scaled dot-product attention (full attention, no mask).
+        k_T = self.make_transpose(f"{b}/k_T", k_t, self.io_dtype, [nh, hd, n], perm=[0, 2, 1])
+        attn_w_out = f"{b}/attn_w/output_0"
+        self.make_node("MatMul", inputs=[q_t, k_T], outputs=[attn_w_out], name=f"{b}/attn_w")
+        self.make_value(attn_w_out, self.io_dtype, shape=[nh, n, n])
+
+        np_dtype = np.float16 if self.io_dtype == ir.DataType.FLOAT16 else np.float32
+        scale_val = float(hd**-0.5)
+        scale_name = f"{b}/attn_scale"
+        self.make_initializer(np.array(scale_val, dtype=np_dtype), scale_name)
+        attn_ws = self.make_mul(f"{b}/attn_scale_mul", [attn_w_out, scale_name], self.io_dtype, [nh, n, n])
+        attn_probs = self.make_softmax(f"{b}/attn_softmax", attn_ws, self.io_dtype, [nh, n, n])
+
+        attn_out_t = f"{b}/attn_out_t/output_0"
+        self.make_node("MatMul", inputs=[attn_probs, v_t], outputs=[attn_out_t], name=f"{b}/attn_out_t")
+        self.make_value(attn_out_t, self.io_dtype, shape=[nh, n, hd])
+
+        # Transpose back to [n_patches, num_heads, head_dim] and flatten.
+        attn_back = self.make_transpose(f"{b}/attn_back", attn_out_t, self.io_dtype, [n, nh, hd], perm=[1, 0, 2])
+        attn_flat = self.make_reshape(f"{b}/attn_flat", [attn_back, [0, d]], self.io_dtype, [n, d])
+
+        # O projection (no bias).
+        o_out = self._linear(f"{b}/o_proj", attn_flat, attn.proj.weight, out_shape=[n, d])
+
+        self.layernorm_attrs["skip_input"] = o_out
+
+    # ------------------------------------------------------------------
+    # Vision MLP layer
+    # ------------------------------------------------------------------
+
+    def _make_mlp(self, layer_id, mlp, root_input):
+        """Build Qwen2_5OmniMLP (SiLU-gated, with bias).
+
+        Returns output name [n_patches, vis_hidden_size].
+        """
+        b = f"/vision/layers.{layer_id}/mlp"
+        n = None
+        d = self.vis_hidden_size
+        ff = self.vis_intermediate_size
+
+        gate = self._linear(f"{b}/gate_proj", root_input, mlp.gate_proj.weight, mlp.gate_proj.bias, out_shape=[n, ff])
+        up = self._linear(f"{b}/up_proj", root_input, mlp.up_proj.weight, mlp.up_proj.bias, out_shape=[n, ff])
+
+        # SiLU(gate) = gate * Sigmoid(gate)
+        self.make_sigmoid(f"{b}/act_sigmoid", gate, self.io_dtype, [n, ff])
+        silu = self.make_mul(f"{b}/act_silu", [gate, f"{b}/act_sigmoid/output_0"], self.io_dtype, [n, ff])
+        gate_up = self.make_mul(f"{b}/gate_up", [silu, up], self.io_dtype, [n, ff])
+
+        down = self._linear(f"{b}/down_proj", gate_up, mlp.down_proj.weight, mlp.down_proj.bias, out_shape=[n, d])
+        return down
+
+    # ------------------------------------------------------------------
+    # Single transformer layer
+    # ------------------------------------------------------------------
+
+    def _make_layer(self, layer_id, block, rope_input):
+        """Build one Qwen2_5OmniVisionBlock (norm → attn → residual → norm → mlp → residual)."""
+        root = self.layernorm_attrs["root_input"]
+        b = f"/vision/layers.{layer_id}"
+        n = None
+        d = self.vis_hidden_size
+
+        # Pre-attention RMSNorm.
+        norm1_out = self._rms_norm(f"{b}/norm1", root, block.norm1.weight, shape=[n, d])
+
+        # Attention.
+        self._make_attention(layer_id, block.attn, norm1_out, rope_input)
+        attn_out = self.layernorm_attrs["skip_input"]
+
+        # Residual 1.
+        res1 = self.make_add(f"{b}/res1", [root, attn_out], self.io_dtype, [n, d])
+
+        # Pre-MLP RMSNorm.
+        norm2_out = self._rms_norm(f"{b}/norm2", res1, block.norm2.weight, shape=[n, d])
+
+        # MLP.
+        mlp_out = self._make_mlp(layer_id, block.mlp, norm2_out)
+
+        # Residual 2.
+        res2 = self.make_add(f"{b}/res2", [res1, mlp_out], self.io_dtype, [n, d])
+
+        self.layernorm_attrs["root_input"] = res2
+
+    # ------------------------------------------------------------------
+    # Patch merger
+    # ------------------------------------------------------------------
+
+    def _make_merger(self, merger, root_input):
+        """Build Qwen2_5OmniPatchMerger: RMSNorm → Reshape → Linear+GELU+Linear.
+
+        root_input : [n_patches, vis_hidden_size]
+        Returns output name [n_merged, out_hidden_size].
+        """
+        sm2 = self.spatial_merge_size**2
+        merge_d = sm2 * self.vis_hidden_size
+        n = None
+
+        # RMSNorm on [n_patches, vis_hidden_size].
+        ln_out = self._rms_norm("/vision/merger/ln_q", root_input, merger.ln_q.weight, shape=[n, self.vis_hidden_size])
+
+        # Reshape [n_patches, vis_hidden_size] → [n_merged, sm2 * vis_hidden_size].
+        merged = self.make_reshape("/vision/merger/reshape", [ln_out, [-1, merge_d]], self.io_dtype, [n, merge_d])
+
+        # Linear1 + GELU + Linear2.
+        lin1 = self._linear("/vision/merger/mlp.0", merged, merger.mlp[0].weight, merger.mlp[0].bias, out_shape=[n, merge_d])
+
+        gelu_out = "/vision/merger/gelu/output_0"
+        self.make_node("Gelu", inputs=[lin1], outputs=[gelu_out], name="/vision/merger/gelu", approximate="none")
+        self.make_value(gelu_out, self.io_dtype, shape=[n, merge_d])
+
+        out = self._linear("/vision/merger/mlp.2", gelu_out, merger.mlp[2].weight, merger.mlp[2].bias, out_shape=[n, self.out_hidden_size])
+        return out
+
+    # ------------------------------------------------------------------
+    # Weight loading
+    # ------------------------------------------------------------------
+
+    def _load_hf_model(self, input_path):
+        from transformers import Qwen2_5OmniThinkerForConditionalGeneration
+
+        src = input_path if os.path.isdir(input_path) else self.model_name_or_path
+        extra_kwargs = {} if os.path.isdir(input_path) else {"cache_dir": self.cache_dir}
+        return Qwen2_5OmniThinkerForConditionalGeneration.from_pretrained(
+            src, token=self.hf_token, trust_remote_code=self.hf_remote, **extra_kwargs
+        )
+
+    # ------------------------------------------------------------------
+    # Main entry point
+    # ------------------------------------------------------------------
+
+    def make_model(self, input_path):
+        """Load HF weights and build the vision encoder ONNX graph."""
+        hf_model = self._load_hf_model(input_path)
+        hf_model.eval()
+        vis = hf_model.visual
+
+        # --- Graph inputs ---
+        pv_in = self.make_value("pixel_values", ir.DataType.FLOAT, shape=[None, self.in_feat_dim])
+        self.graph.inputs.append(pv_in)
+        # rotary_pos_emb is always float32 (computed by the image processor).
+        rope_in = self.make_value("rotary_pos_emb", ir.DataType.FLOAT, shape=[None, self.vis_head_dim // 2])
+        self.graph.inputs.append(rope_in)
+
+        # --- Patch embedding: Linear [n_patches, in_feat_dim] → [n_patches, hidden_size] ---
+        pv_cast = "pixel_values"
+        if self.io_dtype != ir.DataType.FLOAT:
+            self.make_cast("/vision/pv_cast", "pixel_values", self.io_dtype, [None, self.in_feat_dim])
+            pv_cast = "/vision/pv_cast/output_0"
+
+        # Conv3d(in_channels, embed_dim, kernel_size=[T,P,P]) acts as a Linear
+        # when kernel_size == stride (no overlap). Reshape weight [embed_dim, in_channels, T, P, P]
+        # → [embed_dim, in_feat_dim] then transpose to [in_feat_dim, embed_dim].
+        patch_weight = vis.patch_embed.proj.weight.detach().reshape(self.vis_hidden_size, self.in_feat_dim)
+        patch_emb = self._linear("/vision/patch_embed", pv_cast, patch_weight, out_shape=[None, self.vis_hidden_size])
+
+        # --- Transformer blocks ---
+        self.layernorm_attrs["root_input"] = patch_emb
+        for i, block in enumerate(vis.blocks):
+            self._make_layer(i, block, "rotary_pos_emb")
+
+        # --- Patch merger ---
+        hidden = self.layernorm_attrs["root_input"]
+        image_features = self._make_merger(vis.merger, hidden)
+
+        # --- Graph output ---
+        self.make_node("Identity", inputs=[image_features], outputs=["image_features"], name="/vision/output/Identity")
+        out_val = self.make_value("image_features", self.io_dtype, shape=[None, self.out_hidden_size])
+        self.graph.outputs.append(out_val)
+
+        self.graph.sort()
+
+
+class Qwen25OmniEmbeddingModel(Model):
+    """ONNX embedding model for the Qwen2.5-Omni ``phi3v``-style multimodal pipeline.
+
+    Graph (2-D ``input_ids [1, T]`` from ORT-GenAI's ``EmbeddingState``)::
+
+        text_embeds  = Gather(embed_tokens_weight, input_ids)  # [1, T, H]
+        text_2d      = Squeeze(text_embeds, [0])               # [T, H]
+        flat_ids     = Squeeze(input_ids, [0])                 # [T]
+        is_img       = Equal(flat_ids, image_token_id_const)   # [T] bool
+        img_pos      = NonZero(is_img)                         # [1, N]
+        img_pos_idx  = Transpose(img_pos, [1, 0])              # [N, 1]
+        scattered_2d = ScatterND(text_2d, img_pos_idx,
+                                 image_features)               # [T, H]
+        inputs_embeds = Unsqueeze(scattered_2d, [0])           # [1, T, H]
+    """
+
+    FILENAME = "embedding.onnx"
+
+    def __init__(self, config, io_dtype, onnx_dtype, ep, cache_dir, extra_options):
+        super().__init__(config, io_dtype, onnx_dtype, ep, cache_dir, extra_options)
+        self.filename = self.FILENAME
+        self.image_token_id = extra_options["image_token_id"]
+
+    def _load_hf_model(self, input_path):
+        from transformers import Qwen2_5OmniThinkerForConditionalGeneration
+
+        src = input_path if os.path.isdir(input_path) else self.model_name_or_path
+        extra_kwargs = {} if os.path.isdir(input_path) else {"cache_dir": self.cache_dir}
+        return Qwen2_5OmniThinkerForConditionalGeneration.from_pretrained(
+            src, token=self.hf_token, trust_remote_code=self.hf_remote, **extra_kwargs
+        )
+
+    def make_model(self, input_path):
+        """Load HF weights and build the embedding ONNX graph."""
+        hf_model = self._load_hf_model(input_path)
+        hf_model.eval()
+        embed_weight = hf_model.model.embed_tokens.weight.detach().float().numpy()
+
+        # Initialisers.
+        self.make_initializer(embed_weight, name="embed_tokens_weight")
+        self.make_initializer(np.array(self.image_token_id, dtype=np.int64), name="image_token_id_const")
+        _squeeze_axes = ir.Tensor(np.array([0], dtype=np.int64), name="squeeze_batch_axes")
+        self.make_node(
+            "Constant", inputs=[], outputs=["squeeze_batch_axes"], name="/embed/squeeze_batch_axes/Constant", value=_squeeze_axes
+        )
+        self.make_value("squeeze_batch_axes", ir.DataType.INT64, shape=[1])
+
+        # Graph inputs.
+        self.graph.inputs.append(self.make_value("input_ids", ir.DataType.INT64, shape=[None, None]))
+        self.graph.inputs.append(self.make_value("image_features", self.io_dtype, shape=[None, self.hidden_size]))
+
+        # 1. Embed all tokens.
+        self.make_node("Gather", inputs=["embed_tokens_weight", "input_ids"], outputs=["text_embeds"], name="/embed/Gather", axis=0)
+        # 2. Squeeze batch dim: [1, T, H] → [T, H] (fp32).
+        self.make_node("Squeeze", inputs=["text_embeds", "squeeze_batch_axes"], outputs=["text_2d_fp32"], name="/embed/Squeeze_3d")
+        # 3. Cast to io_dtype.
+        self.make_cast("/embed/Cast_text_2d", "text_2d_fp32", self.io_dtype, [None, self.hidden_size])
+        # 4. Flatten input_ids: [1, T] → [T].
+        self.make_node("Squeeze", inputs=["input_ids", "squeeze_batch_axes"], outputs=["flat_ids"], name="/embed/Squeeze_ids")
+        # 5. Boolean mask for image placeholders.
+        self.make_node("Equal", inputs=["flat_ids", "image_token_id_const"], outputs=["is_image"], name="/embed/Equal")
+        # 6. Positions of image placeholders: [1, N].
+        self.make_node("NonZero", inputs=["is_image"], outputs=["img_pos"], name="/embed/NonZero")
+        # 7. Transpose to [N, 1] for ScatterND.
+        self.make_node("Transpose", inputs=["img_pos"], outputs=["img_pos_idx"], name="/embed/Transpose", perm=[1, 0])
+        # 8. Scatter image_features into text embeddings.
+        self.make_node(
+            "ScatterND",
+            inputs=["/embed/Cast_text_2d/output_0", "img_pos_idx", "image_features"],
+            outputs=["scattered_2d"],
+            name="/embed/ScatterND",
+        )
+        # 9. Re-add batch dimension: [T, H] → [1, T, H].
+        self.make_node("Unsqueeze", inputs=["scattered_2d", "squeeze_batch_axes"], outputs=["inputs_embeds"], name="/embed/Unsqueeze")
+
+        self.graph.outputs.append(self.make_value("inputs_embeds", self.io_dtype, shape=[1, None, self.hidden_size]))
+        self.graph.sort()
+
+
+class Qwen25OmniConditionalGenerationModel(Model):
+    """Orchestrates exporting the vision encoder, embedding model, and thinker
+    (text decoder) for ``Qwen2_5OmniThinkerForConditionalGeneration``.
+
+    The exported artifacts are:
+
+    * ``vision_encoder.onnx`` – Qwen2.5-Omni vision tower + patch merger.
+    * ``embedding.onnx`` – token-embedding table + image-feature scatter.
+    * ``model.onnx`` – Qwen2.5-Omni thinker text decoder.
+    * ``genai_config.json`` – ``phi3v``-type VLM config for ORT-GenAI.
+    """
+
+    def __init__(self, config, io_dtype, onnx_dtype, ep, cache_dir, extra_options):
+        # --- Vision encoder ---
+        self.vision_encoder = Qwen25OmniVisionEncoderModel(config, io_dtype, onnx_dtype, ep, cache_dir, extra_options)
+
+        # --- Flatten text config onto a working config copy for remaining models ---
+        text_obj_config = copy.deepcopy(config)
+        if hasattr(config, "thinker_config") and hasattr(config.thinker_config, "text_config"):
+            text_config = config.thinker_config.text_config
+        elif hasattr(config, "text_config"):
+            text_config = config.text_config
+        else:
+            text_config = None
+        if text_config is not None:
+            for key in text_config:
+                if not hasattr(text_obj_config, key) or getattr(text_obj_config, key) is None:
+                    setattr(text_obj_config, key, getattr(text_config, key))
+
+        # image_token_id is stored at the top-level Qwen2_5OmniThinkerConfig.
+        image_token_id = getattr(config, "image_token_id", getattr(config, "image_token_index", 151655))
+
+        # --- Embedding model (always float32 for the embedding table) ---
+        embed_extra_options = dict(extra_options)
+        embed_extra_options["image_token_id"] = image_token_id
+        self.embedding_model = Qwen25OmniEmbeddingModel(text_obj_config, io_dtype, ir.DataType.FLOAT, ep, cache_dir, embed_extra_options)
+
+        # --- Thinker (text decoder) ---
+        text_extra_options = dict(extra_options)
+        text_extra_options["exclude_embeds"] = True
+        self.text_model = Qwen25OmniThinkerModel(text_obj_config, io_dtype, onnx_dtype, ep, cache_dir, text_extra_options)
+
+    # ------------------------------------------------------------------
+    # builder.py interface
+    # ------------------------------------------------------------------
+
+    def make_model(self, input_path):
+        print("Building vision encoder for Qwen2.5-Omni...")
+        self.vision_encoder.make_model(input_path)
+        print("Building embedding model for Qwen2.5-Omni...")
+        self.embedding_model.make_model(input_path)
+        print("Building thinker text decoder for Qwen2.5-Omni...")
+        self.text_model.make_model(input_path)
+
+    def save_model(self, out_dir):
+        self.vision_encoder.save_model(out_dir)
+        self.embedding_model.save_model(out_dir)
+        self.text_model.save_model(out_dir)
+
+    def make_genai_config(self, model_name_or_path, extra_kwargs, out_dir):
+        # Write the text model genai_config.json first, then extend it.
+        self.text_model.make_genai_config(model_name_or_path, extra_kwargs, out_dir)
+
+        config_path = os.path.join(out_dir, "genai_config.json")
+        with open(config_path) as f:
+            genai_config = json.load(f)
+
+        spatial_merge_size = self.vision_encoder.vision_config.spatial_merge_size
+
+        # ORT-GenAI uses "phi3v" as the model type for the multimodal pipeline.
+        genai_config["model"]["type"] = "phi3v"
+
+        genai_config["model"]["vision"] = {
+            "filename": self.vision_encoder.FILENAME,
+            "spatial_merge_size": spatial_merge_size,
+            "inputs": {"pixel_values": "pixel_values", "rotary_pos_emb": "rotary_pos_emb"},
+            "outputs": {"image_features": "image_features"},
+        }
+
+        genai_config["model"]["embedding"] = {
+            "filename": self.embedding_model.FILENAME,
+            "inputs": {"input_ids": "input_ids", "image_features": "image_features"},
+            "outputs": {"inputs_embeds": "inputs_embeds"},
+        }
+
+        with open(config_path, "w") as f:
+            json.dump(genai_config, f, indent=4)
+
+    def save_processing(self, model_name_or_path, extra_kwargs, out_dir):
+        self.text_model.save_processing(model_name_or_path, extra_kwargs, out_dir)
 
 
 class Qwen3VLTextModel(Qwen25VLTextModel):
