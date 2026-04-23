@@ -12,6 +12,7 @@ import onnx_ir as ir
 import torch
 
 from .base import Model
+from .base_embedding import EmbeddingModel
 from .base_vision import VisionEncoderModel
 
 
@@ -550,7 +551,7 @@ class Ministral3VisionEncoderModel(VisionEncoderModel):
         self.graph.sort()
 
 
-class Ministral3EmbeddingModel(Model):
+class Ministral3EmbeddingModel(EmbeddingModel):
     """ONNX embedding model for the ``phi3v``-style multimodal pipeline.
 
     Inherits from :class:`Model` to fit the standard builder interface.
@@ -583,77 +584,15 @@ class Ministral3EmbeddingModel(Model):
         inputs_embeds = Unsqueeze(scattered_2d, [0])            # [1, T, H]
     """
 
-    FILENAME = "embedding.onnx"
-
-    def __init__(self, config, io_dtype, onnx_dtype, ep, cache_dir, extra_options):
-        super().__init__(config, io_dtype, onnx_dtype, ep, cache_dir, extra_options)
-        self.filename = self.FILENAME
-        self.image_token_id = extra_options["image_token_id"]
-
-    # ------------------------------------------------------------------
-
-    def _load_hf_model(self, input_path):
+    def load_hf_model(self, input_path):
         from transformers import Mistral3ForConditionalGeneration
 
         src = input_path if os.path.isdir(input_path) else self.model_name_or_path
         extra_kwargs = {} if os.path.isdir(input_path) else {"cache_dir": self.cache_dir}
         return Mistral3ForConditionalGeneration.from_pretrained(src, token=self.hf_token, trust_remote_code=self.hf_remote, **extra_kwargs)
 
-    def make_model(self, input_path):
-        """Load HF weights and build the embedding ONNX graph."""
-        hf_model = self._load_hf_model(input_path)
-        hf_model.eval()
-        embed_weight = hf_model.model.language_model.embed_tokens.weight.detach().float().numpy()
-
-        # Initialisers
-        self.make_initializer(embed_weight, name="embed_tokens_weight")
-        self.make_initializer(np.array(self.image_token_id, dtype=np.int64), name="image_token_id_const")
-        # Use a Constant node (always inline) rather than an initializer so that
-        # shape inference can read the axes value even when external data is used.
-        _squeeze_axes = ir.Tensor(np.array([0], dtype=np.int64), name="squeeze_batch_axes")
-        self.make_node(
-            "Constant", inputs=[], outputs=["squeeze_batch_axes"], name="/embed/squeeze_batch_axes/Constant", value=_squeeze_axes
-        )
-        self.make_value("squeeze_batch_axes", ir.DataType.INT64, shape=[1])
-
-        # Graph inputs (dynamic shapes).
-        # ORT-GenAI passes input_ids as 2D [batch, seq_len].
-        self.graph.inputs.append(self.make_value("input_ids", ir.DataType.INT64, shape=[None, None]))
-        # image_features dtype follows io_dtype so that it matches the vision
-        # encoder output (float16 for fp16 models, float32 for fp32/int4).
-        self.graph.inputs.append(self.make_value("image_features", self.io_dtype, shape=[None, self.hidden_size]))
-
-        # Nodes:
-        # 1. Embed all tokens: input_ids [1, T] -> text_embeds [1, T, H] (fp32, weights are float32)
-        self.make_node("Gather", inputs=["embed_tokens_weight", "input_ids"], outputs=["text_embeds"], name="/embed/Gather", axis=0)
-        # 2. Squeeze batch dim for easier indexing: [1, T, H] → [T, H] (still fp32)
-        self.make_node("Squeeze", inputs=["text_embeds", "squeeze_batch_axes"], outputs=["text_2d_fp32"], name="/embed/Squeeze_3d")
-        # 3. Cast text embeddings from float32 to io_dtype so that ScatterND
-        #    receives tensors of the same dtype (for fp32/int4 this Cast is a
-        #    no-op that ORT optimises away at runtime).
-        self.make_cast("/embed/Cast_text_2d", "text_2d_fp32", self.io_dtype, [None, self.hidden_size])
-        # 4. Flatten input_ids: [1, T] → [T]
-        self.make_node("Squeeze", inputs=["input_ids", "squeeze_batch_axes"], outputs=["flat_ids"], name="/embed/Squeeze_ids")
-        # 5. Boolean mask where tokens are image placeholders: [T] bool
-        self.make_node("Equal", inputs=["flat_ids", "image_token_id_const"], outputs=["is_image"], name="/embed/Equal")
-        # 6. Positions of image placeholders: [1, N] int64
-        self.make_node("NonZero", inputs=["is_image"], outputs=["img_pos"], name="/embed/NonZero")
-        # 7. Transpose to [N, 1] for ScatterND
-        self.make_node("Transpose", inputs=["img_pos"], outputs=["img_pos_idx"], name="/embed/Transpose", perm=[1, 0])
-        # 8. Scatter image_features into text embeddings at placeholder positions
-        self.make_node(
-            "ScatterND",
-            inputs=["/embed/Cast_text_2d/output_0", "img_pos_idx", "image_features"],
-            outputs=["scattered_2d"],
-            name="/embed/ScatterND",
-        )
-        # 9. Re-add batch dimension: [T, H] → [1, T, H]
-        self.make_node("Unsqueeze", inputs=["scattered_2d", "squeeze_batch_axes"], outputs=["inputs_embeds"], name="/embed/Unsqueeze")
-
-        # Graph output — dtype matches io_dtype (float16 for fp16 models, float32 for fp32/int4)
-        self.graph.outputs.append(self.make_value("inputs_embeds", self.io_dtype, shape=[1, None, self.hidden_size]))
-
-        self.graph.sort()
+    def get_embed_weight(self, hf_model):
+        return hf_model.model.language_model.embed_tokens.weight.detach().float().numpy()
 
 
 class Ministral3ConditionalGenerationModel(Model):

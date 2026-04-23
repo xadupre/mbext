@@ -16,6 +16,7 @@ from onnxruntime.quantization.matmul_nbits_quantizer import RTNWeightOnlyQuantCo
 from transformers import AutoConfig
 
 from .base import Model
+from .base_embedding import EmbeddingModel
 from .base_vision import VisionEncoderModel
 
 
@@ -1074,7 +1075,7 @@ class Qwen25OmniVisionEncoderModel(VisionEncoderModel):
         self.graph.sort()
 
 
-class Qwen25OmniEmbeddingModel(Model):
+class Qwen25OmniEmbeddingModel(EmbeddingModel):
     """ONNX embedding model for the Qwen2.5-Omni ``phi3v``-style multimodal pipeline.
 
     Graph (2-D ``input_ids [1, T]`` from ORT-GenAI's ``EmbeddingState``)::
@@ -1090,13 +1091,6 @@ class Qwen25OmniEmbeddingModel(Model):
         inputs_embeds = Unsqueeze(scattered_2d, [0])           # [1, T, H]
     """
 
-    FILENAME = "embedding.onnx"
-
-    def __init__(self, config, io_dtype, onnx_dtype, ep, cache_dir, extra_options):
-        super().__init__(config, io_dtype, onnx_dtype, ep, cache_dir, extra_options)
-        self.filename = self.FILENAME
-        self.image_token_id = extra_options["image_token_id"]
-
     def load_hf_model(self, input_path):
         from transformers import Qwen2_5OmniThinkerForConditionalGeneration
 
@@ -1106,51 +1100,8 @@ class Qwen25OmniEmbeddingModel(Model):
             src, token=self.hf_token, trust_remote_code=self.hf_remote, **extra_kwargs
         )
 
-    def make_model(self, input_path):
-        """Load HF weights and build the embedding ONNX graph."""
-        hf_model = self.load_hf_model(input_path)
-        hf_model.eval()
-        embed_weight = hf_model.model.embed_tokens.weight.detach().float().numpy()
-
-        # Initialisers.
-        self.make_initializer(embed_weight, name="embed_tokens_weight")
-        self.make_initializer(np.array(self.image_token_id, dtype=np.int64), name="image_token_id_const")
-        _squeeze_axes = ir.Tensor(np.array([0], dtype=np.int64), name="squeeze_batch_axes")
-        self.make_node(
-            "Constant", inputs=[], outputs=["squeeze_batch_axes"], name="/embed/squeeze_batch_axes/Constant", value=_squeeze_axes
-        )
-        self.make_value("squeeze_batch_axes", ir.DataType.INT64, shape=[1])
-
-        # Graph inputs.
-        self.graph.inputs.append(self.make_value("input_ids", ir.DataType.INT64, shape=[None, None]))
-        self.graph.inputs.append(self.make_value("image_features", self.io_dtype, shape=[None, self.hidden_size]))
-
-        # 1. Embed all tokens.
-        self.make_node("Gather", inputs=["embed_tokens_weight", "input_ids"], outputs=["text_embeds"], name="/embed/Gather", axis=0)
-        # 2. Squeeze batch dim: [1, T, H] → [T, H] (fp32).
-        self.make_node("Squeeze", inputs=["text_embeds", "squeeze_batch_axes"], outputs=["text_2d_fp32"], name="/embed/Squeeze_3d")
-        # 3. Cast to io_dtype.
-        self.make_cast("/embed/Cast_text_2d", "text_2d_fp32", self.io_dtype, [None, self.hidden_size])
-        # 4. Flatten input_ids: [1, T] → [T].
-        self.make_node("Squeeze", inputs=["input_ids", "squeeze_batch_axes"], outputs=["flat_ids"], name="/embed/Squeeze_ids")
-        # 5. Boolean mask for image placeholders.
-        self.make_node("Equal", inputs=["flat_ids", "image_token_id_const"], outputs=["is_image"], name="/embed/Equal")
-        # 6. Positions of image placeholders: [1, N].
-        self.make_node("NonZero", inputs=["is_image"], outputs=["img_pos"], name="/embed/NonZero")
-        # 7. Transpose to [N, 1] for ScatterND.
-        self.make_node("Transpose", inputs=["img_pos"], outputs=["img_pos_idx"], name="/embed/Transpose", perm=[1, 0])
-        # 8. Scatter image_features into text embeddings.
-        self.make_node(
-            "ScatterND",
-            inputs=["/embed/Cast_text_2d/output_0", "img_pos_idx", "image_features"],
-            outputs=["scattered_2d"],
-            name="/embed/ScatterND",
-        )
-        # 9. Re-add batch dimension: [T, H] → [1, T, H].
-        self.make_node("Unsqueeze", inputs=["scattered_2d", "squeeze_batch_axes"], outputs=["inputs_embeds"], name="/embed/Unsqueeze")
-
-        self.graph.outputs.append(self.make_value("inputs_embeds", self.io_dtype, shape=[1, None, self.hidden_size]))
-        self.graph.sort()
+    def get_embed_weight(self, hf_model):
+        return hf_model.model.embed_tokens.weight.detach().float().numpy()
 
 
 class Qwen25OmniConditionalGenerationModel(Model):
