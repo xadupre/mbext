@@ -5,7 +5,7 @@
 # --------------------------------------------------------------------------
 import unittest
 
-from modelbuilder.ext_test_case import ExtTestCase, hide_stdout, requires_cuda, requires_transformers
+from modelbuilder.ext_test_case import ExtTestCase, hide_stdout, requires_cuda, requires_genai, requires_transformers
 
 QWEN2_5_OMNI_MODEL_NAME = "Qwen/Qwen2.5-Omni-3B"
 
@@ -111,6 +111,63 @@ class TestRandomQwen25Omni(ExtTestCase):
     @requires_cuda()
     def test_fast_discrepancy_qwen25omni_bf16_cuda(self):
         self.common_fast_qwen25omni_random_weights("bf16", "cuda")
+
+    @unittest.skip(
+        "RuntimeError: No execution providers were provided or selected – "
+        "ORT-GenAI 0.13.x initialises Qwen2_5_VL as a full multimodal pipeline "
+        "and cannot load the text-only thinker ONNX on CPU. "
+        "Un-skip when ORT-GenAI supports text-only mRoPE decoder inference."
+    )
+    @hide_stdout()
+    @requires_genai()
+    def test_qwen25omni_fp32_cpu_genai_generate(self):
+        """Verify that ``onnxruntime-genai`` can load and run a Qwen2.5-Omni thinker model.
+
+        This test builds a minimal random-weight Qwen2.5-Omni thinker ONNX model
+        (fp32 / CPU) and verifies that ORT-genai can load and generate from it.
+        PyTorch parity is not checked here because the mRoPE position-id computation
+        differs between PyTorch (internal ``get_rope_index``) and ORT-genai; what we
+        validate instead is that the genai pipeline executes without error.
+        """
+        import torch
+
+        from modelbuilder.builder import create_model
+
+        prefix = "test_qwen25omni_fp32_cpu_genai_generate"
+        num_hidden_layers = 1
+        config = _make_qwen25_omni_thinker_config(num_hidden_layers)
+
+        from transformers import Qwen2_5OmniThinkerForConditionalGeneration
+
+        model_dir = self.get_model_dir(prefix, clean=False)
+        torch.manual_seed(42)
+        model = Qwen2_5OmniThinkerForConditionalGeneration(config)
+        model.eval()
+        model.save_pretrained(model_dir)
+
+        tokenizer = self.make_word_level_tokenizer()
+        tokenizer.save_pretrained(model_dir)
+
+        output_dir, cache_dir = self.get_dirs(prefix, clean=False)
+
+        create_model(
+            model_name=QWEN2_5_OMNI_MODEL_NAME,
+            input_path=model_dir,
+            output_dir=output_dir,
+            precision="fp32",
+            execution_provider="cpu",
+            cache_dir=cache_dir,
+            num_hidden_layers=num_hidden_layers,
+        )
+
+        # Pass model=None to skip PyTorch comparison: mRoPE position-id handling
+        # differs between PyTorch (computed internally by get_rope_index) and
+        # ORT-genai (computed from the genai pipeline).  The test still verifies
+        # that model.onnx and genai_config.json are valid and that ORT-genai can
+        # execute a generation loop without error.
+        self.run_genai_generation_test(
+            output_dir, model=None, vocab_size=config.text_config.vocab_size, eos_token_id=config.text_config.eos_token_id
+        )
 
 
 if __name__ == "__main__":

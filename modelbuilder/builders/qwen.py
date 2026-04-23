@@ -656,6 +656,12 @@ class Qwen25OmniThinkerModel(Qwen25VLTextModel):
 
         super().__init__(config, io_dtype, onnx_dtype, ep, cache_dir, extra_options)
 
+        # The Qwen2.5-Omni thinker shares the same decoder architecture as
+        # Qwen2.5-VL (mRoPE, GQA with QKV bias).  Override model_type so that
+        # make_genai_config emits "qwen2_5_vl" – the type string that
+        # ORT-GenAI uses for this mRoPE model family.
+        self.model_type = "Qwen2_5_VLForConditionalGeneration"
+
     def load_weights(self, input_path):
         # For quantized models or GGUF use the base class logic.
         if self.quant_type is not None or input_path.endswith(".gguf"):
