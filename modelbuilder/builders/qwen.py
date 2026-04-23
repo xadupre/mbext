@@ -16,6 +16,7 @@ from onnxruntime.quantization.matmul_nbits_quantizer import RTNWeightOnlyQuantCo
 from transformers import AutoConfig
 
 from .base import Model
+from .base_vision import VisionEncoderModel
 
 
 class QwenModel(Model):
@@ -708,7 +709,7 @@ class Qwen25OmniThinkerModel(Qwen25VLTextModel):
         super().make_genai_config(out_dir, {}, out_dir)
 
 
-class Qwen25OmniVisionEncoderModel(Model):
+class Qwen25OmniVisionEncoderModel(VisionEncoderModel):
     """ONNX graph builder for the Qwen2.5-Omni vision encoder.
 
     Exports the vision tower (patch embedding + transformer blocks + patch merger)
@@ -728,8 +729,6 @@ class Qwen25OmniVisionEncoderModel(Model):
     image_features : io_dtype [n_merged, out_hidden_size]
         Merged patch features suitable for injection into the text embedding.
     """
-
-    FILENAME = "vision_encoder.onnx"
 
     # ------------------------------------------------------------------
     # Constructor
@@ -778,21 +777,6 @@ class Qwen25OmniVisionEncoderModel(Model):
             self.text_hidden_size = config.text_config.hidden_size
         else:
             self.text_hidden_size = self.out_hidden_size
-
-    # ------------------------------------------------------------------
-    # Low-level ONNX helpers
-    # ------------------------------------------------------------------
-
-    def make_rms_norm(self, name, root_input, weight, shape):
-        """SimplifiedLayerNormalization (Qwen2_5OmniRMSNorm)."""
-        w_name = f"{name}.weight"
-        self.make_initializer(weight, w_name, to=self.io_dtype)
-        out = f"{name}/output_0"
-        self.make_node(
-            "SimplifiedLayerNormalization", inputs=[root_input, w_name], outputs=[out], name=name, axis=-1, epsilon=1e-6, stash_type=1
-        )
-        self.make_value(out, self.io_dtype, shape=shape)
-        return out
 
     # ------------------------------------------------------------------
     # 2-D RoPE application
@@ -951,40 +935,6 @@ class Qwen25OmniVisionEncoderModel(Model):
         self.layernorm_attrs["skip_input"] = o
 
     # ------------------------------------------------------------------
-    # Vision MLP layer
-    # ------------------------------------------------------------------
-
-    def make_mlp_vision(self, layer_id, mlp, root_input):
-        """Build Qwen2_5OmniMLP (SiLU-gated, with bias) using make_matmul + make_add_bias.
-
-        Returns output name [n_patches, vis_hidden_size].
-        """
-        b = f"/vision/layers.{layer_id}/mlp"
-        n = None
-        ff = self.vis_intermediate_size
-
-        gate = f"{self.make_matmul(mlp.gate_proj, f'{b}/gate_proj/MatMul', root_input)}/output_0"
-        if mlp.gate_proj.bias is not None:
-            self.make_add_bias(mlp.gate_proj.bias, f"{b}/gate_proj/Add", root_input=gate)
-            gate = f"{b}/gate_proj/Add/output_0"
-
-        up = f"{self.make_matmul(mlp.up_proj, f'{b}/up_proj/MatMul', root_input)}/output_0"
-        if mlp.up_proj.bias is not None:
-            self.make_add_bias(mlp.up_proj.bias, f"{b}/up_proj/Add", root_input=up)
-            up = f"{b}/up_proj/Add/output_0"
-
-        # SiLU(gate) = gate * Sigmoid(gate)
-        self.make_sigmoid(f"{b}/act/Sigmoid", gate, self.io_dtype, [n, ff])
-        silu = self.make_mul(f"{b}/act/Mul_silu", [gate, f"{b}/act/Sigmoid/output_0"], self.io_dtype, [n, ff])
-        gate_up = self.make_mul(f"{b}/gate_up/Mul", [silu, up], self.io_dtype, [n, ff])
-
-        down = f"{self.make_matmul(mlp.down_proj, f'{b}/down_proj/MatMul', gate_up)}/output_0"
-        if mlp.down_proj.bias is not None:
-            self.make_add_bias(mlp.down_proj.bias, f"{b}/down_proj/Add", root_input=down)
-            return f"{b}/down_proj/Add/output_0"
-        return down
-
-    # ------------------------------------------------------------------
     # Single transformer layer (overrides Model.make_layer)
     # ------------------------------------------------------------------
 
@@ -1014,7 +964,7 @@ class Qwen25OmniVisionEncoderModel(Model):
         norm2_out = self.make_rms_norm(f"{b}/norm2", res1, block.norm2.weight, shape=[n, d])
 
         # MLP.
-        mlp_out = self.make_mlp_vision(layer_id, block.mlp, norm2_out)
+        mlp_out = self.make_silu_gated_mlp(layer_id, block.mlp, norm2_out, [None, self.vis_intermediate_size])
 
         # Residual 2.
         res2 = self.make_add(f"{b}/res2", [res1, mlp_out], self.io_dtype, [n, d])

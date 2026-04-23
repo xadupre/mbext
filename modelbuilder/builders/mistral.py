@@ -12,6 +12,7 @@ import onnx_ir as ir
 import torch
 
 from .base import Model
+from .base_vision import VisionEncoderModel
 
 
 class MistralModel(Model):
@@ -87,7 +88,7 @@ class Ministral3TextModel(MistralModel):
             json.dump(genai_config, f, indent=4)
 
 
-class Ministral3VisionEncoderModel(Model):
+class Ministral3VisionEncoderModel(VisionEncoderModel):
     """Direct ``onnx_ir`` graph builder for the Pixtral vision encoder + multimodal projector.
 
     Builds the ONNX graph manually (analogous to other model builders in this
@@ -107,8 +108,6 @@ class Ministral3VisionEncoderModel(Model):
     image is encoded independently before being concatenated into
     ``inputs_embeds``.
     """
-
-    FILENAME = "vision_encoder.onnx"
 
     # ------------------------------------------------------------------ #
     #  Constructor                                                         #
@@ -169,22 +168,6 @@ class Ministral3VisionEncoderModel(Model):
     # ------------------------------------------------------------------ #
     #  Graph-construction helpers                                        #
     # ------------------------------------------------------------------ #
-
-    def _rms_norm(self, name, root_input, weight_tensor, weight_name, shape):
-        """SimplifiedLayerNormalization (PixtralRMSNorm)."""
-        self.make_initializer(weight_tensor, weight_name, to=self.io_dtype)
-        output = f"{name}/output_0"
-        self.make_node(
-            "SimplifiedLayerNormalization",
-            inputs=[root_input, weight_name],
-            outputs=[output],
-            name=name,
-            axis=-1,
-            epsilon=self.vis_rms_norm_eps,
-            stash_type=1,
-        )
-        self.make_value(output, self.io_dtype, shape=shape)
-        return output
 
     # ------------------------------------------------------------------ #
     #  2-D RoPE (pre-computed at graph-build time)                        #
@@ -326,36 +309,6 @@ class Ministral3VisionEncoderModel(Model):
         self.layernorm_attrs["skip_input"] = o
 
     # ------------------------------------------------------------------ #
-    #  MLP (SiLU-gated)                                                   #
-    # ------------------------------------------------------------------ #
-
-    def _build_mlp(self, layer_id, mlp, root_input):
-        """Build one PixtralMLP layer (SiLU(gate_proj) * up_proj, then down_proj).
-
-        SiLU(x) is implemented as ``x * Sigmoid(x)`` using standard ONNX ops.
-
-        root_input: [1, n_patches, vis_hidden_size]
-        Returns: output name, same shape.
-        """
-        b = f"/vision/layers.{layer_id}/mlp"
-        n_p = self.n_patches
-        ff = self.vis_intermediate_size
-
-        gate = f"{self.make_matmul(mlp.gate_proj, f'{b}/gate_proj/MatMul', root_input)}/output_0"
-        up = f"{self.make_matmul(mlp.up_proj, f'{b}/up_proj/MatMul', root_input)}/output_0"
-
-        # SiLU(gate) * up  (SiLU(x) = x * Sigmoid(x))
-        sig_name = f"{b}/act/Sigmoid"
-        self.make_sigmoid(sig_name, gate, self.io_dtype, [1, n_p, ff])
-        sig_out = f"{sig_name}/output_0"
-
-        silu_out = self.make_mul(f"{b}/act/Mul_silu", [gate, sig_out], self.io_dtype, [1, n_p, ff])
-        gate_up = self.make_mul(f"{b}/gate_up/Mul", [silu_out, up], self.io_dtype, [1, n_p, ff])
-
-        down = f"{self.make_matmul(mlp.down_proj, f'{b}/down_proj/MatMul', gate_up)}/output_0"
-        return down
-
-    # ------------------------------------------------------------------ #
     #  Single transformer layer                                           #
     # ------------------------------------------------------------------ #
 
@@ -375,14 +328,15 @@ class Ministral3VisionEncoderModel(Model):
         b = f"/vision/layers.{layer_id}"
         n_p = self.n_patches
         d = self.vis_hidden_size
+        ff = self.vis_intermediate_size
 
         # attention_norm (RMSNorm, no skip)
-        norm1_out = self._rms_norm(
+        norm1_out = self.make_rms_norm(
             f"{b}/attention_norm/SimplifiedLayerNorm",
             root_input,
             layer.attention_norm.weight,
-            f"{b}/attention_norm.weight",
             shape=[1, n_p, d],
+            weight_name=f"{b}/attention_norm.weight",
         )
 
         # Attention
@@ -393,12 +347,12 @@ class Ministral3VisionEncoderModel(Model):
         res1 = self.make_add(f"{b}/residual1/Add", [root_input, attn_out], self.io_dtype, [1, n_p, d])
 
         # ffn_norm (RMSNorm, no skip)
-        norm2_out = self._rms_norm(
-            f"{b}/ffn_norm/SimplifiedLayerNorm", res1, layer.ffn_norm.weight, f"{b}/ffn_norm.weight", shape=[1, n_p, d]
+        norm2_out = self.make_rms_norm(
+            f"{b}/ffn_norm/SimplifiedLayerNorm", res1, layer.ffn_norm.weight, shape=[1, n_p, d], weight_name=f"{b}/ffn_norm.weight"
         )
 
         # Feed-forward (SiLU-gated MLP)
-        mlp_out = self._build_mlp(layer_id, layer.feed_forward, norm2_out)
+        mlp_out = self.make_silu_gated_mlp(layer_id, layer.feed_forward, norm2_out, [1, n_p, ff])
 
         # Residual 2
         res2 = self.make_add(f"{b}/residual2/Add", [res1, mlp_out], self.io_dtype, [1, n_p, d])
@@ -448,12 +402,12 @@ class Ministral3VisionEncoderModel(Model):
         )
 
         # ln_pre (SimplifiedLayerNormalization)
-        ln_pre_out = self._rms_norm(
+        ln_pre_out = self.make_rms_norm(
             "/vision/ln_pre/SimplifiedLayerNorm",
             patch_embed,
             vt.ln_pre.weight,
-            "vision.ln_pre.weight",
             shape=[1, self.n_patches, self.vis_hidden_size],
+            weight_name="vision.ln_pre.weight",
         )
         return ln_pre_out
 
