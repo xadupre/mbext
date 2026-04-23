@@ -783,28 +783,6 @@ class Qwen25OmniVisionEncoderModel(Model):
     # Low-level ONNX helpers
     # ------------------------------------------------------------------
 
-    def _linear(self, name, root_input, weight, bias=None, out_shape=None):
-        """MatMul (+ optional Add) for vision encoder subgraphs.
-
-        ``weight`` follows the PyTorch convention [out_feat, in_feat]; it is
-        transposed before storing as an ONNX initialiser.
-        """
-        w_name = f"{name}.weight"
-        self.make_initializer(weight.T, w_name, to=self.io_dtype)
-        mm_out = f"{name}/output_0"
-        self.make_node("MatMul", inputs=[root_input, w_name], outputs=[mm_out], name=name)
-        if out_shape is not None:
-            self.make_value(mm_out, self.io_dtype, shape=out_shape)
-        if bias is not None:
-            b_name = f"{name}.bias"
-            self.make_initializer(bias, b_name, to=self.io_dtype)
-            add_out = f"{name}_add_bias/output_0"
-            self.make_node("Add", inputs=[mm_out, b_name], outputs=[add_out], name=f"{name}_add_bias")
-            if out_shape is not None:
-                self.make_value(add_out, self.io_dtype, shape=out_shape)
-            return add_out
-        return mm_out
-
     def _rms_norm(self, name, root_input, weight, shape):
         """SimplifiedLayerNormalization (Qwen2_5OmniRMSNorm)."""
         w_name = f"{name}.weight"
@@ -819,16 +797,6 @@ class Qwen25OmniVisionEncoderModel(Model):
     # ------------------------------------------------------------------
     # 2-D RoPE application
     # ------------------------------------------------------------------
-
-    def _make_inline_const(self, name, data):
-        """Create an inline ONNX Constant node for a small integer tensor.
-
-        Using Constant nodes (rather than initializers) avoids external-data
-        serialisation for small shape-defining tensors.
-        """
-        ir_t = ir.Tensor(np.array(data, dtype=np.int64), name=name)
-        self.make_node("Constant", inputs=[], outputs=[name], name=f"{name}/Constant", value=ir_t)
-        self.make_value(name, ir.DataType.INT64, shape=list(ir_t.shape))
 
     def _apply_rope(self, name, x, rope_input, n_patches, head_dim):
         """Apply 2-D vision RoPE to Q or K tensor.
@@ -852,9 +820,12 @@ class Qwen25OmniVisionEncoderModel(Model):
         self.make_node("Sin", inputs=[rope_input], outputs=[sin_raw], name=f"{name}/sin_raw")
         self.make_value(sin_raw, ir.DataType.FLOAT, shape=[None, half])
 
-        # Tile [n_patches, head_dim//2] → [n_patches, head_dim]
+        # Tile [n_patches, head_dim//2] → [n_patches, head_dim].
+        # Use an inline Constant node (not initializer) to avoid external-data serialisation.
         tile_const = f"{name}/tile_repeats"
-        self._make_inline_const(tile_const, [1, 2])
+        _tile_t = ir.Tensor(np.array([1, 2], dtype=np.int64), name=tile_const)
+        self.make_node("Constant", inputs=[], outputs=[tile_const], name=f"{tile_const}/Constant", value=_tile_t)
+        self.make_value(tile_const, ir.DataType.INT64, shape=[2])
         self.make_tile(f"{name}/cos_full", [cos_raw, tile_const], ir.DataType.FLOAT, [None, head_dim])
         self.make_tile(f"{name}/sin_full", [sin_raw, tile_const], ir.DataType.FLOAT, [None, head_dim])
         cos_full_out = f"{name}/cos_full/output_0"
@@ -862,7 +833,9 @@ class Qwen25OmniVisionEncoderModel(Model):
 
         # Unsqueeze to [n_patches, 1, head_dim] for broadcasting with [n_patches, num_heads, head_dim].
         ax_1 = f"{name}/ax1_const"
-        self._make_inline_const(ax_1, [1])
+        _ax_t = ir.Tensor(np.array([1], dtype=np.int64), name=ax_1)
+        self.make_node("Constant", inputs=[], outputs=[ax_1], name=f"{ax_1}/Constant", value=_ax_t)
+        self.make_value(ax_1, ir.DataType.INT64, shape=[1])
         self.make_unsqueeze(f"{name}/cos_3d", [cos_full_out, ax_1], ir.DataType.FLOAT, [None, 1, head_dim])
         self.make_unsqueeze(f"{name}/sin_3d", [sin_full_out, ax_1], ir.DataType.FLOAT, [None, 1, head_dim])
         cos_3d_out = f"{name}/cos_3d/output_0"
@@ -880,7 +853,9 @@ class Qwen25OmniVisionEncoderModel(Model):
         split_out_1 = f"{name}/split_1/output_0"
         split_out_2 = f"{name}/split_2/output_0"
         half_const = f"{name}/half_const"
-        self._make_inline_const(half_const, [half, half])
+        _half_t = ir.Tensor(np.array([half, half], dtype=np.int64), name=half_const)
+        self.make_node("Constant", inputs=[], outputs=[half_const], name=f"{half_const}/Constant", value=_half_t)
+        self.make_value(half_const, ir.DataType.INT64, shape=[2])
         self.make_node("Split", inputs=[x_fp32, half_const], outputs=[split_out_1, split_out_2], name=f"{name}/Split", axis=-1)
         self.make_value(split_out_1, ir.DataType.FLOAT, shape=[None, num_heads, half])
         self.make_value(split_out_2, ir.DataType.FLOAT, shape=[None, num_heads, half])
@@ -900,103 +875,126 @@ class Qwen25OmniVisionEncoderModel(Model):
         return out_fp32
 
     # ------------------------------------------------------------------
-    # Vision attention layer
+    # Vision attention layer (overrides Model.make_attention)
     # ------------------------------------------------------------------
 
-    def _make_attention(self, layer_id, attn, root_input, rope_input):
-        """Build one Qwen2_5OmniVisionAttention block.
+    def make_attention(self, layer_id, attention, root_input, **kwargs):
+        """Build one Qwen2_5OmniVisionAttention block (encoder-style, no KV cache).
 
-        Parameters
-        ----------
-        root_input : str
-            Hidden states [n_patches, vis_hidden_size].
-        rope_input : str
-            rotary_pos_emb [n_patches, head_dim // 2] in float32.
+        Overrides Model.make_attention for the vision encoder.
 
-        Stores attention output in ``self.layernorm_attrs["skip_input"]``.
+        root_input : [n_patches, vis_hidden_size]
+        Sets self.layernorm_attrs["skip_input"] to the output name,
+        following the base-class convention.
         """
         b = f"/vision/layers.{layer_id}/attn"
         n = None  # n_patches is dynamic
         d = self.vis_hidden_size
         nh = self.vis_num_heads
         hd = self.vis_head_dim
+        rope_input = kwargs.get("rotary_pos_emb", "rotary_pos_emb")
 
-        # QKV projections (with bias).
-        q_proj = self._linear(f"{b}/q_proj", root_input, attn.q.weight, attn.q.bias, out_shape=[n, d])
-        k_proj = self._linear(f"{b}/k_proj", root_input, attn.k.weight, attn.k.bias, out_shape=[n, d])
-        v_proj = self._linear(f"{b}/v_proj", root_input, attn.v.weight, attn.v.bias, out_shape=[n, d])
+        # QKV projections: use base-class make_matmul (handles fp16/int4 automatically).
+        q = f"{self.make_matmul(attention.q, f'{b}/q_proj/MatMul', root_input)}/output_0"
+        if attention.q.bias is not None:
+            self.make_add_bias(attention.q.bias, f"{b}/q_proj/Add", root_input=q)
+            q = f"{b}/q_proj/Add/output_0"
+
+        k = f"{self.make_matmul(attention.k, f'{b}/k_proj/MatMul', root_input)}/output_0"
+        if attention.k.bias is not None:
+            self.make_add_bias(attention.k.bias, f"{b}/k_proj/Add", root_input=k)
+            k = f"{b}/k_proj/Add/output_0"
+
+        v = f"{self.make_matmul(attention.v, f'{b}/v_proj/MatMul', root_input)}/output_0"
+        if attention.v.bias is not None:
+            self.make_add_bias(attention.v.bias, f"{b}/v_proj/Add", root_input=v)
+            v = f"{b}/v_proj/Add/output_0"
 
         # Reshape to [n_patches, num_heads, head_dim].
-        q_4d = self.make_reshape(f"{b}/q_reshape", [q_proj, [0, nh, hd]], self.io_dtype, [n, nh, hd])
-        k_4d = self.make_reshape(f"{b}/k_reshape", [k_proj, [0, nh, hd]], self.io_dtype, [n, nh, hd])
-        v_4d = self.make_reshape(f"{b}/v_reshape", [v_proj, [0, nh, hd]], self.io_dtype, [n, nh, hd])
+        q_4d = self.make_reshape(f"{b}/q_reshape", [q, [0, nh, hd]], self.io_dtype, [n, nh, hd])
+        k_4d = self.make_reshape(f"{b}/k_reshape", [k, [0, nh, hd]], self.io_dtype, [n, nh, hd])
+        v_4d = self.make_reshape(f"{b}/v_reshape", [v, [0, nh, hd]], self.io_dtype, [n, nh, hd])
 
         # Apply 2-D RoPE to Q and K.
         q_rope = self._apply_rope(f"{b}/q_rope", q_4d, rope_input, n, hd)
         k_rope = self._apply_rope(f"{b}/k_rope", k_4d, rope_input, n, hd)
 
-        # Transpose to [num_heads, n_patches, head_dim] for matmul.
+        # Transpose to [num_heads, n_patches, head_dim] for batched MatMul.
         q_t = self.make_transpose(f"{b}/q_t", q_rope, self.io_dtype, [nh, n, hd], perm=[1, 0, 2])
         k_t = self.make_transpose(f"{b}/k_t", k_rope, self.io_dtype, [nh, n, hd], perm=[1, 0, 2])
         v_t = self.make_transpose(f"{b}/v_t", v_4d, self.io_dtype, [nh, n, hd], perm=[1, 0, 2])
 
-        # Scaled dot-product attention (full attention, no mask).
+        # Scaled dot-product attention (full attention, no causal mask).
         k_T = self.make_transpose(f"{b}/k_T", k_t, self.io_dtype, [nh, hd, n], perm=[0, 2, 1])
-        attn_w_out = f"{b}/attn_w/output_0"
-        self.make_node("MatMul", inputs=[q_t, k_T], outputs=[attn_w_out], name=f"{b}/attn_w")
+        attn_w_out = f"{b}/attn_w/MatMul/output_0"
+        self.make_node("MatMul", inputs=[q_t, k_T], outputs=[attn_w_out], name=f"{b}/attn_w/MatMul")
         self.make_value(attn_w_out, self.io_dtype, shape=[nh, n, n])
 
         np_dtype = np.float16 if self.io_dtype == ir.DataType.FLOAT16 else np.float32
-        scale_val = float(hd**-0.5)
         scale_name = f"{b}/attn_scale"
-        self.make_initializer(np.array(scale_val, dtype=np_dtype), scale_name)
+        self.make_initializer(np.array(float(hd**-0.5), dtype=np_dtype), scale_name)
         attn_ws = self.make_mul(f"{b}/attn_scale_mul", [attn_w_out, scale_name], self.io_dtype, [nh, n, n])
         attn_probs = self.make_softmax(f"{b}/attn_softmax", attn_ws, self.io_dtype, [nh, n, n])
 
-        attn_out_t = f"{b}/attn_out_t/output_0"
-        self.make_node("MatMul", inputs=[attn_probs, v_t], outputs=[attn_out_t], name=f"{b}/attn_out_t")
+        attn_out_t = f"{b}/attn_out_t/MatMul/output_0"
+        self.make_node("MatMul", inputs=[attn_probs, v_t], outputs=[attn_out_t], name=f"{b}/attn_out_t/MatMul")
         self.make_value(attn_out_t, self.io_dtype, shape=[nh, n, hd])
 
-        # Transpose back to [n_patches, num_heads, head_dim] and flatten.
+        # Transpose back to [n_patches, num_heads, head_dim] and flatten to [n_patches, d].
         attn_back = self.make_transpose(f"{b}/attn_back", attn_out_t, self.io_dtype, [n, nh, hd], perm=[1, 0, 2])
         attn_flat = self.make_reshape(f"{b}/attn_flat", [attn_back, [0, d]], self.io_dtype, [n, d])
 
-        # O projection (no bias).
-        o_out = self._linear(f"{b}/o_proj", attn_flat, attn.proj.weight, out_shape=[n, d])
+        # O projection (no bias in Qwen2.5-Omni vision attention).
+        o = f"{self.make_matmul(attention.proj, f'{b}/o_proj/MatMul', attn_flat)}/output_0"
 
-        self.layernorm_attrs["skip_input"] = o_out
+        # Follow base-class convention: store output in layernorm_attrs["skip_input"].
+        self.layernorm_attrs["skip_input"] = o
 
     # ------------------------------------------------------------------
     # Vision MLP layer
     # ------------------------------------------------------------------
 
-    def _make_mlp(self, layer_id, mlp, root_input):
-        """Build Qwen2_5OmniMLP (SiLU-gated, with bias).
+    def _build_mlp(self, layer_id, mlp, root_input):
+        """Build Qwen2_5OmniMLP (SiLU-gated, with bias) using make_matmul + make_add_bias.
 
         Returns output name [n_patches, vis_hidden_size].
         """
         b = f"/vision/layers.{layer_id}/mlp"
         n = None
-        d = self.vis_hidden_size
         ff = self.vis_intermediate_size
 
-        gate = self._linear(f"{b}/gate_proj", root_input, mlp.gate_proj.weight, mlp.gate_proj.bias, out_shape=[n, ff])
-        up = self._linear(f"{b}/up_proj", root_input, mlp.up_proj.weight, mlp.up_proj.bias, out_shape=[n, ff])
+        gate = f"{self.make_matmul(mlp.gate_proj, f'{b}/gate_proj/MatMul', root_input)}/output_0"
+        if mlp.gate_proj.bias is not None:
+            self.make_add_bias(mlp.gate_proj.bias, f"{b}/gate_proj/Add", root_input=gate)
+            gate = f"{b}/gate_proj/Add/output_0"
+
+        up = f"{self.make_matmul(mlp.up_proj, f'{b}/up_proj/MatMul', root_input)}/output_0"
+        if mlp.up_proj.bias is not None:
+            self.make_add_bias(mlp.up_proj.bias, f"{b}/up_proj/Add", root_input=up)
+            up = f"{b}/up_proj/Add/output_0"
 
         # SiLU(gate) = gate * Sigmoid(gate)
-        self.make_sigmoid(f"{b}/act_sigmoid", gate, self.io_dtype, [n, ff])
-        silu = self.make_mul(f"{b}/act_silu", [gate, f"{b}/act_sigmoid/output_0"], self.io_dtype, [n, ff])
-        gate_up = self.make_mul(f"{b}/gate_up", [silu, up], self.io_dtype, [n, ff])
+        self.make_sigmoid(f"{b}/act/Sigmoid", gate, self.io_dtype, [n, ff])
+        silu = self.make_mul(f"{b}/act/Mul_silu", [gate, f"{b}/act/Sigmoid/output_0"], self.io_dtype, [n, ff])
+        gate_up = self.make_mul(f"{b}/gate_up/Mul", [silu, up], self.io_dtype, [n, ff])
 
-        down = self._linear(f"{b}/down_proj", gate_up, mlp.down_proj.weight, mlp.down_proj.bias, out_shape=[n, d])
+        down = f"{self.make_matmul(mlp.down_proj, f'{b}/down_proj/MatMul', gate_up)}/output_0"
+        if mlp.down_proj.bias is not None:
+            self.make_add_bias(mlp.down_proj.bias, f"{b}/down_proj/Add", root_input=down)
+            return f"{b}/down_proj/Add/output_0"
         return down
 
     # ------------------------------------------------------------------
-    # Single transformer layer
+    # Single transformer layer (overrides Model.make_layer)
     # ------------------------------------------------------------------
 
-    def _make_layer(self, layer_id, block, rope_input):
-        """Build one Qwen2_5OmniVisionBlock (norm → attn → residual → norm → mlp → residual)."""
+    def make_layer(self, layer_id, block):
+        """Build one Qwen2_5OmniVisionBlock (norm → attn → residual → norm → mlp → residual).
+
+        Overrides Model.make_layer for the vision encoder.
+        Reads hidden-states from self.layernorm_attrs["root_input"] and
+        stores the output back there, following the base-class convention.
+        """
         root = self.layernorm_attrs["root_input"]
         b = f"/vision/layers.{layer_id}"
         n = None
@@ -1005,8 +1003,8 @@ class Qwen25OmniVisionEncoderModel(Model):
         # Pre-attention RMSNorm.
         norm1_out = self._rms_norm(f"{b}/norm1", root, block.norm1.weight, shape=[n, d])
 
-        # Attention.
-        self._make_attention(layer_id, block.attn, norm1_out, rope_input)
+        # Attention (override that takes rotary_pos_emb as a kwarg).
+        self.make_attention(layer_id, block.attn, norm1_out, rotary_pos_emb="rotary_pos_emb")
         attn_out = self.layernorm_attrs["skip_input"]
 
         # Residual 1.
@@ -1016,7 +1014,7 @@ class Qwen25OmniVisionEncoderModel(Model):
         norm2_out = self._rms_norm(f"{b}/norm2", res1, block.norm2.weight, shape=[n, d])
 
         # MLP.
-        mlp_out = self._make_mlp(layer_id, block.mlp, norm2_out)
+        mlp_out = self._build_mlp(layer_id, block.mlp, norm2_out)
 
         # Residual 2.
         res2 = self.make_add(f"{b}/res2", [res1, mlp_out], self.io_dtype, [n, d])
@@ -1030,6 +1028,7 @@ class Qwen25OmniVisionEncoderModel(Model):
     def _make_merger(self, merger, root_input):
         """Build Qwen2_5OmniPatchMerger: RMSNorm → Reshape → Linear+GELU+Linear.
 
+        Uses make_matmul + make_add_bias following the Ministral3 pattern.
         root_input : [n_patches, vis_hidden_size]
         Returns output name [n_merged, out_hidden_size].
         """
@@ -1043,14 +1042,20 @@ class Qwen25OmniVisionEncoderModel(Model):
         # Reshape [n_patches, vis_hidden_size] → [n_merged, sm2 * vis_hidden_size].
         merged = self.make_reshape("/vision/merger/reshape", [ln_out, [-1, merge_d]], self.io_dtype, [n, merge_d])
 
-        # Linear1 + GELU + Linear2.
-        lin1 = self._linear("/vision/merger/mlp.0", merged, merger.mlp[0].weight, merger.mlp[0].bias, out_shape=[n, merge_d])
+        # Linear1 + GELU + Linear2 using base-class make_matmul + make_add_bias.
+        lin1 = f"{self.make_matmul(merger.mlp[0], '/vision/merger/mlp_0/MatMul', merged)}/output_0"
+        if merger.mlp[0].bias is not None:
+            self.make_add_bias(merger.mlp[0].bias, "/vision/merger/mlp_0/Add", root_input=lin1)
+            lin1 = "/vision/merger/mlp_0/Add/output_0"
 
         gelu_out = "/vision/merger/gelu/output_0"
         self.make_node("Gelu", inputs=[lin1], outputs=[gelu_out], name="/vision/merger/gelu", approximate="none")
         self.make_value(gelu_out, self.io_dtype, shape=[n, merge_d])
 
-        out = self._linear("/vision/merger/mlp.2", gelu_out, merger.mlp[2].weight, merger.mlp[2].bias, out_shape=[n, self.out_hidden_size])
+        out = f"{self.make_matmul(merger.mlp[2], '/vision/merger/mlp_2/MatMul', gelu_out)}/output_0"
+        if merger.mlp[2].bias is not None:
+            self.make_add_bias(merger.mlp[2].bias, "/vision/merger/mlp_2/Add", root_input=out)
+            return "/vision/merger/mlp_2/Add/output_0"
         return out
 
     # ------------------------------------------------------------------
@@ -1093,15 +1098,19 @@ class Qwen25OmniVisionEncoderModel(Model):
         # (non-overlapping patches) is equivalent to a Linear layer:
         #   weight shape [embed_dim, in_channels, T, P, P]
         #   → reshape to [embed_dim, in_feat_dim] to collapse all spatial/temporal dims
-        #   → _linear() transposes to [in_feat_dim, embed_dim] for the ONNX MatMul.
+        #   → make_matmul() transposes to [in_feat_dim, embed_dim] for the ONNX MatMul.
         # No bias: Qwen2_5_VisionPatchEmbed.proj has bias=False.
-        patch_weight = vis.patch_embed.proj.weight.detach().reshape(self.vis_hidden_size, self.in_feat_dim)
-        patch_emb = self._linear("/vision/patch_embed", pv_cast, patch_weight, out_shape=[None, self.vis_hidden_size])
+        patch_proj = torch.nn.Linear(self.in_feat_dim, self.vis_hidden_size, bias=False)
+        patch_proj.weight = torch.nn.Parameter(
+            vis.patch_embed.proj.weight.detach().reshape(self.vis_hidden_size, self.in_feat_dim), requires_grad=False
+        )
+        self.make_matmul(patch_proj, "/vision/patch_embed/proj/MatMul", pv_cast)
+        patch_emb = "/vision/patch_embed/proj/MatMul/output_0"
 
-        # --- Transformer blocks ---
+        # --- Transformer blocks (make_layer is overridden for vision encoder) ---
         self.layernorm_attrs["root_input"] = patch_emb
         for i, block in enumerate(vis.blocks):
-            self._make_layer(i, block, "rotary_pos_emb")
+            self.make_layer(i, block)
 
         # --- Patch merger ---
         hidden = self.layernorm_attrs["root_input"]
