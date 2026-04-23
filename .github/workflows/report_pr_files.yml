@@ -68,9 +68,11 @@ jobs:
             }
 
             // Update the PR title when exactly one file in modelbuilder/builders/ is changed
+            const EXCLUDED_BUILDERS = new Set(['base.py', '__init__.py']);
             const builderFiles = files.filter(f =>
               f.filename.startsWith('modelbuilder/builders/') &&
-              f.filename.endsWith('.py')
+              f.filename.endsWith('.py') &&
+              !EXCLUDED_BUILDERS.has(f.filename.split('/').pop())
             );
 
             if (builderFiles.length === 1) {
