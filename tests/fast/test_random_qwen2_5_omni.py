@@ -415,10 +415,12 @@ class TestRandomQwen25OmniVision(ExtTestCase):
         test verifies that ORT-GenAI can load the model and generate
         ``max_new_tokens`` tokens without error.
 
-        The default image/audio placeholder token IDs (151 655 / 151 646)
-        exceed the test ``vocab_size=32000``, so ``image_token_index`` in
-        ``config.json`` is patched to a small in-vocab value (3) before
-        exporting the ONNX models.
+        The default image placeholder token ID (151655) exceeds the test
+        ``vocab_size=32000``, so ``image_token_index`` in ``config.json``
+        is patched to a small in-vocab value (3) before exporting the ONNX
+        models.  The audio encoder is exported as part of the pipeline but
+        is not called in this test (no audio placeholder tokens in the
+        prompt).
         """
         import json
 
