@@ -312,10 +312,7 @@ def create_model(model_name, input_path, output_dir, precision, execution_provid
 
         onnx_model = QwenModel(config, io_dtype, onnx_dtype, execution_provider, cache_dir, extra_options)
     elif config.architectures[0] in ("Qwen2_5OmniForConditionalGeneration", "Qwen2_5OmniThinkerForConditionalGeneration"):
-        print(
-            "WARNING: This is only generating the text (thinker) component of the model. Setting `--extra_options exclude_embeds=true` by default."
-        )
-        extra_options["exclude_embeds"] = True
+        print("WARNING: This is only generating the text (thinker) component of the model.")
         from .builders.qwen import Qwen25OmniThinkerModel
 
         onnx_model = Qwen25OmniThinkerModel(config, io_dtype, onnx_dtype, execution_provider, cache_dir, extra_options)

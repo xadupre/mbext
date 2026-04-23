@@ -26,14 +26,14 @@ def _make_qwen25_omni_thinker_config(num_hidden_layers=1):
     from transformers import Qwen2_5OmniAudioEncoderConfig, Qwen2_5OmniThinkerConfig, Qwen2_5OmniVisionEncoderConfig
 
     # Minimal audio encoder: single layer, very small hidden size.
+    # output_dim must equal text hidden_size.
     audio_config = Qwen2_5OmniAudioEncoderConfig(
-        encoder_layers=1, encoder_attention_heads=2, encoder_ffn_dim=32, d_model=32, output_dim=256  # must equal text hidden_size
+        encoder_layers=1, encoder_attention_heads=2, encoder_ffn_dim=32, d_model=32, output_dim=256
     )
 
     # Minimal vision encoder: single layer, very small hidden size.
-    vision_config = Qwen2_5OmniVisionEncoderConfig(
-        depth=1, hidden_size=64, intermediate_size=128, num_heads=4, out_hidden_size=256  # must equal text hidden_size
-    )
+    # out_hidden_size must equal text hidden_size.
+    vision_config = Qwen2_5OmniVisionEncoderConfig(depth=1, hidden_size=64, intermediate_size=128, num_heads=4, out_hidden_size=256)
 
     config = Qwen2_5OmniThinkerConfig(audio_config=audio_config, vision_config=vision_config)
 
