@@ -737,6 +737,7 @@ class TestMinistral3(ExtTestCase):
 
         from tokenizers import Tokenizer
         from tokenizers.models import WordLevel
+        from tokenizers.pre_tokenizers import Whitespace
         from transformers import (
             Ministral3Config,
             Mistral3Config,
@@ -792,11 +793,15 @@ class TestMinistral3(ExtTestCase):
         # Build a tokenizer whose vocabulary maps [IMG] → config.image_token_id
         # (10) so that apply_chat_template → tokenize → expand mirrors the
         # pixtral-processor flow used in production.
+        # A Whitespace pre-tokenizer is required so that the WordLevel model
+        # splits "[IMG] hello world" into ["[IMG]", "hello", "world"] before
+        # doing vocabulary lookups; without it the entire string is treated as
+        # a single unknown token (ID 0).
         image_token_id = config.image_token_id  # 10 for Mistral3
         vocab = {"<unk>": 0, "<s>": 1, "</s>": 2, "[IMG]": image_token_id, "hello": 100, "world": 101}
-        tokenizer = PreTrainedTokenizerFast(
-            tokenizer_object=Tokenizer(WordLevel(vocab=vocab, unk_token="<unk>")), bos_token="<s>", eos_token="</s>", unk_token="<unk>"
-        )
+        tokenizer_object = Tokenizer(WordLevel(vocab=vocab, unk_token="<unk>"))
+        tokenizer_object.pre_tokenizer = Whitespace()
+        tokenizer = PreTrainedTokenizerFast(tokenizer_object=tokenizer_object, bos_token="<s>", eos_token="</s>", unk_token="<unk>")
 
         # Minimal Jinja2 chat template: emits "[IMG] " for each image content
         # item and the raw text for text items.  Space-separated tokens allow
