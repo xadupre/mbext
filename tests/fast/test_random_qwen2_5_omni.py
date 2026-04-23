@@ -291,6 +291,16 @@ class TestRandomQwen25OmniVision(ExtTestCase):
 
         np_dtype = np.float16 if precision == "fp16" else np.float32
 
+        log_data = dict(
+            precision=precision,
+            model_id=QWEN2_5_OMNI_MODEL_NAME,
+            experiment="multimodal",
+            provider=provider,
+            test=prefix,
+            input_type="vision+audio+text",
+            kind="fast",
+        )
+
         # --- Run vision encoder and compare to PyTorch ---
         vc = config.vision_config
         in_feat_dim = vc.in_channels * vc.temporal_patch_size * vc.patch_size * vc.patch_size
@@ -319,6 +329,8 @@ class TestRandomQwen25OmniVision(ExtTestCase):
         self.assertEqual(vision_out[0].shape[1], vc.out_hidden_size)
 
         atol = 1e-2 if precision == "fp16" else 1e-4
+        vis_disc = self.get_numpy_discrepancy(pt_vis_features, vision_out[0].astype(np.float32))
+        self.log_results({"step": "vision_encoder", **vis_disc, **log_data})
         np.testing.assert_allclose(pt_vis_features, vision_out[0].astype(np.float32), atol=atol)
 
         # --- Run audio encoder and compare to PyTorch ---
@@ -346,6 +358,8 @@ class TestRandomQwen25OmniVision(ExtTestCase):
         self.assertEqual(audio_out[0].shape[1], ac.output_dim)
 
         atol_audio = 1e-2 if precision == "fp16" else 1e-4
+        aud_disc = self.get_numpy_discrepancy(pt_aud_features, audio_out[0].astype(np.float32))
+        self.log_results({"step": "audio_encoder", **aud_disc, **log_data})
         np.testing.assert_allclose(pt_aud_features, audio_out[0].astype(np.float32), atol=atol_audio)
 
         # --- Run text decoder forward pass ---
