@@ -19,6 +19,10 @@ from .base import Model
 from .base_embedding import EmbeddingModel
 from .base_vision import VisionEncoderModel
 
+# Default token IDs for Qwen2.5-Omni; overridden by values from the HF config when available.
+_QWEN25OMNI_DEFAULT_IMAGE_TOKEN_ID = 151655
+_QWEN25OMNI_DEFAULT_AUDIO_TOKEN_ID = 151646
+
 
 class QwenModel(Model):
     def __init__(self, config, io_dtype, onnx_dtype, ep, cache_dir, extra_options):
@@ -1113,8 +1117,8 @@ class Qwen25OmniAudioEncoderModel(Model):
         audio_obj_config.rms_norm_eps = 1e-5
         audio_obj_config.rope_scaling = None
 
-        extra_options = {**extra_options, "filename": self.FILENAME, "exclude_lm_head": True, "exclude_embeds": True}
-        super().__init__(audio_obj_config, io_dtype, onnx_dtype, ep, cache_dir, extra_options)
+        audio_extra_options = {**extra_options, "filename": self.FILENAME, "exclude_lm_head": True, "exclude_embeds": True}
+        super().__init__(audio_obj_config, io_dtype, onnx_dtype, ep, cache_dir, audio_extra_options)
 
         self.graph.name = "qwen25omni_audio_encoder"
         self.config = config
@@ -1512,7 +1516,7 @@ class Qwen25OmniEmbeddingModel(EmbeddingModel):
 
     def __init__(self, config, io_dtype, onnx_dtype, ep, cache_dir, extra_options):
         super().__init__(config, io_dtype, onnx_dtype, ep, cache_dir, extra_options)
-        self.audio_token_id = extra_options.get("audio_token_id", 151646)
+        self.audio_token_id = extra_options.get("audio_token_id", _QWEN25OMNI_DEFAULT_AUDIO_TOKEN_ID)
 
     def load_hf_model(self, input_path):
         from transformers import Qwen2_5OmniThinkerForConditionalGeneration
@@ -1621,8 +1625,8 @@ class Qwen25OmniConditionalGenerationModel(Model):
                     setattr(text_obj_config, key, getattr(text_config, key))
 
         # image_token_id and audio_token_id are stored at the top-level config.
-        image_token_id = getattr(config, "image_token_id", getattr(config, "image_token_index", 151655))
-        audio_token_id = getattr(config, "audio_token_id", getattr(config, "audio_token_index", 151646))
+        image_token_id = getattr(config, "image_token_id", getattr(config, "image_token_index", _QWEN25OMNI_DEFAULT_IMAGE_TOKEN_ID))
+        audio_token_id = getattr(config, "audio_token_id", getattr(config, "audio_token_index", _QWEN25OMNI_DEFAULT_AUDIO_TOKEN_ID))
 
         # --- Embedding model (always float32 for the embedding table) ---
         embed_extra_options = dict(extra_options)
