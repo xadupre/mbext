@@ -401,6 +401,160 @@ class TestRandomQwen25OmniVision(ExtTestCase):
     def test_qwen25omni_conditional_generation_fp16_cuda(self):
         self.common_qwen25omni_conditional_generation("fp16", "cuda")
 
+    def common_qwen25omni_conditional_generation_genai(self, precision, provider):
+        """Build the Qwen2.5-Omni multimodal pipeline and run it via ORT GenAI.
+
+        Exports ``vision_encoder.onnx``, ``audio_encoder.onnx``,
+        ``embedding.onnx``, and ``model.onnx`` then loads them with
+        ``onnxruntime_genai``.  A vision-only prompt is used (image
+        placeholder tokens followed by text tokens) so the vision encoder
+        → embedding → text decoder path is exercised end-to-end.
+
+        PyTorch parity is not checked: the mRoPE position-id computation
+        differs between PyTorch (``get_rope_index``) and ORT-GenAI.  The
+        test verifies that ORT-GenAI can load the model and generate
+        ``max_new_tokens`` tokens without error.
+
+        The default image/audio placeholder token IDs (151 655 / 151 646)
+        exceed the test ``vocab_size=32000``, so ``image_token_index`` in
+        ``config.json`` is patched to a small in-vocab value (3) before
+        exporting the ONNX models.
+        """
+        import json
+
+        import torch
+        import onnxruntime_genai as og
+        from tokenizers import Tokenizer
+        from tokenizers.models import WordLevel
+        from transformers import (
+            PreTrainedTokenizerFast,
+            Qwen2_5OmniAudioEncoderConfig,
+            Qwen2_5OmniThinkerConfig,
+            Qwen2_5OmniThinkerForConditionalGeneration,
+            Qwen2_5OmniVisionEncoderConfig,
+        )
+
+        from modelbuilder.builder import create_model
+
+        num_hidden_layers = 1
+        spatial_merge_size = 2
+        # Use a small token ID that fits within the test vocab_size=32000.
+        image_token_id = 3
+
+        audio_config = Qwen2_5OmniAudioEncoderConfig(
+            encoder_layers=1, encoder_attention_heads=2, encoder_ffn_dim=32, d_model=32, output_dim=256
+        )
+        vision_config = Qwen2_5OmniVisionEncoderConfig(depth=1, hidden_size=64, intermediate_size=128, num_heads=4, out_hidden_size=256)
+        config = Qwen2_5OmniThinkerConfig(audio_config=audio_config, vision_config=vision_config)
+        config.text_config.hidden_size = 256
+        config.text_config.intermediate_size = 512
+        config.text_config.num_hidden_layers = num_hidden_layers
+        config.text_config.layer_types = ["full_attention"] * num_hidden_layers
+        config.text_config.num_attention_heads = 4
+        config.text_config.num_key_value_heads = 2
+        config.text_config.vocab_size = 32000
+        config.text_config.bos_token_id = 1
+        config.text_config.eos_token_id = 2
+        config.text_config.rms_norm_eps = 1e-6
+        config.text_config.max_position_embeddings = 2048
+        config.text_config.hidden_act = "silu"
+        config.text_config.rope_parameters = {"rope_theta": 10000.0, "rope_type": "default", "mrope_section": [8, 12, 12]}
+        config.architectures = ["Qwen2_5OmniForConditionalGeneration"]
+
+        prefix = f"test_qwen25omni_cond_gen_genai_{precision}_{provider}"
+        model_dir = self.get_model_dir(prefix)
+        output_dir, cache_dir = self.get_dirs(prefix)
+
+        torch.manual_seed(42)
+        model = Qwen2_5OmniThinkerForConditionalGeneration(config)
+        model.eval()
+        model.save_pretrained(model_dir)
+
+        # Patch image_token_index to a small in-vocab value so that the
+        # exported embedding.onnx uses image_token_id=3.  The default
+        # (151655) exceeds the test vocab_size=32000.
+        config_path = os.path.join(model_dir, "config.json")
+        with open(config_path) as f:
+            saved_cfg = json.load(f)
+        saved_cfg["image_token_index"] = image_token_id
+        with open(config_path, "w") as f:
+            json.dump(saved_cfg, f, indent=2)
+
+        vocab = {"<unk>": 0, "<s>": 1, "</s>": 2}
+        tokenizer = PreTrainedTokenizerFast(
+            tokenizer_object=Tokenizer(WordLevel(vocab=vocab, unk_token="<unk>")), bos_token="<s>", eos_token="</s>", unk_token="<unk>"
+        )
+        tokenizer.save_pretrained(model_dir)
+
+        create_model(
+            model_name=QWEN2_5_OMNI_MODEL_NAME,
+            input_path=model_dir,
+            output_dir=output_dir,
+            precision=precision,
+            execution_provider=provider,
+            cache_dir=cache_dir,
+            num_hidden_layers=num_hidden_layers,
+            multimodal=True,
+        )
+
+        # --- Compute vision encoder inputs ---
+        vc = config.vision_config
+        in_feat_dim = vc.in_channels * vc.temporal_patch_size * vc.patch_size * vc.patch_size
+        t, h, w = 1, 2 * spatial_merge_size, 2 * spatial_merge_size
+        n_patches = t * h * w
+        grid_thw = torch.tensor([[t, h, w]], dtype=torch.int32)
+        n_merged = n_patches // (spatial_merge_size**2)
+
+        torch.manual_seed(0)
+        pixel_values = torch.randn(n_patches, in_feat_dim).numpy().astype(np.float32)
+        with torch.no_grad():
+            rotary_pos_emb = model.visual.rot_pos_emb(grid_thw).numpy().astype(np.float32)
+
+        # --- Build a vision-only multimodal prompt ---
+        # Prompt: n_merged image placeholder tokens followed by two text tokens.
+        max_new_tokens = 3
+        text_ids = [100, 200]
+        full_prompt_ids = np.array([image_token_id] * n_merged + text_ids, dtype=np.int64)
+
+        # --- Run ORT GenAI ---
+        genai_dtype = np.float16 if precision == "fp16" else np.float32
+        og_model = og.Model(output_dir)
+        params = og.GeneratorParams(og_model)
+        params.set_search_options(do_sample=False, max_length=len(full_prompt_ids) + max_new_tokens, temperature=1.0, top_k=1)
+        generator = og.Generator(og_model, params)
+        named_tensors = og.NamedTensors()
+        named_tensors["pixel_values"] = pixel_values.astype(genai_dtype)
+        named_tensors["rotary_pos_emb"] = rotary_pos_emb.astype(genai_dtype)
+        named_tensors["num_image_tokens"] = np.array([n_merged], dtype=np.int64)
+        generator.set_inputs(named_tensors)
+        generator.append_tokens(full_prompt_ids)
+        og_generated = []
+        while not generator.is_done():
+            generator.generate_next_token()
+            og_generated.append(int(generator.get_next_tokens()[0]))
+
+        log_data = dict(
+            precision=precision,
+            model_id=QWEN2_5_OMNI_MODEL_NAME,
+            experiment="genai_multimodal_generate",
+            provider=provider,
+            test=prefix,
+            input_type="vision+text",
+            kind="fast",
+        )
+        self.log_results({**log_data, "n_generated": len(og_generated)})
+        self.assertEqual(len(og_generated), max_new_tokens)
+
+    @hide_stdout()
+    @requires_genai()
+    def test_qwen25omni_conditional_generation_fp32_cpu_genai(self):
+        self.common_qwen25omni_conditional_generation_genai("fp32", "cpu")
+
+    @hide_stdout()
+    @requires_genai()
+    def test_qwen25omni_conditional_generation_fp16_cpu_genai(self):
+        self.common_qwen25omni_conditional_generation_genai("fp16", "cpu")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
