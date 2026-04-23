@@ -101,10 +101,13 @@ class NemotronHModel(LlamaModel):
         elif layer.block_type == "mamba":
             self.make_layernorm(layer_id, layer.norm, skip=not self.layernorm_attrs["first_layernorm"], simple=True, location="input")
             self.make_nemotronh_mamba(layer_id, layer.mixer, root_input=self.layernorm_attrs["output_0"])
+        elif layer.block_type == "mlp":
+            self.make_layernorm(layer_id, layer.norm, skip=not self.layernorm_attrs["first_layernorm"], simple=True, location="input")
+            self.make_nemotronh_mlp(layer_id, layer.mixer, root_input=self.layernorm_attrs["output_0"])
         else:
             raise NotImplementedError(
                 f"NemotronH block type '{layer.block_type}' is not supported for ONNX export. "
-                "Only 'attention', 'mamba' and 'MoE' layers are currently supported."
+                "Only 'attention', 'mamba', 'moe', and 'mlp' layers are currently supported."
             )
 
         self.layernorm_attrs["first_layernorm"] = False
@@ -615,6 +618,34 @@ class NemotronHModel(LlamaModel):
         # Set skip_input for next SkipLayerNorm (residual add)
         # ================================================================
         self.layernorm_attrs["skip_input"] = mamba_output
+
+    def make_nemotronh_mlp(self, layer_id, mlp, root_input):
+        """Build ONNX nodes for the NemotronH MLP block.
+
+        Architecture: hidden_states → up_proj → relu2 → down_proj → output
+        where relu2(x) = relu(x)^2.
+        """
+        basename = f"/model/layers.{layer_id}/mlp"
+
+        # up_proj: [B, S, hidden_size] → [B, S, intermediate_size]
+        up_name = self.make_matmul(mlp.up_proj, f"{basename}/up_proj/MatMul", root_input)
+
+        # relu2(x) = relu(x)^2
+        relu_name = f"{basename}/act/Relu"
+        self.make_node("Relu", inputs=[f"{up_name}/output_0"], outputs=[f"{relu_name}/output_0"], name=relu_name)
+        self.make_value(f"{relu_name}/output_0", self.io_dtype, shape=["batch_size", "sequence_length", self.intermediate_size])
+
+        pow_name = f"{basename}/act/Pow"
+        self.make_node(
+            "Pow", inputs=[f"{relu_name}/output_0", "/model/constants/INT32/[2]"], outputs=[f"{pow_name}/output_0"], name=pow_name
+        )
+        self.make_value(f"{pow_name}/output_0", self.io_dtype, shape=["batch_size", "sequence_length", self.intermediate_size])
+
+        # down_proj: [B, S, intermediate_size] → [B, S, hidden_size]
+        down_name = self.make_matmul(mlp.down_proj, f"{basename}/down_proj/MatMul", f"{pow_name}/output_0")
+
+        # Assign output as skip input for the next SkipLayerNorm (residual add)
+        self.layernorm_attrs["skip_input"] = f"{down_name}/output_0"
 
     def make_nemotronh_moe(self, layer_id, moe, root_input):
         # Make nodes for the NemotronH MoE subgraph.
