@@ -773,7 +773,7 @@ class TestNemotronH(ExtTestCase):
         self.run_genai_generation_test(output_dir, None, config.vocab_size, config.eos_token_id, prompt_ids=prompt_ids)
 
     def _make_nemotronh_full_hybrid_config(self):
-        """Return a small NemotronHConfig with attention, mamba, and moe layers for fast tests."""
+        """Return a small NemotronHConfig with attention, mamba, moe, and mlp layers for fast tests."""
         from transformers.models.nemotron_h import NemotronHConfig
 
         return NemotronHConfig(
@@ -786,11 +786,11 @@ class TestNemotronH(ExtTestCase):
             max_position_embeddings=2048,
             model_type="nemotron_h",
             num_attention_heads=4,
-            num_hidden_layers=3,
+            num_hidden_layers=4,
             num_key_value_heads=2,
             layer_norm_epsilon=1e-05,
             vocab_size=32000,
-            layers_block_type=["attention", "mamba", "moe"],
+            layers_block_type=["attention", "mamba", "moe", "mlp"],
             use_mamba_kernels=False,
             # Mamba-specific parameters (small for fast tests)
             mamba_num_heads=4,
@@ -812,7 +812,7 @@ class TestNemotronH(ExtTestCase):
 
     @hide_stdout()
     def test_nemotron_h_full_hybrid_fp32_cpu_build(self):
-        """Build a full hybrid attention+mamba+moe model (fp32/CPU) and check for CausalConvWithState."""
+        """Build a full hybrid attention+mamba+moe+mlp model (fp32/CPU) and check for CausalConvWithState."""
         import onnx
         import torch
         from transformers import AutoModelForCausalLM
@@ -847,11 +847,14 @@ class TestNemotronH(ExtTestCase):
         self.assertIsNotNone(onnx_model)
         op_types = {node.op_type for node in onnx_model.graph.node}
         self.assertIn("CausalConvWithState", op_types)
+        # mlp block emits Relu + Pow (relu2 = relu(x)^2)
+        self.assertIn("Relu", op_types)
+        self.assertIn("Pow", op_types)
 
     @hide_stdout()
     @requires_genai()
     def test_nemotron_h_full_hybrid_fp32_cpu_genai_generate(self):
-        """Verify genai generation completes for a full hybrid attention+mamba+moe NemotronH model (fp32/CPU)."""
+        """Verify genai generation completes for a full hybrid attention+mamba+moe+mlp NemotronH model (fp32/CPU)."""
         import torch
         from transformers import AutoModelForCausalLM
 
