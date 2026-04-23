@@ -783,7 +783,7 @@ class Qwen25OmniVisionEncoderModel(Model):
     # Low-level ONNX helpers
     # ------------------------------------------------------------------
 
-    def _rms_norm(self, name, root_input, weight, shape):
+    def make_rms_norm(self, name, root_input, weight, shape):
         """SimplifiedLayerNormalization (Qwen2_5OmniRMSNorm)."""
         w_name = f"{name}.weight"
         self.make_initializer(weight, w_name, to=self.io_dtype)
@@ -798,7 +798,7 @@ class Qwen25OmniVisionEncoderModel(Model):
     # 2-D RoPE application
     # ------------------------------------------------------------------
 
-    def _apply_rope(self, name, x, rope_input, n_patches, head_dim):
+    def make_vision_rope(self, name, x, rope_input, n_patches, head_dim):
         """Apply 2-D vision RoPE to Q or K tensor.
 
         Parameters
@@ -916,8 +916,8 @@ class Qwen25OmniVisionEncoderModel(Model):
         v_4d = self.make_reshape(f"{b}/v_reshape", [v, [0, nh, hd]], self.io_dtype, [n, nh, hd])
 
         # Apply 2-D RoPE to Q and K.
-        q_rope = self._apply_rope(f"{b}/q_rope", q_4d, rope_input, n, hd)
-        k_rope = self._apply_rope(f"{b}/k_rope", k_4d, rope_input, n, hd)
+        q_rope = self.make_vision_rope(f"{b}/q_rope", q_4d, rope_input, n, hd)
+        k_rope = self.make_vision_rope(f"{b}/k_rope", k_4d, rope_input, n, hd)
 
         # Transpose to [num_heads, n_patches, head_dim] for batched MatMul.
         q_t = self.make_transpose(f"{b}/q_t", q_rope, self.io_dtype, [nh, n, hd], perm=[1, 0, 2])
@@ -954,7 +954,7 @@ class Qwen25OmniVisionEncoderModel(Model):
     # Vision MLP layer
     # ------------------------------------------------------------------
 
-    def _build_mlp(self, layer_id, mlp, root_input):
+    def make_mlp_vision(self, layer_id, mlp, root_input):
         """Build Qwen2_5OmniMLP (SiLU-gated, with bias) using make_matmul + make_add_bias.
 
         Returns output name [n_patches, vis_hidden_size].
@@ -1001,7 +1001,7 @@ class Qwen25OmniVisionEncoderModel(Model):
         d = self.vis_hidden_size
 
         # Pre-attention RMSNorm.
-        norm1_out = self._rms_norm(f"{b}/norm1", root, block.norm1.weight, shape=[n, d])
+        norm1_out = self.make_rms_norm(f"{b}/norm1", root, block.norm1.weight, shape=[n, d])
 
         # Attention (override that takes rotary_pos_emb as a kwarg).
         self.make_attention(layer_id, block.attn, norm1_out, rotary_pos_emb="rotary_pos_emb")
@@ -1011,10 +1011,10 @@ class Qwen25OmniVisionEncoderModel(Model):
         res1 = self.make_add(f"{b}/res1", [root, attn_out], self.io_dtype, [n, d])
 
         # Pre-MLP RMSNorm.
-        norm2_out = self._rms_norm(f"{b}/norm2", res1, block.norm2.weight, shape=[n, d])
+        norm2_out = self.make_rms_norm(f"{b}/norm2", res1, block.norm2.weight, shape=[n, d])
 
         # MLP.
-        mlp_out = self._build_mlp(layer_id, block.mlp, norm2_out)
+        mlp_out = self.make_mlp_vision(layer_id, block.mlp, norm2_out)
 
         # Residual 2.
         res2 = self.make_add(f"{b}/res2", [res1, mlp_out], self.io_dtype, [n, d])
@@ -1025,7 +1025,7 @@ class Qwen25OmniVisionEncoderModel(Model):
     # Patch merger
     # ------------------------------------------------------------------
 
-    def _make_merger(self, merger, root_input):
+    def make_patch_merger(self, merger, root_input):
         """Build Qwen2_5OmniPatchMerger: RMSNorm → Reshape → Linear+GELU+Linear.
 
         Uses make_matmul + make_add_bias following the Ministral3 pattern.
@@ -1037,7 +1037,7 @@ class Qwen25OmniVisionEncoderModel(Model):
         n = None
 
         # RMSNorm on [n_patches, vis_hidden_size].
-        ln_out = self._rms_norm("/vision/merger/ln_q", root_input, merger.ln_q.weight, shape=[n, self.vis_hidden_size])
+        ln_out = self.make_rms_norm("/vision/merger/ln_q", root_input, merger.ln_q.weight, shape=[n, self.vis_hidden_size])
 
         # Reshape [n_patches, vis_hidden_size] → [n_merged, sm2 * vis_hidden_size].
         merged = self.make_reshape("/vision/merger/reshape", [ln_out, [-1, merge_d]], self.io_dtype, [n, merge_d])
@@ -1062,7 +1062,7 @@ class Qwen25OmniVisionEncoderModel(Model):
     # Weight loading
     # ------------------------------------------------------------------
 
-    def _load_hf_model(self, input_path):
+    def load_hf_model(self, input_path):
         from transformers import Qwen2_5OmniThinkerForConditionalGeneration
 
         src = input_path if os.path.isdir(input_path) else self.model_name_or_path
@@ -1077,7 +1077,7 @@ class Qwen25OmniVisionEncoderModel(Model):
 
     def make_model(self, input_path):
         """Load HF weights and build the vision encoder ONNX graph."""
-        hf_model = self._load_hf_model(input_path)
+        hf_model = self.load_hf_model(input_path)
         hf_model.eval()
         vis = hf_model.visual
 
@@ -1114,7 +1114,7 @@ class Qwen25OmniVisionEncoderModel(Model):
 
         # --- Patch merger ---
         hidden = self.layernorm_attrs["root_input"]
-        image_features = self._make_merger(vis.merger, hidden)
+        image_features = self.make_patch_merger(vis.merger, hidden)
 
         # --- Graph output ---
         self.make_node("Identity", inputs=[image_features], outputs=["image_features"], name="/vision/output/Identity")
@@ -1147,7 +1147,7 @@ class Qwen25OmniEmbeddingModel(Model):
         self.filename = self.FILENAME
         self.image_token_id = extra_options["image_token_id"]
 
-    def _load_hf_model(self, input_path):
+    def load_hf_model(self, input_path):
         from transformers import Qwen2_5OmniThinkerForConditionalGeneration
 
         src = input_path if os.path.isdir(input_path) else self.model_name_or_path
@@ -1158,7 +1158,7 @@ class Qwen25OmniEmbeddingModel(Model):
 
     def make_model(self, input_path):
         """Load HF weights and build the embedding ONNX graph."""
-        hf_model = self._load_hf_model(input_path)
+        hf_model = self.load_hf_model(input_path)
         hf_model.eval()
         embed_weight = hf_model.model.embed_tokens.weight.detach().float().numpy()
 
