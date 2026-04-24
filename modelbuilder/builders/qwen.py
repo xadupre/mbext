@@ -16,6 +16,7 @@ from onnxruntime.quantization.matmul_nbits_quantizer import RTNWeightOnlyQuantCo
 from transformers import AutoConfig
 
 from .base import Model
+from .base_audio import AudioEncoderModel
 from .base_embedding import EmbeddingModel
 from .base_vision import VisionEncoderModel
 
@@ -1049,7 +1050,7 @@ class Qwen25OmniVisionEncoderModel(VisionEncoderModel):
         self.graph.sort()
 
 
-class Qwen25OmniAudioEncoderModel(Model):
+class Qwen25OmniAudioEncoderModel(AudioEncoderModel):
     """ONNX graph builder for the Qwen2.5-Omni audio encoder.
 
     Exports the Whisper-style audio tower (two Conv1d layers + sinusoidal
@@ -1102,23 +1103,6 @@ class Qwen25OmniAudioEncoderModel(Model):
         self.max_source_positions = ac.max_source_positions
         self.output_dim = ac.output_dim
         self.ffn_dim = ac.encoder_ffn_dim
-
-    # ------------------------------------------------------------------
-    # LayerNorm helper (standard LN with weight and bias)
-    # ------------------------------------------------------------------
-
-    def _make_audio_layer_norm(self, name, root_input, weight, bias, shape):
-        """Build a LayerNormalization node with weight and bias."""
-        w_name = f"{name}.weight"
-        b_name = f"{name}.bias"
-        self.make_initializer(weight.detach(), w_name, to=self.io_dtype)
-        self.make_initializer(bias.detach(), b_name, to=self.io_dtype)
-        out = f"{name}/output_0"
-        self.make_node(
-            "LayerNormalization", inputs=[root_input, w_name, b_name], outputs=[out], name=name, axis=-1, epsilon=1e-5, stash_type=1
-        )
-        self.make_value(out, self.io_dtype, shape=shape)
-        return out
 
     # ------------------------------------------------------------------
     # Audio attention (full bidirectional attention, no RoPE)
@@ -1235,7 +1219,7 @@ class Qwen25OmniAudioEncoderModel(Model):
         b = f"/audio/layers.{layer_id}"
 
         # Pre-attention LayerNorm
-        ln1_out = self._make_audio_layer_norm(
+        ln1_out = self.make_audio_layer_norm(
             f"{b}/self_attn_layer_norm", root_input, layer.self_attn_layer_norm.weight, layer.self_attn_layer_norm.bias, [n, d]
         )
 
@@ -1246,7 +1230,7 @@ class Qwen25OmniAudioEncoderModel(Model):
         residual1 = self.make_add(f"{b}/residual1/Add", [root_input, attn_out], self.io_dtype, [n, d])
 
         # Pre-MLP LayerNorm
-        ln2_out = self._make_audio_layer_norm(
+        ln2_out = self.make_audio_layer_norm(
             f"{b}/final_layer_norm", residual1, layer.final_layer_norm.weight, layer.final_layer_norm.bias, [n, d]
         )
 
@@ -1437,7 +1421,7 @@ class Qwen25OmniAudioEncoderModel(Model):
         hidden = "/audio/pool_post_t/output_0"
 
         # --- ln_post (LayerNorm) ---
-        hidden = self._make_audio_layer_norm("/audio/ln_post", hidden, audio.ln_post.weight, audio.ln_post.bias, [n, self.d_model])
+        hidden = self.make_audio_layer_norm("/audio/ln_post", hidden, audio.ln_post.weight, audio.ln_post.bias, [n, self.d_model])
 
         # --- Linear projection: [pooled, d_model] → [pooled, output_dim] ---
         proj_w = "audio.proj.MatMul.weight"

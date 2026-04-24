@@ -20,6 +20,12 @@ def _make_small_phi4mm_config():
     for the vision encoder so the test completes quickly.  Text decoder uses 1
     hidden layer.  ``feature_layer=-2`` means we extract features after the
     second-to-last layer (layer index 2).
+
+    The audio config is intentionally small:
+    * ``input_size=16`` mel bins → ``nemo_final_size=2`` (frequency dimension
+      after 3 stages of stride-2 Conv2d: 16 → 8 → 4 → 2).
+    * ``num_blocks=2`` Conformer layers.
+    * All hidden dims scaled to 32.
     """
     from transformers import Phi4MultimodalAudioConfig, Phi4MultimodalConfig, Phi4MultimodalVisionConfig
 
@@ -34,7 +40,19 @@ def _make_small_phi4mm_config():
         feature_layer=-2,
         layer_norm_eps=1e-6,
     )
-    audio_cfg = Phi4MultimodalAudioConfig()
+    audio_cfg = Phi4MultimodalAudioConfig(
+        input_size=16,
+        hidden_size=32,
+        num_attention_heads=4,
+        num_blocks=2,
+        intermediate_size=64,
+        nemo_conv_channels=32,
+        nemo_final_size=2,
+        ext_pw_out_channel=32,
+        depthwise_separable_out_channel=32,
+        bias_max_distance=100,
+        dropout_rate=0.0,
+    )
     cfg = Phi4MultimodalConfig(
         hidden_size=64,
         intermediate_size=128,
@@ -163,6 +181,98 @@ class TestPhi4Multimodal(ExtTestCase):
         self.assertLess(float(np.max(np.abs(pt_result - onnx_result))), 0.01)
 
     # ------------------------------------------------------------------ #
+    #  Audio encoder tests                                               #
+    # ------------------------------------------------------------------ #
+
+    @hide_stdout()
+    def test_audio_encoder_fp32_cpu_builds_and_runs(self):
+        """Audio encoder exports to ONNX and produces the correct output shape."""
+        import torch
+        from transformers import Phi4MultimodalForCausalLM
+
+        from modelbuilder.builder import set_io_dtype, set_onnx_dtype
+        from modelbuilder.builders.phi import Phi4MultimodalAudioEncoderModel
+
+        cfg = _make_small_phi4mm_config()
+        torch.manual_seed(42)
+        model = Phi4MultimodalForCausalLM(cfg)
+        model.eval()
+
+        model_dir = self.get_model_dir("test_phi4mm_aud_fp32")
+        model.save_pretrained(model_dir)
+
+        cache_dir = self.get_model_dir("test_phi4mm_aud_fp32_cache")
+        extra_options = {}
+        io_dtype = set_io_dtype("fp32", "cpu", extra_options)
+        onnx_dtype = set_onnx_dtype("fp32", extra_options)
+
+        encoder = Phi4MultimodalAudioEncoderModel(cfg, io_dtype, onnx_dtype, "cpu", cache_dir, extra_options)
+        encoder.make_model(model_dir)
+
+        out_dir, _ = self.get_dirs("test_phi4mm_aud_fp32")
+        encoder.save_model(out_dir)
+
+        aud_onnx = os.path.join(out_dir, "audio_encoder.onnx")
+        self.assertExists(aud_onnx)
+
+        # Run the ONNX model.
+        # n_frames=32, input_size=16 (from small config), time_reduction=8 → 32/8 = 4 tokens
+        sess = self.check_ort(aud_onnx)
+        n_frames = 32
+        audio_input = np.zeros((1, n_frames, cfg.audio_config.input_size), dtype=np.float32)
+        outputs = sess.run(None, {"audio_features": audio_input})
+        self.assertIsNotNone(outputs[0])
+
+        n_audio_tokens = n_frames // cfg.audio_config.time_reduction
+        self.assertEqual(outputs[0].shape, (n_audio_tokens, cfg.hidden_size))
+
+    @hide_stdout()
+    def test_audio_encoder_fp32_numerical_accuracy(self):
+        """ONNX audio encoder output closely matches the PyTorch reference."""
+        import torch
+        from transformers import Phi4MultimodalForCausalLM
+
+        from modelbuilder.builder import set_io_dtype, set_onnx_dtype
+        from modelbuilder.builders.phi import Phi4MultimodalAudioEncoderModel
+
+        cfg = _make_small_phi4mm_config()
+        torch.manual_seed(42)
+        model = Phi4MultimodalForCausalLM(cfg)
+        model.eval()
+
+        model_dir = self.get_model_dir("test_phi4mm_aud_accuracy")
+        model.save_pretrained(model_dir)
+
+        cache_dir = self.get_model_dir("test_phi4mm_aud_accuracy_cache")
+        extra_options = {}
+        io_dtype = set_io_dtype("fp32", "cpu", extra_options)
+        onnx_dtype = set_onnx_dtype("fp32", extra_options)
+
+        encoder = Phi4MultimodalAudioEncoderModel(cfg, io_dtype, onnx_dtype, "cpu", cache_dir, extra_options)
+        encoder.make_model(model_dir)
+        out_dir, _ = self.get_dirs("test_phi4mm_aud_accuracy")
+        encoder.save_model(out_dir)
+
+        sess = self.check_ort(os.path.join(out_dir, "audio_encoder.onnx"))
+
+        torch.manual_seed(0)
+        n_frames = 32
+        audio_input = torch.randn(1, n_frames, cfg.audio_config.input_size)
+
+        # Reference PyTorch forward pass.
+        # Use tanh GELU approximation to match the com.microsoft Gelu ONNX op.
+        audio_embed = model.model.embed_tokens_extend.audio_embed
+        with torch.no_grad():
+            hidden = audio_embed.encoder(audio_input, mask=None)  # [1, T/8, d]
+            up = audio_embed.up_proj_for_speech(hidden)  # [1, T/8, text_h]
+            up = torch.nn.functional.gelu(up, approximate="tanh")  # tanh approx matches ONNX Gelu
+            pt_result = audio_embed.down_proj_for_speech(up)[0].numpy()  # [T/8, text_h]
+
+        onnx_result = sess.run(None, {"audio_features": audio_input.numpy()})[0]
+        self.assertEqual(pt_result.shape, onnx_result.shape)
+        self.assertLess(float(np.max(np.abs(pt_result - onnx_result))), 0.01)
+
+    # ------------------------------------------------------------------ #
     #  Full multimodal pipeline test                                      #
     # ------------------------------------------------------------------ #
 
@@ -212,13 +322,14 @@ class TestPhi4Multimodal(ExtTestCase):
 
         # --- File existence ---
         vision_onnx = os.path.join(output_dir, "vision_encoder.onnx")
+        audio_onnx = os.path.join(output_dir, "audio_encoder.onnx")
         embed_onnx = os.path.join(output_dir, "embedding.onnx")
         text_onnx = os.path.join(output_dir, "model.onnx")
-        for path in (vision_onnx, embed_onnx, text_onnx):
+        for path in (vision_onnx, audio_onnx, embed_onnx, text_onnx):
             self.assertExists(path)
 
         # --- genai_config.json structure ---
-        self.check_phi3v_genai_config(output_dir)
+        self.check_phi3v_genai_config(output_dir, has_speech=True, speech_filename="audio_encoder.onnx")
 
         # --- Vision encoder ORT forward pass ---
         # The vision encoder pixel_values dtype follows io_dtype (float16 for
@@ -227,6 +338,16 @@ class TestPhi4Multimodal(ExtTestCase):
         np_dtype = self.get_input_np_dtype(precision)
         pixel_values = np.zeros((2, 3, 56, 56), dtype=np_dtype)
         vis_features = self.run_vision_encoder_ort_check(vision_onnx, pixel_values, (13, cfg.hidden_size), provider=provider)
+
+        # --- Audio encoder ORT forward pass ---
+        # input_size=16, n_frames=32, time_reduction=8 → 32/8 = 4 audio tokens
+        aud_sess = self.check_ort(audio_onnx, provider=provider)
+        n_frames = 32
+        audio_input = np.zeros((1, n_frames, cfg.audio_config.input_size), dtype=np.float32)
+        aud_out = aud_sess.run(None, {"audio_features": audio_input})
+        self.assertIsNotNone(aud_out[0])
+        n_audio_tokens = n_frames // cfg.audio_config.time_reduction
+        self.assertEqual(aud_out[0].shape, (n_audio_tokens, cfg.hidden_size))
 
         # --- Text decoder ORT forward pass ---
         batch_size, seq_len = 1, 5
@@ -251,7 +372,11 @@ class TestPhi4Multimodal(ExtTestCase):
         input_ids_with_img = np.array([[image_token_id] * n_image_tokens], dtype=np.int64)
         # image_features dtype must match the embedding model's expected I/O dtype
         image_features = vis_features.astype(np_dtype)
-        embed_out = embed_sess.run(None, {"input_ids": input_ids_with_img, "image_features": image_features})
+        # audio_features: empty (no audio tokens in this test sequence)
+        audio_features = np.zeros((0, cfg.hidden_size), dtype=np_dtype)
+        embed_out = embed_sess.run(
+            None, {"input_ids": input_ids_with_img, "image_features": image_features, "audio_features": audio_features}
+        )
         self.assertIsNotNone(embed_out[0])
         self.assertEqual(embed_out[0].shape, (batch_size, n_image_tokens, cfg.hidden_size))
 
