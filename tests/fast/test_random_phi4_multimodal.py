@@ -9,7 +9,7 @@ import unittest
 
 import numpy as np
 
-from modelbuilder.ext_test_case import ExtTestCase, hide_stdout, requires_transformers
+from modelbuilder.ext_test_case import ExtTestCase, hide_stdout, requires_cuda, requires_transformers
 
 _MODEL_NAME = "microsoft/Phi-4-multimodal-instruct"
 
@@ -167,9 +167,8 @@ class TestPhi4Multimodal(ExtTestCase):
     #  Full multimodal pipeline test                                      #
     # ------------------------------------------------------------------ #
 
-    @hide_stdout()
-    def test_phi4_multimodal_conditional_generation_fp32_cpu_random_weights(self):
-        """Build a randomly-initialised Phi4MultimodalForCausalLM and export it.
+    def common_phi4mm_conditional_generation(self, precision, provider):
+        """Build and validate the full Phi4Multimodal ONNX pipeline.
 
         Verifies that ``create_model`` (with ``multimodal=true``) produces:
 
@@ -178,12 +177,13 @@ class TestPhi4Multimodal(ExtTestCase):
         * ``model.onnx``          — text decoder (``inputs_embeds`` → logits).
         * ``genai_config.json``   — ``phi3v`` config with vision+embedding sections.
 
-        Also runs ORT forward passes to confirm correct output shapes.
+        Also runs ORT forward passes to confirm correct output shapes.  The
+        vision encoder pixel values and all model I/O use the dtype that
+        corresponds to the model precision (int4/cpu → float32, fp16 →
+        float16).
         """
         import torch
-        from tokenizers import Tokenizer
-        from tokenizers.models import WordLevel
-        from transformers import Phi4MultimodalForCausalLM, PreTrainedTokenizerFast
+        from transformers import Phi4MultimodalForCausalLM
 
         from modelbuilder.builder import create_model
 
@@ -192,22 +192,20 @@ class TestPhi4Multimodal(ExtTestCase):
         model = Phi4MultimodalForCausalLM(cfg)
         model.eval()
 
-        model_dir = self.get_model_dir("test_phi4mm_cond_gen_fp32")
-        output_dir, cache_dir = self.get_dirs("test_phi4mm_cond_gen_fp32")
+        basename = f"test_phi4mm_cond_gen_{precision}_{provider}"
+        model_dir = self.get_model_dir(basename)
+        output_dir, cache_dir = self.get_dirs(basename)
 
         model.save_pretrained(model_dir)
-        vocab = {"<unk>": 0, "<s>": 1, "</s>": 2}
-        tokenizer = PreTrainedTokenizerFast(
-            tokenizer_object=Tokenizer(WordLevel(vocab=vocab, unk_token="<unk>")), bos_token="<s>", eos_token="</s>", unk_token="<unk>"
-        )
+        tokenizer = self.make_word_level_tokenizer()
         tokenizer.save_pretrained(model_dir)
 
         create_model(
             model_name=_MODEL_NAME,
             input_path=model_dir,
             output_dir=output_dir,
-            precision="fp32",
-            execution_provider="cpu",
+            precision=precision,
+            execution_provider=provider,
             cache_dir=cache_dir,
             num_hidden_layers=1,
             multimodal=True,
@@ -231,9 +229,12 @@ class TestPhi4Multimodal(ExtTestCase):
         self.assertEqual(genai_cfg["model"]["embedding"]["filename"], "embedding.onnx")
 
         # --- Vision encoder ORT forward pass ---
+        # The vision encoder pixel_values dtype follows io_dtype (float16 for
+        # fp16 models, float32 for fp32/int4 models).
         # n_cs = 2 → n_image_tokens = 2*3 + 1 + 2*3 = 13
-        vis_sess = self.check_ort(vision_onnx)
-        pixel_values = np.zeros((2, 3, 56, 56), dtype=np.float32)
+        np_dtype = self.get_input_np_dtype(precision)
+        vis_sess = self.check_ort(vision_onnx, provider=provider)
+        pixel_values = np.zeros((2, 3, 56, 56), dtype=np_dtype)
         vis_out = vis_sess.run(None, {"pixel_values": pixel_values})
         self.assertIsNotNone(vis_out[0])
         self.assertEqual(vis_out[0].shape, (13, cfg.hidden_size))
@@ -242,9 +243,9 @@ class TestPhi4Multimodal(ExtTestCase):
         batch_size, seq_len = 1, 5
         input_ids = torch.randint(0, cfg.vocab_size, (batch_size, seq_len))
         with torch.no_grad():
-            inputs_embeds = model.model.embed_tokens(input_ids).numpy().astype(np.float32)
+            inputs_embeds = model.model.embed_tokens(input_ids).numpy().astype(np_dtype)
 
-        text_sess = self.check_ort(text_onnx)
+        text_sess = self.check_ort(text_onnx, provider=provider)
         onnx_inputs = {inp.name for inp in text_sess.get_inputs()}
         num_kv_heads = cfg.num_key_value_heads
         head_dim = cfg.hidden_size // cfg.num_attention_heads
@@ -254,21 +255,43 @@ class TestPhi4Multimodal(ExtTestCase):
             "position_ids": np.arange(seq_len, dtype=np.int64).reshape(batch_size, seq_len),
         }
         for i in range(cfg.num_hidden_layers):
-            feed[f"past_key_values.{i}.key"] = np.zeros((batch_size, num_kv_heads, 0, head_dim), dtype=np.float32)
-            feed[f"past_key_values.{i}.value"] = np.zeros((batch_size, num_kv_heads, 0, head_dim), dtype=np.float32)
+            feed[f"past_key_values.{i}.key"] = np.zeros((batch_size, num_kv_heads, 0, head_dim), dtype=np_dtype)
+            feed[f"past_key_values.{i}.value"] = np.zeros((batch_size, num_kv_heads, 0, head_dim), dtype=np_dtype)
         feed = {k: v for k, v in feed.items() if k in onnx_inputs}
         text_out = text_sess.run(None, feed)
         self.assertIsNotNone(text_out[0])
 
         # --- Embedding model ORT forward pass ---
-        embed_sess = self.check_ort(embed_onnx)
+        embed_sess = self.check_ort(embed_onnx, provider=provider)
         image_token_id = cfg.vision_config.image_token_id
         n_image_tokens = 13
         input_ids_with_img = np.array([[image_token_id] * n_image_tokens], dtype=np.int64)
-        image_features = vis_out[0].astype(np.float32)
+        # image_features dtype must match the embedding model's expected I/O dtype
+        image_features = vis_out[0].astype(np_dtype)
         embed_out = embed_sess.run(None, {"input_ids": input_ids_with_img, "image_features": image_features})
         self.assertIsNotNone(embed_out[0])
         self.assertEqual(embed_out[0].shape, (batch_size, n_image_tokens, cfg.hidden_size))
+
+    @hide_stdout()
+    def test_phi4_multimodal_conditional_generation_fp32_cpu_random_weights(self):
+        """fp32 / CPU pipeline — see :meth:`common_phi4mm_conditional_generation`."""
+        self.common_phi4mm_conditional_generation("fp32", "cpu")
+
+    @hide_stdout()
+    def test_phi4_multimodal_conditional_generation_fp16_cpu_random_weights(self):
+        """fp16 / CPU pipeline — see :meth:`common_phi4mm_conditional_generation`."""
+        self.common_phi4mm_conditional_generation("fp16", "cpu")
+
+    @hide_stdout()
+    def test_phi4_multimodal_conditional_generation_int4_cpu_random_weights(self):
+        """int4 / CPU pipeline — see :meth:`common_phi4mm_conditional_generation`."""
+        self.common_phi4mm_conditional_generation("int4", "cpu")
+
+    @hide_stdout()
+    @requires_cuda()
+    def test_phi4_multimodal_conditional_generation_fp16_cuda_random_weights(self):
+        """fp16 / CUDA pipeline — see :meth:`common_phi4mm_conditional_generation`."""
+        self.common_phi4mm_conditional_generation("fp16", "cuda")
 
 
 if __name__ == "__main__":
