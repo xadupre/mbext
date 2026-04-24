@@ -534,7 +534,7 @@ class Phi4MultimodalVisionEncoderModel(VisionEncoderModel):
         self.n_image_tokens = self.n_sub_tokens + 1 + self.n_global_tokens
 
     # ------------------------------------------------------------------
-    # Vision attention (no RoPE, standard SDPA)
+    # Vision attention (no RoPE, causal SDPA)
     # ------------------------------------------------------------------
 
     def make_attention(self, layer_id, attention, root_input, **kwargs):
@@ -548,16 +548,22 @@ class Phi4MultimodalVisionEncoderModel(VisionEncoderModel):
         n_p = self.n_patches
         d = self.vis_hidden_size
         nh = self.vis_num_heads
-        hd = self.vis_head_dim
 
-        # Q / K / V projections (with bias).
-        # Q, K, V: [nc, n_patches, hidden]
+        # Q / K / V projections (with bias): [nc, n_p, d]
         q = self.make_vis_proj(attention.q_proj, f"{b}/q_proj/MatMul", root_input)
         k = self.make_vis_proj(attention.k_proj, f"{b}/k_proj/MatMul", root_input)
         v = self.make_vis_proj(attention.v_proj, f"{b}/v_proj/MatMul", root_input)
 
-        # Causal MultiHeadAttention (unidirectional=1 replaces the explicit upper-triangular mask).
-        attn_out = self.make_vis_mha(b, q, k, v, nh, hd, d, [nc], n_p, unidirectional=1)
+        # Build causal mask: upper-triangular entries set to -inf so softmax ignores them.
+        # Shape [1, 1, n_p, n_p] — ORT MultiHeadAttention accepts this broadcast shape.
+        np_dtype = {ir.DataType.FLOAT: np.float32, ir.DataType.FLOAT16: np.float16}.get(self.io_dtype, np.float32)
+        causal_mask_name = f"{b}/causal_mask"
+        causal_np = np.full((1, 1, n_p, n_p), fill_value=0.0, dtype=np_dtype)
+        causal_np[:, :, np.triu_indices(n_p, k=1)[0], np.triu_indices(n_p, k=1)[1]] = np.finfo(np_dtype).min / 2
+        self.make_initializer(causal_np, causal_mask_name)
+
+        # Fused MultiHeadAttention with causal mask: [nc, n_p, d] → [nc, n_p, d].
+        attn_out = self.make_vis_mha(b, q, k, v, nh, self.vis_attn_scale, [nc, n_p, d], add_qk_name=causal_mask_name)
 
         # O projection (with bias).
         o = self.make_vis_proj(attention.out_proj, f"{b}/out_proj/MatMul", attn_out)

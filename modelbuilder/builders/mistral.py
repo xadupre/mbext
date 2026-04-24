@@ -258,7 +258,6 @@ class Ministral3VisionEncoderModel(VisionEncoderModel):
         n_p = self.n_patches
         d = self.vis_hidden_size
         nh = self.vis_num_heads
-        hd = self.vis_head_dim
 
         # Q / K / V projections (no bias in Pixtral attention)
         # -> [1, n_patches, n_heads * head_dim]
@@ -266,12 +265,12 @@ class Ministral3VisionEncoderModel(VisionEncoderModel):
         k = self.make_vis_proj(attention.k_proj, f"{b}/k_proj/MatMul", root_input)
         v = self.make_vis_proj(attention.v_proj, f"{b}/v_proj/MatMul", root_input)
 
-        # Apply 2-D RoPE to Q and K in [1, n_patches, n_heads * head_dim] format
+        # Apply 2-D RoPE to Q and K (output still [1, n_patches, n_heads * head_dim])
         q_rope = self.make_rotary_embedding(f"{b}/q_rotary/RotaryEmbedding", q)
         k_rope = self.make_rotary_embedding(f"{b}/k_rotary/RotaryEmbedding", k)
 
-        # MultiHeadAttention: Q, K (post-RoPE), V already in [1, n_patches, hidden] format.
-        attn_out = self.make_vis_mha(b, q_rope, k_rope, v, nh, hd, d, [1], n_p)
+        # Fused MultiHeadAttention (encoder, no causal mask): [1, n_p, d] → [1, n_p, d]
+        attn_out = self.make_vis_mha(b, q_rope, k_rope, v, nh, self.vis_attn_scale, [1, n_p, d])
 
         # O projection (no bias in Pixtral attention)
         o = self.make_vis_proj(attention.o_proj, f"{b}/o_proj/MatMul", attn_out)

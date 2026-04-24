@@ -884,30 +884,30 @@ class Qwen25OmniVisionEncoderModel(VisionEncoderModel):
         hd = self.vis_head_dim
         rope_input = kwargs.get("rotary_pos_emb", "rotary_pos_emb")
 
-        # QKV projections with optional bias.
+        # QKV projections with optional bias: [n, d]
         q = self.make_vis_proj(attention.q, f"{b}/q_proj/MatMul", root_input)
         k = self.make_vis_proj(attention.k, f"{b}/k_proj/MatMul", root_input)
         v = self.make_vis_proj(attention.v, f"{b}/v_proj/MatMul", root_input)
 
-        # Reshape to [n_patches, num_heads, head_dim] to apply per-head 2-D RoPE.
+        # Reshape to [n, nh, hd] for 2-D RoPE application.
         q_4d = self.make_reshape(f"{b}/q_reshape", [q, [0, nh, hd]], self.io_dtype, [n, nh, hd])
         k_4d = self.make_reshape(f"{b}/k_reshape", [k, [0, nh, hd]], self.io_dtype, [n, nh, hd])
 
-        # Apply 2-D RoPE to Q and K.
+        # Apply 2-D RoPE to Q and K: [n, nh, hd].
         q_rope = self.make_vision_rope(f"{b}/q_rope", q_4d, rope_input, n, hd)
         k_rope = self.make_vision_rope(f"{b}/k_rope", k_4d, rope_input, n, hd)
 
-        # Flatten RoPE output and add batch dim: [n, nh, hd] -> [1, n, hidden].
-        # MultiHeadAttention requires [batch, seq, hidden] input format.
-        q_3d = self.make_reshape(f"{b}/q_3d", [q_rope, [1, -1, d]], self.io_dtype, [1, n, d])
-        k_3d = self.make_reshape(f"{b}/k_3d", [k_rope, [1, -1, d]], self.io_dtype, [1, n, d])
-        v_3d = self.make_reshape(f"{b}/v_3d", [v, [1, -1, d]], self.io_dtype, [1, n, d])
+        # Reshape from [n, nh, hd] to [1, n, d] for MultiHeadAttention.
+        q_mha = self.make_reshape(f"{b}/q_mha_reshape", [q_rope, [1, -1, d]], self.io_dtype, [1, n, d])
+        k_mha = self.make_reshape(f"{b}/k_mha_reshape", [k_rope, [1, -1, d]], self.io_dtype, [1, n, d])
+        # V is not rotated; reshape directly from [n, d] to [1, n, d].
+        v_mha = self.make_reshape(f"{b}/v_mha_reshape", [v, [1, -1, d]], self.io_dtype, [1, n, d])
 
-        # Bidirectional MultiHeadAttention: output [1, n, hidden].
-        attn_3d = self.make_vis_mha(b, q_3d, k_3d, v_3d, nh, hd, d, [1], n)
+        # Fused MultiHeadAttention (full attention, no causal mask): [1, n, d] → [1, n, d].
+        attn_out = self.make_vis_mha(b, q_mha, k_mha, v_mha, nh, float(hd**-0.5), [1, n, d])
 
-        # Squeeze batch dim: [1, n, hidden] -> [n, hidden].
-        attn_flat = self.make_reshape(f"{b}/attn_flat", [attn_3d, [-1, d]], self.io_dtype, [n, d])
+        # Reshape back to [n, d] for the O projection.
+        attn_flat = self.make_reshape(f"{b}/attn_flat", [attn_out, [-1, d]], self.io_dtype, [n, d])
 
         # O projection (no bias in Qwen2.5-Omni vision attention).
         o = self.make_vis_proj(attention.proj, f"{b}/o_proj/MatMul", attn_flat)

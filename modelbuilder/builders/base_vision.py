@@ -21,11 +21,11 @@ class VisionEncoderModel(Model):
     * :meth:`make_layer_norm` — ``LayerNormalization`` node (with bias).
     * :meth:`make_patch_embedding` — Conv2d → Transpose NCHW→NHWC → Reshape.
     * :meth:`make_gelu_mlp` — ``Linear + GELU + Linear`` projector.
-    * :meth:`make_silu_gated_mlp` — ``SiLU(gate) * up → down`` block.
+    * :meth:`make_silu_gated_mlp` — ``com.microsoft.QuickGelu(alpha=1.0) * up → down`` block.
     * :meth:`_make_standard_vision_layer` — shared ``norm → attn → residual → norm → mlp → residual`` template.
     * :meth:`make_vis_proj` — ``MatMul`` + optional bias ``Add`` projection.
-    * :meth:`make_vis_sdpa` — Scaled dot-product attention (Q @ K^T * scale [+ mask] → softmax → @ V).
-    * :meth:`make_vis_mha` — ``com.microsoft.MultiHeadAttention`` contrib-op attention (Q, K, V in BSH format).
+    * :meth:`make_vis_sdpa` — Decomposed scaled dot-product attention (Q @ K^T * scale [+ mask] → softmax → @ V).
+    * :meth:`make_vis_mha` — Fused scaled dot-product attention via ``com.microsoft.MultiHeadAttention``.
 
     Subclasses override :meth:`make_attention`, :meth:`make_layer`, and
     :meth:`make_model` with architecture-specific logic.
@@ -332,6 +332,8 @@ class VisionEncoderModel(Model):
     def make_silu_gated_mlp(self, layer_id, mlp, root_input, intermediate_shape):
         """Build a SiLU-gated MLP: ``SiLU(gate_proj) * up_proj → down_proj``.
 
+        Uses ``com.microsoft.QuickGelu`` with ``alpha=1.0`` to compute the
+        SiLU activation ``gate * sigmoid(gate)`` as a single fused op.
         Handles optional bias on each linear layer.
 
         Parameters
@@ -359,9 +361,10 @@ class VisionEncoderModel(Model):
             self.make_add_bias(mlp.up_proj.bias, f"{b}/up_proj/Add", root_input=up)
             up = f"{b}/up_proj/Add/output_0"
 
-        # SiLU(gate) = gate * Sigmoid(gate)
-        self.make_sigmoid(f"{b}/act/Sigmoid", gate, self.io_dtype, intermediate_shape)
-        silu = self.make_mul(f"{b}/act/Mul_silu", [gate, f"{b}/act/Sigmoid/output_0"], self.io_dtype, intermediate_shape)
+        # SiLU(gate) = gate * Sigmoid(gate) via com.microsoft.QuickGelu(alpha=1.0)
+        silu = f"{b}/act/QuickGelu/output_0"
+        self.make_node("QuickGelu", inputs=[gate], outputs=[silu], name=f"{b}/act/QuickGelu", domain="com.microsoft", alpha=1.0)
+        self.make_value(silu, self.io_dtype, shape=intermediate_shape)
         gate_up = self.make_mul(f"{b}/gate_up/Mul", [silu, up], self.io_dtype, intermediate_shape)
 
         down = f"{self.make_matmul(mlp.down_proj, f'{b}/down_proj/MatMul', gate_up)}/output_0"
@@ -460,56 +463,46 @@ class VisionEncoderModel(Model):
 
         return attn_out_t
 
-    def make_vis_mha(self, b, q, k, v, num_heads, head_dim, hidden_size, batch_shape, seq_len, *, unidirectional=0):
-        """Build a ``com.microsoft.MultiHeadAttention`` node for vision encoders.
+    def make_vis_mha(self, b, q, k, v, num_heads, scale, out_shape, add_qk_name=None):
+        """Build scaled dot-product attention using ``com.microsoft.MultiHeadAttention``.
 
-        Replaces the manual Q @ K^T → scale → softmax → @ V sequence from
-        :meth:`make_vis_sdpa` with a single contrib-op node.  Q, K, and V must
-        already be in ``[*batch_shape, seq_len, hidden_size]`` format (i.e.
-        after any required rotary embedding but **before** head-splitting).
+        Replaces the decomposed ``Q @ K^T * scale → softmax → @ V`` sequence
+        with the fused ORT contrib kernel, which can exploit flash-attention
+        or other efficient backends at runtime.
 
         Parameters
         ----------
         b : str
-            Base prefix for ONNX node names (e.g. ``"/vision/layers.0/attn"``).
+            Base prefix for all ONNX node names in this attention block
+            (e.g. ``"/vision/layers.0/attn"``).
         q : str
-            Query tensor name, shape ``[*batch_shape, seq_len, hidden_size]``.
+            Query tensor name, shape ``[batch, seq, num_heads * head_dim]``.
         k : str
-            Key tensor name, shape ``[*batch_shape, seq_len, hidden_size]``.
+            Key tensor name, shape ``[batch, kv_seq, num_heads * head_dim]``.
         v : str
-            Value tensor name, shape ``[*batch_shape, seq_len, hidden_size]``.
+            Value tensor name, shape ``[batch, kv_seq, num_heads * head_dim]``.
         num_heads : int
             Number of attention heads.
-        head_dim : int
-            Dimension per attention head.
-        hidden_size : int
-            Total hidden size (``num_heads * head_dim``).
-        batch_shape : list
-            Leading batch dimensions (e.g. ``[1]`` for single-image or
-            ``[nc]`` for multi-crop models).
-        seq_len : int or None
-            Sequence length (number of patches), ``None`` for dynamic.
-        unidirectional : int, optional
-            ``0`` for bidirectional encoder-style attention (default),
-            ``1`` for causal decoder-style attention.
+        scale : float
+            Attention scale factor (typically ``head_dim ** -0.5``).
+        out_shape : list
+            Shape annotation for the output tensor
+            (e.g. ``[batch, seq, num_heads * head_dim]``).
+        add_qk_name : str or None, optional
+            Name of an additive bias tensor of shape
+            ``[batch, num_heads, seq, kv_seq]`` (or broadcast-compatible) to
+            add to ``Q @ K^T`` before softmax.  Used for causal attention.
+            Defaults to ``None`` for encoder-style full attention.
 
         Returns
         -------
         str
-            Output tensor name, shape ``[*batch_shape, seq_len, hidden_size]``.
+            Output tensor name of shape ``out_shape``.
         """
-        scale = float(head_dim**-0.5)
-        output = f"{b}/MHA/output_0"
+        inputs = [q, k, v, "", "", add_qk_name or ""]
+        output = f"{b}/mha/output_0"
         self.make_node(
-            "MultiHeadAttention",
-            inputs=[q, k, v, "", "", "", "", ""],
-            outputs=[output, "", ""],
-            name=f"{b}/MHA",
-            domain="com.microsoft",
-            num_heads=num_heads,
-            scale=scale,
-            unidirectional=unidirectional,
+            "MultiHeadAttention", inputs=inputs, outputs=[output], name=f"{b}/mha", domain="com.microsoft", num_heads=num_heads, scale=scale
         )
-        out_shape = list(batch_shape) + [seq_len, hidden_size]
         self.make_value(output, self.io_dtype, shape=out_shape)
         return output
