@@ -13,6 +13,39 @@ from modelbuilder.ext_test_case import ExtTestCase, hide_stdout, requires_cuda, 
 MINISTRAL3_MODEL_NAME = "mistralai/Ministral-3-3B-Instruct-2512"
 
 
+def _make_ministral3_multimodal_config():
+    """Return a tiny ``Mistral3Config`` for offline multimodal unit tests.
+
+    Uses ``image_size=56`` (56/14=4 patches per side), ``patch_size=14``,
+    and ``spatial_merge_size=2`` so each image yields 4 merged patches.
+    The vision tower and text decoder use the smallest possible hidden sizes
+    to keep tests fast and completely offline.
+    """
+    from transformers import Ministral3Config, Mistral3Config, PixtralVisionConfig
+
+    vision_config = PixtralVisionConfig(
+        hidden_size=64, intermediate_size=128, num_hidden_layers=1, num_attention_heads=4, head_dim=16, image_size=56, patch_size=14
+    )
+    text_config = Ministral3Config(
+        bos_token_id=1,
+        eos_token_id=2,
+        hidden_act="silu",
+        hidden_size=512,
+        intermediate_size=1376,
+        max_position_embeddings=1024,
+        num_attention_heads=8,
+        num_hidden_layers=1,
+        num_key_value_heads=4,
+        head_dim=64,
+        rms_norm_eps=1e-05,
+        sliding_window=None,
+        vocab_size=32000,
+    )
+    config = Mistral3Config(text_config=text_config, vision_config=vision_config, spatial_merge_size=2)
+    config.architectures = ["Mistral3ForConditionalGeneration"]
+    return config
+
+
 @requires_transformers("5")
 class TestMinistral3(ExtTestCase):
     def common_fast_ministral3_random_weights(self, precision, provider):
@@ -184,165 +217,111 @@ class TestMinistral3(ExtTestCase):
 
         self.run_genai_generation_test(output_dir, model, config.vocab_size, config.eos_token_id)
 
-    @hide_stdout()
-    def test_ministral3_conditional_generation_fp32_cpu_random_weights(self):
-        """
-        Convert a randomly-initialised Mistral3ForConditionalGeneration model to
-        fp32 ONNX models targeting the CPU execution provider.
+    def common_ministral3_conditional_generation(self, precision, provider):
+        """Build and validate the Ministral3 multimodal ONNX pipeline.
 
-        Mistral3ForConditionalGeneration is the multimodal model class for the
-        Ministral 3 family.  The builder now exports **two** artifacts:
+        Exports ``vision_encoder.onnx``, ``embedding.onnx``, and ``model.onnx``
+        then verifies:
 
-        1. ``vision_encoder.onnx`` – the Pixtral vision encoder (patch
-           convolution + transformer) together with the multimodal projector.
-           Input: ``pixel_values`` [1, 3, image_size, image_size].
-           Output: ``image_features`` [num_merged_patches, text_hidden_size].
-
-        2. ``model.onnx`` – the Mistral text decoder with
-           ``exclude_embeds=True`` so that it accepts ``inputs_embeds``
-           (produced by the vision encoder or from plain embed_tokens) rather
-           than raw ``input_ids``.
-
-        The test verifies that:
-        * ``create_model`` completes without error when given a local model directory.
-        * Both ``vision_encoder.onnx`` and ``model.onnx`` are written to the
-          output directory.
-        * Both ONNX files can be loaded by ``onnxruntime``.
-        * The vision encoder produces output of the correct shape.
-        * The text decoder produces output when fed ``inputs_embeds``.
+        * All three ONNX artefacts and ``genai_config.json`` are written.
+        * ``genai_config.json`` has the ``phi3v`` type with ``vision`` and
+          ``embedding`` sections.
+        * The vision encoder pixel values and model I/O use the dtype that
+          corresponds to the model precision (int4/cpu → float32, fp16 →
+          float16).
+        * The text decoder produces logits when fed ``inputs_embeds``.
         """
         import torch
-        from tokenizers import Tokenizer
-        from tokenizers.models import WordLevel
-        from transformers import (
-            Ministral3Config,
-            Mistral3Config,
-            Mistral3ForConditionalGeneration,
-            PixtralVisionConfig,
-            PreTrainedTokenizerFast,
-        )
+        from transformers import Mistral3ForConditionalGeneration
 
         from modelbuilder.builder import create_model
 
-        num_hidden_layers = 1
-        # Use a small image size (56×56) so the test stays fast; patch_size=14
-        # gives 4×4=16 patches, then spatial_merge_size=2 → 4 merged patches.
-        image_size = 56
-        patch_size = 14
-        spatial_merge_size = 2
+        config = _make_ministral3_multimodal_config()
+        vision_config = config.vision_config
+        text_config = config.text_config
+        image_size = vision_config.image_size
+        patch_size = vision_config.patch_size
+        spatial_merge_size = config.spatial_merge_size
+        num_hidden_layers = text_config.num_hidden_layers
 
-        vision_config = PixtralVisionConfig(
-            hidden_size=64,
-            intermediate_size=128,
-            num_hidden_layers=1,
-            num_attention_heads=4,
-            head_dim=16,
-            image_size=image_size,
-            patch_size=patch_size,
-        )
-        text_config = Ministral3Config(
-            bos_token_id=1,
-            eos_token_id=2,
-            hidden_act="silu",
-            hidden_size=512,
-            intermediate_size=1376,
-            max_position_embeddings=1024,
-            num_attention_heads=8,
-            num_hidden_layers=num_hidden_layers,
-            num_key_value_heads=4,
-            head_dim=64,
-            rms_norm_eps=1e-05,
-            sliding_window=None,
-            vocab_size=32000,
-        )
-        config = Mistral3Config(text_config=text_config, vision_config=vision_config, spatial_merge_size=spatial_merge_size)
-        config.architectures = ["Mistral3ForConditionalGeneration"]
-
-        model_dir = self.get_model_dir("test_ministral3_conditional_generation_fp32_cpu_random_weights")
-        output_dir, cache_dir = self.get_dirs("test_ministral3_conditional_generation_fp32_cpu_random_weights")
+        basename = f"test_ministral3_conditional_generation_{precision}_{provider}"
+        model_dir = self.get_model_dir(basename)
+        output_dir, cache_dir = self.get_dirs(basename)
 
         model = Mistral3ForConditionalGeneration(config)
         model.eval()
         model.save_pretrained(model_dir)
 
-        vocab = {"<unk>": 0, "<s>": 1, "</s>": 2}
-        tokenizer = PreTrainedTokenizerFast(
-            tokenizer_object=Tokenizer(WordLevel(vocab=vocab, unk_token="<unk>")), bos_token="<s>", eos_token="</s>", unk_token="<unk>"
-        )
+        tokenizer = self.make_word_level_tokenizer()
         tokenizer.save_pretrained(model_dir)
 
         create_model(
             model_name=MINISTRAL3_MODEL_NAME,
             input_path=model_dir,
             output_dir=output_dir,
-            precision="fp32",
-            execution_provider="cpu",
+            precision=precision,
+            execution_provider=provider,
             cache_dir=cache_dir,
             num_hidden_layers=num_hidden_layers,
         )
 
-        # --- Verify both ONNX files exist and load correctly ---
+        # --- Verify ONNX artefacts and genai_config ---
         vision_onnx_path = os.path.join(output_dir, "vision_encoder.onnx")
-        self.assertExists(vision_onnx_path)
-
         text_onnx_path = os.path.join(output_dir, "model.onnx")
-        self.assertExists(text_onnx_path)
+        for path in (vision_onnx_path, text_onnx_path):
+            self.assertExists(path)
 
-        # --- Verify genai_config.json has vision + embedding sections ---
-        import json
+        self.check_phi3v_genai_config(output_dir, spatial_merge_size=spatial_merge_size)
 
-        genai_config_path = os.path.join(output_dir, "genai_config.json")
-        self.assertExists(genai_config_path)
-        with open(genai_config_path) as f:
-            genai_config = json.load(f)
-        self.assertEqual(genai_config["model"]["type"], "phi3v")
-        self.assertIn("vision", genai_config["model"])
-        ve_cfg = genai_config["model"]["vision"]
-        self.assertEqual(ve_cfg["filename"], "vision_encoder.onnx")
-        self.assertEqual(ve_cfg["spatial_merge_size"], spatial_merge_size)
-        self.assertIn("embedding", genai_config["model"])
-        em_cfg = genai_config["model"]["embedding"]
-        self.assertEqual(em_cfg["filename"], "embedding.onnx")
-
-        # --- Run vision encoder forward pass ---
+        # --- Vision encoder: pixel_values dtype follows model precision ---
+        # io_dtype = float16 for fp16, float32 for fp32/int4.
+        np_dtype = self.get_input_np_dtype(precision)
         num_patches_per_side = image_size // patch_size
         expected_merged_patches = (num_patches_per_side**2) // (spatial_merge_size**2)
 
-        vision_sess = self.check_ort(vision_onnx_path)
-        pixel_values = np.zeros((1, vision_config.num_channels, image_size, image_size), dtype=np.float32)
-        vision_outputs = vision_sess.run(None, {"pixel_values": pixel_values})
-        self.assertIsNotNone(vision_outputs[0])
-        self.assertEqual(vision_outputs[0].shape[0], expected_merged_patches)
-        self.assertEqual(vision_outputs[0].shape[1], text_config.hidden_size)
+        pixel_values = np.zeros((1, vision_config.num_channels, image_size, image_size), dtype=np_dtype)
+        self.run_vision_encoder_ort_check(
+            vision_onnx_path, pixel_values, (expected_merged_patches, text_config.hidden_size), provider=provider
+        )
 
-        # --- Run text decoder forward pass ---
-        # The ONNX model was built with exclude_embeds=True, so it expects
-        # `inputs_embeds` (shape [batch, seq, hidden_size]) rather than
-        # `input_ids`.  Compute the embeddings using the saved model weights.
+        # --- Text decoder: inputs_embeds dtype follows model precision ---
+        # int4/cpu → float32 (io_dtype=FLOAT), fp16 → float16
         batch_size = 1
         seq_len = 5
         input_ids = torch.randint(0, text_config.vocab_size, (batch_size, seq_len))
         with torch.no_grad():
-            inputs_embeds = model.model.language_model.embed_tokens(input_ids).numpy().astype(np.float32)
+            inputs_embeds = model.model.language_model.embed_tokens(input_ids).numpy().astype(np_dtype)
 
-        text_sess = self.check_ort(text_onnx_path)
-        onnx_input_names = {inp.name for inp in text_sess.get_inputs()}
+        self.run_inputs_embeds_decoder_check(
+            text_onnx_path,
+            inputs_embeds,
+            num_hidden_layers=num_hidden_layers,
+            num_key_value_heads=text_config.num_key_value_heads,
+            head_size=text_config.head_dim,
+            precision=precision,
+            provider=provider,
+        )
 
-        head_size = text_config.head_dim
-        onnx_feed = {
-            "inputs_embeds": inputs_embeds,
-            "attention_mask": np.ones((batch_size, seq_len), dtype=np.int64),
-            "position_ids": np.arange(seq_len, dtype=np.int64).reshape(batch_size, seq_len),
-        }
-        for i in range(num_hidden_layers):
-            onnx_feed[f"past_key_values.{i}.key"] = np.zeros((batch_size, text_config.num_key_value_heads, 0, head_size), dtype=np.float32)
-            onnx_feed[f"past_key_values.{i}.value"] = np.zeros(
-                (batch_size, text_config.num_key_value_heads, 0, head_size), dtype=np.float32
-            )
-        onnx_feed = {k: v for k, v in onnx_feed.items() if k in onnx_input_names}
+    @hide_stdout()
+    def test_ministral3_conditional_generation_fp32_cpu_random_weights(self):
+        """fp32 / CPU multimodal pipeline — see :meth:`common_ministral3_conditional_generation`."""
+        self.common_ministral3_conditional_generation("fp32", "cpu")
 
-        onnx_outputs = text_sess.run(None, onnx_feed)
-        self.assertIsNotNone(onnx_outputs[0])
+    @hide_stdout()
+    def test_ministral3_conditional_generation_fp16_cpu_random_weights(self):
+        """fp16 / CPU multimodal pipeline — see :meth:`common_ministral3_conditional_generation`."""
+        self.common_ministral3_conditional_generation("fp16", "cpu")
+
+    @hide_stdout()
+    def test_ministral3_conditional_generation_int4_cpu_random_weights(self):
+        """int4 / CPU multimodal pipeline — see :meth:`common_ministral3_conditional_generation`."""
+        self.common_ministral3_conditional_generation("int4", "cpu")
+
+    @hide_stdout()
+    @requires_cuda()
+    def test_ministral3_conditional_generation_fp16_cuda_random_weights(self):
+        """fp16 / CUDA multimodal pipeline — see :meth:`common_ministral3_conditional_generation`."""
+        self.common_ministral3_conditional_generation("fp16", "cuda")
 
     @hide_stdout()
     def test_ministral3_two_images_and_text_fp32_cpu_random_weights(self):
@@ -369,51 +348,17 @@ class TestMinistral3(ExtTestCase):
           ``inputs_embeds`` that mixes two image encodings with text embeddings.
         """
         import torch
-        from tokenizers import Tokenizer
-        from tokenizers.models import WordLevel
-        from transformers import (
-            Ministral3Config,
-            Mistral3Config,
-            Mistral3ForConditionalGeneration,
-            PixtralVisionConfig,
-            PreTrainedTokenizerFast,
-        )
+        from transformers import Mistral3ForConditionalGeneration
 
         from modelbuilder.builder import create_model
 
-        num_hidden_layers = 1
-        # 56×56 image with patch_size=14 → 4×4=16 patches;
-        # spatial_merge_size=2 → 4 merged patches per image.
-        image_size = 56
-        patch_size = 14
-        spatial_merge_size = 2
-
-        vision_config = PixtralVisionConfig(
-            hidden_size=64,
-            intermediate_size=128,
-            num_hidden_layers=1,
-            num_attention_heads=4,
-            head_dim=16,
-            image_size=image_size,
-            patch_size=patch_size,
-        )
-        text_config = Ministral3Config(
-            bos_token_id=1,
-            eos_token_id=2,
-            hidden_act="silu",
-            hidden_size=512,
-            intermediate_size=1376,
-            max_position_embeddings=1024,
-            num_attention_heads=8,
-            num_hidden_layers=num_hidden_layers,
-            num_key_value_heads=4,
-            head_dim=64,
-            rms_norm_eps=1e-05,
-            sliding_window=None,
-            vocab_size=32000,
-        )
-        config = Mistral3Config(text_config=text_config, vision_config=vision_config, spatial_merge_size=spatial_merge_size)
-        config.architectures = ["Mistral3ForConditionalGeneration"]
+        config = _make_ministral3_multimodal_config()
+        vision_config = config.vision_config
+        text_config = config.text_config
+        image_size = vision_config.image_size
+        patch_size = vision_config.patch_size
+        spatial_merge_size = config.spatial_merge_size
+        num_hidden_layers = text_config.num_hidden_layers
 
         basename = "test_ministral3_two_images_and_text_fp32_cpu_random_weights"
         model_dir = self.get_model_dir(basename)
@@ -423,10 +368,7 @@ class TestMinistral3(ExtTestCase):
         model.eval()
         model.save_pretrained(model_dir)
 
-        vocab = {"<unk>": 0, "<s>": 1, "</s>": 2}
-        tokenizer = PreTrainedTokenizerFast(
-            tokenizer_object=Tokenizer(WordLevel(vocab=vocab, unk_token="<unk>")), bos_token="<s>", eos_token="</s>", unk_token="<unk>"
-        )
+        tokenizer = self.make_word_level_tokenizer()
         tokenizer.save_pretrained(model_dir)
 
         create_model(
@@ -543,50 +485,18 @@ class TestMinistral3(ExtTestCase):
         import torch
         import onnxruntime_genai as og
 
-        from tokenizers import Tokenizer
-        from tokenizers.models import WordLevel
-        from transformers import (
-            Ministral3Config,
-            Mistral3Config,
-            Mistral3ForConditionalGeneration,
-            PixtralVisionConfig,
-            PreTrainedTokenizerFast,
-        )
+        from transformers import Mistral3ForConditionalGeneration
 
         from modelbuilder.builder import create_model
 
-        # --- Tiny model configuration (same as the ONNX-only sibling test) ---
-        num_hidden_layers = 1
-        image_size = 56
-        patch_size = 14
-        spatial_merge_size = 2
-
-        vision_config = PixtralVisionConfig(
-            hidden_size=64,
-            intermediate_size=128,
-            num_hidden_layers=1,
-            num_attention_heads=4,
-            head_dim=16,
-            image_size=image_size,
-            patch_size=patch_size,
-        )
-        text_config = Ministral3Config(
-            bos_token_id=1,
-            eos_token_id=2,
-            hidden_act="silu",
-            hidden_size=512,
-            intermediate_size=1376,
-            max_position_embeddings=1024,
-            num_attention_heads=8,
-            num_hidden_layers=num_hidden_layers,
-            num_key_value_heads=4,
-            head_dim=64,
-            rms_norm_eps=1e-05,
-            sliding_window=None,
-            vocab_size=32000,
-        )
-        config = Mistral3Config(text_config=text_config, vision_config=vision_config, spatial_merge_size=spatial_merge_size)
-        config.architectures = ["Mistral3ForConditionalGeneration"]
+        # --- Tiny model configuration ---
+        config = _make_ministral3_multimodal_config()
+        vision_config = config.vision_config
+        text_config = config.text_config
+        image_size = vision_config.image_size
+        patch_size = vision_config.patch_size
+        spatial_merge_size = config.spatial_merge_size
+        num_hidden_layers = text_config.num_hidden_layers
 
         basename = f"test_ministral3_two_images_and_text_{precision}_cpu_genai"
         model_dir = self.get_model_dir(basename)
@@ -597,10 +507,7 @@ class TestMinistral3(ExtTestCase):
         model.eval()
         model.save_pretrained(model_dir)
 
-        vocab = {"<unk>": 0, "<s>": 1, "</s>": 2}
-        tokenizer = PreTrainedTokenizerFast(
-            tokenizer_object=Tokenizer(WordLevel(vocab=vocab, unk_token="<unk>")), bos_token="<s>", eos_token="</s>", unk_token="<unk>"
-        )
+        tokenizer = self.make_word_level_tokenizer()
         tokenizer.save_pretrained(model_dir)
 
         create_model(
@@ -741,48 +648,18 @@ class TestMinistral3(ExtTestCase):
         from tokenizers import Tokenizer
         from tokenizers.models import WordLevel
         from tokenizers.pre_tokenizers import WhitespaceSplit
-        from transformers import (
-            Ministral3Config,
-            Mistral3Config,
-            Mistral3ForConditionalGeneration,
-            PixtralVisionConfig,
-            PreTrainedTokenizerFast,
-        )
+        from transformers import Mistral3ForConditionalGeneration, PreTrainedTokenizerFast
 
         from modelbuilder.builder import create_model
 
-        # --- Tiny model configuration (same geometry as sibling tests) ---
-        num_hidden_layers = 1
-        image_size = 56
-        patch_size = 14
-        spatial_merge_size = 2
-
-        vision_config = PixtralVisionConfig(
-            hidden_size=64,
-            intermediate_size=128,
-            num_hidden_layers=1,
-            num_attention_heads=4,
-            head_dim=16,
-            image_size=image_size,
-            patch_size=patch_size,
-        )
-        text_config = Ministral3Config(
-            bos_token_id=1,
-            eos_token_id=2,
-            hidden_act="silu",
-            hidden_size=512,
-            intermediate_size=1376,
-            max_position_embeddings=1024,
-            num_attention_heads=8,
-            num_hidden_layers=num_hidden_layers,
-            num_key_value_heads=4,
-            head_dim=64,
-            rms_norm_eps=1e-05,
-            sliding_window=None,
-            vocab_size=32000,
-        )
-        config = Mistral3Config(text_config=text_config, vision_config=vision_config, spatial_merge_size=spatial_merge_size)
-        config.architectures = ["Mistral3ForConditionalGeneration"]
+        # --- Tiny model configuration ---
+        config = _make_ministral3_multimodal_config()
+        vision_config = config.vision_config
+        text_config = config.text_config
+        image_size = vision_config.image_size
+        patch_size = vision_config.patch_size
+        spatial_merge_size = config.spatial_merge_size
+        num_hidden_layers = text_config.num_hidden_layers
 
         basename = f"test_ministral3_apply_chat_template_{precision}_cpu_genai"
         model_dir = self.get_model_dir(basename)
@@ -941,52 +818,17 @@ class TestMinistral3(ExtTestCase):
         """
         import onnx
         import torch
-        from tokenizers import Tokenizer
-        from tokenizers.models import WordLevel
-        from transformers import (
-            Ministral3Config,
-            Mistral3Config,
-            Mistral3ForConditionalGeneration,
-            PixtralVisionConfig,
-            PreTrainedTokenizerFast,
-        )
+        from transformers import Mistral3ForConditionalGeneration
 
         from modelbuilder.builder import create_model
 
-        num_hidden_layers = 1
-        # Same tiny geometry as the fp32 sibling test:
-        # 56×56 / patch_size=14 → 4×4=16 patches;
-        # spatial_merge_size=2 → 4 merged patches.
-        image_size = 56
-        patch_size = 14
-        spatial_merge_size = 2
-
-        vision_config = PixtralVisionConfig(
-            hidden_size=64,
-            intermediate_size=128,
-            num_hidden_layers=1,
-            num_attention_heads=4,
-            head_dim=16,
-            image_size=image_size,
-            patch_size=patch_size,
-        )
-        text_config = Ministral3Config(
-            bos_token_id=1,
-            eos_token_id=2,
-            hidden_act="silu",
-            hidden_size=512,
-            intermediate_size=1376,
-            max_position_embeddings=1024,
-            num_attention_heads=8,
-            num_hidden_layers=num_hidden_layers,
-            num_key_value_heads=4,
-            head_dim=64,
-            rms_norm_eps=1e-05,
-            sliding_window=None,
-            vocab_size=32000,
-        )
-        config = Mistral3Config(text_config=text_config, vision_config=vision_config, spatial_merge_size=spatial_merge_size)
-        config.architectures = ["Mistral3ForConditionalGeneration"]
+        config = _make_ministral3_multimodal_config()
+        vision_config = config.vision_config
+        text_config = config.text_config
+        image_size = vision_config.image_size
+        patch_size = vision_config.patch_size
+        spatial_merge_size = config.spatial_merge_size
+        num_hidden_layers = text_config.num_hidden_layers
 
         basename = "test_ministral3_vision_encoder_int4_cpu_random_weights"
         model_dir = self.get_model_dir(basename)
@@ -997,10 +839,7 @@ class TestMinistral3(ExtTestCase):
         model.eval()
         model.save_pretrained(model_dir)
 
-        vocab = {"<unk>": 0, "<s>": 1, "</s>": 2}
-        tokenizer = PreTrainedTokenizerFast(
-            tokenizer_object=Tokenizer(WordLevel(vocab=vocab, unk_token="<unk>")), bos_token="<s>", eos_token="</s>", unk_token="<unk>"
-        )
+        tokenizer = self.make_word_level_tokenizer()
         tokenizer.save_pretrained(model_dir)
 
         create_model(
@@ -1049,49 +888,15 @@ class TestMinistral3(ExtTestCase):
         reshape / transpose ordering.
         """
         import torch
-        from tokenizers import Tokenizer
-        from tokenizers.models import WordLevel
-        from transformers import (
-            Ministral3Config,
-            Mistral3Config,
-            Mistral3ForConditionalGeneration,
-            PixtralVisionConfig,
-            PreTrainedTokenizerFast,
-        )
+        from transformers import Mistral3ForConditionalGeneration
 
         from modelbuilder.builder import create_model
 
-        num_hidden_layers = 1
-        image_size = 56
-        patch_size = 14
-        spatial_merge_size = 2
-
-        vision_config = PixtralVisionConfig(
-            hidden_size=64,
-            intermediate_size=128,
-            num_hidden_layers=1,
-            num_attention_heads=4,
-            head_dim=16,
-            image_size=image_size,
-            patch_size=patch_size,
-        )
-        text_config = Ministral3Config(
-            bos_token_id=1,
-            eos_token_id=2,
-            hidden_act="silu",
-            hidden_size=512,
-            intermediate_size=1376,
-            max_position_embeddings=1024,
-            num_attention_heads=8,
-            num_hidden_layers=num_hidden_layers,
-            num_key_value_heads=4,
-            head_dim=64,
-            rms_norm_eps=1e-05,
-            sliding_window=None,
-            vocab_size=32000,
-        )
-        config = Mistral3Config(text_config=text_config, vision_config=vision_config, spatial_merge_size=spatial_merge_size)
-        config.architectures = ["Mistral3ForConditionalGeneration"]
+        config = _make_ministral3_multimodal_config()
+        vision_config = config.vision_config
+        text_config = config.text_config
+        image_size = vision_config.image_size
+        num_hidden_layers = text_config.num_hidden_layers
 
         basename = "test_ministral3_vision_encoder_output_matches_pytorch"
         model_dir = self.get_model_dir(basename)
@@ -1102,10 +907,7 @@ class TestMinistral3(ExtTestCase):
         model.eval()
         model.save_pretrained(model_dir)
 
-        vocab = {"<unk>": 0, "<s>": 1, "</s>": 2}
-        tokenizer = PreTrainedTokenizerFast(
-            tokenizer_object=Tokenizer(WordLevel(vocab=vocab, unk_token="<unk>")), bos_token="<s>", eos_token="</s>", unk_token="<unk>"
-        )
+        tokenizer = self.make_word_level_tokenizer()
         tokenizer.save_pretrained(model_dir)
 
         create_model(
@@ -1201,51 +1003,19 @@ class TestMinistral3(ExtTestCase):
         """
         import onnx
         import torch
-        from tokenizers import Tokenizer
-        from tokenizers.models import WordLevel
         from unittest.mock import patch
-        from transformers import (
-            Ministral3Config,
-            Mistral3Config,
-            Mistral3ForConditionalGeneration,
-            PixtralVisionConfig,
-            PreTrainedTokenizerFast,
-        )
+        from transformers import Mistral3ForConditionalGeneration
 
         from modelbuilder.builder import create_model
         from modelbuilder.builders.mistral import Ministral3VisionEncoderModel
 
-        num_hidden_layers = 1
-        image_size = 56
-        patch_size = 14
-        spatial_merge_size = 2
-
-        vision_config = PixtralVisionConfig(
-            hidden_size=64,
-            intermediate_size=128,
-            num_hidden_layers=1,
-            num_attention_heads=4,
-            head_dim=16,
-            image_size=image_size,
-            patch_size=patch_size,
-        )
-        text_config = Ministral3Config(
-            bos_token_id=1,
-            eos_token_id=2,
-            hidden_act="silu",
-            hidden_size=512,
-            intermediate_size=1376,
-            max_position_embeddings=1024,
-            num_attention_heads=8,
-            num_hidden_layers=num_hidden_layers,
-            num_key_value_heads=4,
-            head_dim=64,
-            rms_norm_eps=1e-05,
-            sliding_window=None,
-            vocab_size=32000,
-        )
-        config = Mistral3Config(text_config=text_config, vision_config=vision_config, spatial_merge_size=spatial_merge_size)
-        config.architectures = ["Mistral3ForConditionalGeneration"]
+        config = _make_ministral3_multimodal_config()
+        vision_config = config.vision_config
+        text_config = config.text_config
+        image_size = vision_config.image_size
+        patch_size = vision_config.patch_size
+        spatial_merge_size = config.spatial_merge_size
+        num_hidden_layers = text_config.num_hidden_layers
 
         basename = "test_ministral3_projector_linear1_bias_adds_bias_node"
         model_dir = self.get_model_dir(basename)
@@ -1272,10 +1042,7 @@ class TestMinistral3(ExtTestCase):
         # default architecture uses bias=False; only the vision encoder (whose
         # _load_hf_model is patched below) sees the modified projector.
         model.save_pretrained(model_dir)
-        vocab = {"<unk>": 0, "<s>": 1, "</s>": 2}
-        tokenizer = PreTrainedTokenizerFast(
-            tokenizer_object=Tokenizer(WordLevel(vocab=vocab, unk_token="<unk>")), bos_token="<s>", eos_token="</s>", unk_token="<unk>"
-        )
+        tokenizer = self.make_word_level_tokenizer()
         tokenizer.save_pretrained(model_dir)
 
         # Patch _load_hf_model on Ministral3VisionEncoderModel so the builder

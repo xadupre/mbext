@@ -1177,6 +1177,124 @@ class ExtTestCase(unittest.TestCase):
         if pt_tokens is not None:
             self.assertEqual(pt_tokens, og_tokens)
 
+    def check_phi3v_genai_config(
+        self,
+        output_dir: str,
+        *,
+        spatial_merge_size: Optional[int] = None,
+        has_speech: bool = False,
+        vision_filename: str = "vision_encoder.onnx",
+        embedding_filename: str = "embedding.onnx",
+        speech_filename: str = "audio_encoder.onnx",
+    ) -> None:
+        """Assert that ``genai_config.json`` has the expected ``phi3v`` structure.
+
+        Verifies that:
+
+        * ``genai_config.json`` exists in *output_dir*.
+        * ``model.type`` equals ``"phi3v"``.
+        * A ``"vision"`` section exists with ``filename==vision_filename``.
+        * An ``"embedding"`` section exists with ``filename==embedding_filename``.
+        * When *spatial_merge_size* is given, the vision section carries the
+          correct ``spatial_merge_size`` value.
+        * When *has_speech* is ``True``, a ``"speech"`` section exists with
+          ``filename==speech_filename``.
+
+        :param output_dir: directory produced by
+            :func:`modelbuilder.builder.create_model`.
+        :param spatial_merge_size: expected ``spatial_merge_size`` in the
+            vision section, or ``None`` to skip that assertion.
+        :param has_speech: set to ``True`` for models with an audio/speech
+            encoder (e.g. Qwen2.5-Omni).
+        :param vision_filename: expected filename in the vision section.
+        :param embedding_filename: expected filename in the embedding section.
+        :param speech_filename: expected filename in the speech section
+            (only checked when *has_speech* is ``True``).
+        """
+        genai_config_path = os.path.join(output_dir, "genai_config.json")
+        self.assertExists(genai_config_path)
+        with open(genai_config_path) as f:
+            genai_config = json.load(f)
+        self.assertEqual(genai_config["model"]["type"], "phi3v")
+        self.assertIn("vision", genai_config["model"])
+        ve_cfg = genai_config["model"]["vision"]
+        self.assertEqual(ve_cfg["filename"], vision_filename)
+        if spatial_merge_size is not None:
+            self.assertEqual(ve_cfg["spatial_merge_size"], spatial_merge_size)
+        self.assertIn("embedding", genai_config["model"])
+        self.assertEqual(genai_config["model"]["embedding"]["filename"], embedding_filename)
+        if has_speech:
+            self.assertIn("speech", genai_config["model"])
+            self.assertEqual(genai_config["model"]["speech"]["filename"], speech_filename)
+
+    def run_vision_encoder_ort_check(
+        self, vision_onnx_path: str, pixel_values: np.ndarray, expected_output_shape: Tuple, provider: str = "cpu"
+    ) -> np.ndarray:
+        """Load the vision encoder ONNX model, run a forward pass, and verify the output shape.
+
+        :param vision_onnx_path: path to ``vision_encoder.onnx``.
+        :param pixel_values: numpy array to pass as ``"pixel_values"`` input.
+            The dtype should already match the model (float16 for fp16, float32
+            for fp32/int4).
+        :param expected_output_shape: expected shape tuple for the first output.
+        :param provider: ORT execution provider (``"cpu"`` or ``"cuda"``).
+        :return: the first output of the vision encoder as a numpy array.
+        """
+        sess = self.check_ort(vision_onnx_path, provider=provider)
+        outputs = sess.run(None, {"pixel_values": pixel_values})
+        self.assertIsNotNone(outputs[0])
+        self.assertEqual(outputs[0].shape, expected_output_shape)
+        return outputs[0]
+
+    def run_inputs_embeds_decoder_check(
+        self,
+        text_onnx_path: str,
+        inputs_embeds: np.ndarray,
+        num_hidden_layers: int,
+        num_key_value_heads: int,
+        head_size: int,
+        precision: str,
+        provider: str = "cpu",
+        batch_size: int = 1,
+    ) -> np.ndarray:
+        """Load the text decoder ONNX model and run one forward pass with ``inputs_embeds``.
+
+        The model is expected to have been built with ``exclude_embeds=True``
+        so that it accepts ``inputs_embeds`` instead of ``input_ids``.
+
+        The KV-cache inputs are initialised to empty tensors
+        (``past_seq_len=0``).
+
+        :param text_onnx_path: path to ``model.onnx``.
+        :param inputs_embeds: numpy array of shape
+            ``[batch_size, seq_len, hidden_size]``.
+        :param num_hidden_layers: number of transformer layers (KV-cache
+            input count).
+        :param num_key_value_heads: number of KV heads per layer.
+        :param head_size: size of each KV head.
+        :param precision: model precision string (``"fp32"``, ``"fp16"``,
+            ``"int4"``, ``"bf16"``).  Used to derive the KV-cache dtype.
+        :param provider: ORT execution provider (``"cpu"`` or ``"cuda"``).
+        :param batch_size: batch size (default 1).
+        :return: the first output (logits) of the decoder as a numpy array.
+        """
+        np_dtype = self.get_input_np_dtype(precision)
+        seq_len = inputs_embeds.shape[1]
+        sess = self.check_ort(text_onnx_path, provider=provider)
+        onnx_input_names = {inp.name for inp in sess.get_inputs()}
+        feed: Dict[str, np.ndarray] = {
+            "inputs_embeds": inputs_embeds,
+            "attention_mask": np.ones((batch_size, seq_len), dtype=np.int64),
+            "position_ids": np.arange(seq_len, dtype=np.int64).reshape(batch_size, seq_len),
+        }
+        for i in range(num_hidden_layers):
+            feed[f"past_key_values.{i}.key"] = np.zeros((batch_size, num_key_value_heads, 0, head_size), dtype=np_dtype)
+            feed[f"past_key_values.{i}.value"] = np.zeros((batch_size, num_key_value_heads, 0, head_size), dtype=np_dtype)
+        feed = {k: v for k, v in feed.items() if k in onnx_input_names}
+        outputs = sess.run(None, feed)
+        self.assertIsNotNone(outputs[0])
+        return outputs[0]
+
 
 def get_input_np_dtype(precision):
     if precision == "bf16":

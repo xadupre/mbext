@@ -205,7 +205,6 @@ class TestRandomQwen25OmniVision(ExtTestCase):
           PyTorch reference (single-chunk audio, within one window).
         * The text decoder produces logits when fed ``inputs_embeds``.
         """
-        import json
 
         import torch
         from tokenizers import Tokenizer
@@ -274,20 +273,11 @@ class TestRandomQwen25OmniVision(ExtTestCase):
         audio_onnx_path = os.path.join(output_dir, "audio_encoder.onnx")
         embedding_onnx_path = os.path.join(output_dir, "embedding.onnx")
         text_onnx_path = os.path.join(output_dir, "model.onnx")
-        genai_config_path = os.path.join(output_dir, "genai_config.json")
-        for p in [vision_onnx_path, audio_onnx_path, embedding_onnx_path, text_onnx_path, genai_config_path]:
+        for p in [vision_onnx_path, audio_onnx_path, embedding_onnx_path, text_onnx_path]:
             self.assertExists(p)
 
         # --- Verify genai_config.json ---
-        with open(genai_config_path) as f:
-            genai_config = json.load(f)
-        self.assertEqual(genai_config["model"]["type"], "phi3v")
-        self.assertIn("vision", genai_config["model"])
-        self.assertEqual(genai_config["model"]["vision"]["filename"], "vision_encoder.onnx")
-        self.assertIn("speech", genai_config["model"])
-        self.assertEqual(genai_config["model"]["speech"]["filename"], "audio_encoder.onnx")
-        self.assertIn("embedding", genai_config["model"])
-        self.assertEqual(genai_config["model"]["embedding"]["filename"], "embedding.onnx")
+        self.check_phi3v_genai_config(output_dir, has_speech=True, speech_filename="audio_encoder.onnx")
 
         np_dtype = np.float16 if precision == "fp16" else np.float32
 
