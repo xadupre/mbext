@@ -63,6 +63,94 @@ class VisionEncoderModel(Model):
         self.make_value(out, self.io_dtype, shape=shape)
         return out
 
+    def make_layer_norm(self, name, root_input, weight, bias, shape, weight_name=None, bias_name=None):
+        """Build a ``LayerNormalization`` node (full LN with weight and bias).
+
+        Unlike :meth:`make_rms_norm` (``SimplifiedLayerNormalization``, no bias),
+        this emits a standard ``LayerNormalization`` that includes both a
+        multiplicative weight (gamma) and an additive bias (beta).
+
+        Parameters
+        ----------
+        name : str
+            Base name for the ONNX node and its output value.  The output
+            value is named ``{name}/output_0``.
+        root_input : str
+            Name of the input value.
+        weight : torch.Tensor
+            Layer-norm weight (gamma), 1-D.
+        bias : torch.Tensor
+            Layer-norm bias (beta), 1-D.
+        shape : list
+            Shape annotation for the output value.
+        weight_name : str, optional
+            Initializer name for the weight tensor.  Defaults to
+            ``"{name}.weight"``.
+        bias_name : str, optional
+            Initializer name for the bias tensor.  Defaults to
+            ``"{name}.bias"``.
+        """
+        w_name = weight_name if weight_name is not None else f"{name}.weight"
+        b_name = bias_name if bias_name is not None else f"{name}.bias"
+        self.make_initializer(weight, w_name, to=self.io_dtype)
+        self.make_initializer(bias, b_name, to=self.io_dtype)
+        out = f"{name}/output_0"
+        self.make_node(
+            "LayerNormalization",
+            inputs=[root_input, w_name, b_name],
+            outputs=[out],
+            name=name,
+            axis=-1,
+            epsilon=self.vis_rms_norm_eps,
+            stash_type=1,
+        )
+        self.make_value(out, self.io_dtype, shape=shape)
+        return out
+
+    def make_gelu_mlp(self, linear1, linear2, root_input, shape, basename):
+        """Build a ``Linear + GELU + Linear`` block with optional biases.
+
+        A common projector pattern in multimodal vision encoders (e.g. Phi-4-multimodal).
+
+        Parameters
+        ----------
+        linear1 : nn.Linear
+            First linear layer.
+        linear2 : nn.Linear
+            Second linear layer.
+        root_input : str
+            Input tensor name.
+        shape : list
+            Shape annotation for intermediate and output tensors.
+        basename : str
+            Base name prefix for ONNX nodes (e.g. ``"/vision/proj"``).
+
+        Returns
+        -------
+        str
+            Output value name.
+        """
+        # Linear 1 + optional bias.
+        out = f"{self.make_matmul(linear1, f'{basename}/linear_1/MatMul', root_input)}/output_0"
+        if linear1.bias is not None:
+            bias_name = f"{basename[1:].replace('/', '.')}.linear_1.bias"
+            self.make_initializer(linear1.bias, bias_name, to=self.io_dtype)
+            out = self.make_add(f"{basename}/linear_1/Add", [out, bias_name], self.io_dtype, shape)
+
+        # GELU activation.
+        gelu_out = f"{basename}/gelu/output_0"
+        self.make_node("Gelu", inputs=[out], outputs=[gelu_out], name=f"{basename}/gelu/Gelu", domain="com.microsoft")
+        self.make_value(gelu_out, self.io_dtype, shape=shape)
+
+        # Linear 2 + optional bias.
+        out = f"{self.make_matmul(linear2, f'{basename}/linear_2/MatMul', gelu_out)}/output_0"
+        if linear2.bias is not None:
+            bias_name = f"{basename[1:].replace('/', '.')}.linear_2.bias"
+            self.make_initializer(linear2.bias, bias_name, to=self.io_dtype)
+            out = self.make_add(f"{basename}/linear_2/Add", [out, bias_name], self.io_dtype, shape)
+
+        return out
+
     def make_silu_gated_mlp(self, layer_id, mlp, root_input, intermediate_shape):
         """Build a SiLU-gated MLP: ``SiLU(gate_proj) * up_proj → down_proj``.
 

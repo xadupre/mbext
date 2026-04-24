@@ -506,7 +506,7 @@ class Phi4MultimodalVisionEncoderModel(VisionEncoderModel):
         self.vis_num_heads = vc.num_attention_heads  # 16
         self.vis_head_dim = vc.hidden_size // vc.num_attention_heads  # 72
         self.vis_attn_scale = float(self.vis_head_dim**-0.5)
-        self.layer_norm_eps = vc.layer_norm_eps  # 1e-6
+        self.vis_rms_norm_eps = vc.layer_norm_eps  # 1e-6
 
         # feature_layer = -2 means we extract the hidden state after
         # layer (num_hidden_layers - 2) = layer 25 (0-indexed).
@@ -552,21 +552,18 @@ class Phi4MultimodalVisionEncoderModel(VisionEncoderModel):
         # Q / K / V projections (with bias).
         q = f"{self.make_matmul(attention.q_proj, f'{b}/q_proj/MatMul', root_input)}/output_0"
         if attention.q_proj.bias is not None:
-            q_bias_name = f"vision.layers.{layer_id}.attn.q_proj.bias"
-            self.make_initializer(attention.q_proj.bias, q_bias_name, to=self.io_dtype)
-            q = self.make_add(f"{b}/q_proj/BiasAdd", [q, q_bias_name], self.io_dtype, [nc, n_p, d])
+            self.make_add_bias(attention.q_proj.bias, f"{b}/q_proj/Add", root_input=q)
+            q = f"{b}/q_proj/Add/output_0"
 
         k = f"{self.make_matmul(attention.k_proj, f'{b}/k_proj/MatMul', root_input)}/output_0"
         if attention.k_proj.bias is not None:
-            k_bias_name = f"vision.layers.{layer_id}.attn.k_proj.bias"
-            self.make_initializer(attention.k_proj.bias, k_bias_name, to=self.io_dtype)
-            k = self.make_add(f"{b}/k_proj/BiasAdd", [k, k_bias_name], self.io_dtype, [nc, n_p, d])
+            self.make_add_bias(attention.k_proj.bias, f"{b}/k_proj/Add", root_input=k)
+            k = f"{b}/k_proj/Add/output_0"
 
         v = f"{self.make_matmul(attention.v_proj, f'{b}/v_proj/MatMul', root_input)}/output_0"
         if attention.v_proj.bias is not None:
-            v_bias_name = f"vision.layers.{layer_id}.attn.v_proj.bias"
-            self.make_initializer(attention.v_proj.bias, v_bias_name, to=self.io_dtype)
-            v = self.make_add(f"{b}/v_proj/BiasAdd", [v, v_bias_name], self.io_dtype, [nc, n_p, d])
+            self.make_add_bias(attention.v_proj.bias, f"{b}/v_proj/Add", root_input=v)
+            v = f"{b}/v_proj/Add/output_0"
 
         # Reshape to [nc, n_patches, n_heads, head_dim] then transpose to [nc, n_heads, n_patches, head_dim].
         qkv_4d = [nc, n_p, nh, hd]
@@ -611,9 +608,8 @@ class Phi4MultimodalVisionEncoderModel(VisionEncoderModel):
         # O projection (with bias).
         o = f"{self.make_matmul(attention.out_proj, f'{b}/out_proj/MatMul', attn_out_3d)}/output_0"
         if attention.out_proj.bias is not None:
-            o_bias_name = f"vision.layers.{layer_id}.attn.out_proj.bias"
-            self.make_initializer(attention.out_proj.bias, o_bias_name, to=self.io_dtype)
-            o = self.make_add(f"{b}/out_proj/BiasAdd", [o, o_bias_name], self.io_dtype, [nc, n_p, d])
+            self.make_add_bias(attention.out_proj.bias, f"{b}/out_proj/Add", root_input=o)
+            o = f"{b}/out_proj/Add/output_0"
 
         self.layernorm_attrs["skip_input"] = o
 
@@ -634,22 +630,15 @@ class Phi4MultimodalVisionEncoderModel(VisionEncoderModel):
         ff = self.vis_intermediate_size
 
         # Layer norm 1.
-        ln1_w = f"vision.layers.{layer_id}.layer_norm1.weight"
-        ln1_b = f"vision.layers.{layer_id}.layer_norm1.bias"
-        ln1_name = f"{b}/layer_norm1/LayerNorm"
-        self.make_initializer(layer.layer_norm1.weight, ln1_w, to=self.io_dtype)
-        self.make_initializer(layer.layer_norm1.bias, ln1_b, to=self.io_dtype)
-        self.make_node(
-            "LayerNormalization",
-            inputs=[root_input, ln1_w, ln1_b],
-            outputs=[f"{ln1_name}/output_0"],
-            name=ln1_name,
-            axis=-1,
-            epsilon=self.layer_norm_eps,
-            stash_type=1,
+        norm1 = self.make_layer_norm(
+            f"{b}/layer_norm1/LayerNorm",
+            root_input,
+            layer.layer_norm1.weight,
+            layer.layer_norm1.bias,
+            shape=[nc, n_p, d],
+            weight_name=f"vision.layers.{layer_id}.layer_norm1.weight",
+            bias_name=f"vision.layers.{layer_id}.layer_norm1.bias",
         )
-        self.make_value(f"{ln1_name}/output_0", self.io_dtype, shape=[nc, n_p, d])
-        norm1 = f"{ln1_name}/output_0"
 
         # Attention.
         self.make_attention(layer_id, layer.self_attn, norm1)
@@ -659,29 +648,21 @@ class Phi4MultimodalVisionEncoderModel(VisionEncoderModel):
         res1 = self.make_add(f"{b}/residual1/Add", [root_input, attn_out], self.io_dtype, [nc, n_p, d])
 
         # Layer norm 2.
-        ln2_w = f"vision.layers.{layer_id}.layer_norm2.weight"
-        ln2_b = f"vision.layers.{layer_id}.layer_norm2.bias"
-        ln2_name = f"{b}/layer_norm2/LayerNorm"
-        self.make_initializer(layer.layer_norm2.weight, ln2_w, to=self.io_dtype)
-        self.make_initializer(layer.layer_norm2.bias, ln2_b, to=self.io_dtype)
-        self.make_node(
-            "LayerNormalization",
-            inputs=[res1, ln2_w, ln2_b],
-            outputs=[f"{ln2_name}/output_0"],
-            name=ln2_name,
-            axis=-1,
-            epsilon=self.layer_norm_eps,
-            stash_type=1,
+        norm2 = self.make_layer_norm(
+            f"{b}/layer_norm2/LayerNorm",
+            res1,
+            layer.layer_norm2.weight,
+            layer.layer_norm2.bias,
+            shape=[nc, n_p, d],
+            weight_name=f"vision.layers.{layer_id}.layer_norm2.weight",
+            bias_name=f"vision.layers.{layer_id}.layer_norm2.bias",
         )
-        self.make_value(f"{ln2_name}/output_0", self.io_dtype, shape=[nc, n_p, d])
-        norm2 = f"{ln2_name}/output_0"
 
         # MLP: fc1 → GELU → fc2 (with optional bias on each).
         fc1_out = f"{self.make_matmul(layer.mlp.fc1, f'{b}/mlp/fc1/MatMul', norm2)}/output_0"
         if layer.mlp.fc1.bias is not None:
-            fc1_bias_name = f"vision.layers.{layer_id}.mlp.fc1.bias"
-            self.make_initializer(layer.mlp.fc1.bias, fc1_bias_name, to=self.io_dtype)
-            fc1_out = self.make_add(f"{b}/mlp/fc1/BiasAdd", [fc1_out, fc1_bias_name], self.io_dtype, [nc, n_p, ff])
+            self.make_add_bias(layer.mlp.fc1.bias, f"{b}/mlp/fc1/Add", root_input=fc1_out)
+            fc1_out = f"{b}/mlp/fc1/Add/output_0"
 
         gelu_out = f"{b}/mlp/gelu/output_0"
         self.make_node("Gelu", inputs=[fc1_out], outputs=[gelu_out], name=f"{b}/mlp/gelu/Gelu", domain="com.microsoft")
@@ -689,9 +670,8 @@ class Phi4MultimodalVisionEncoderModel(VisionEncoderModel):
 
         fc2_out = f"{self.make_matmul(layer.mlp.fc2, f'{b}/mlp/fc2/MatMul', gelu_out)}/output_0"
         if layer.mlp.fc2.bias is not None:
-            fc2_bias_name = f"vision.layers.{layer_id}.mlp.fc2.bias"
-            self.make_initializer(layer.mlp.fc2.bias, fc2_bias_name, to=self.io_dtype)
-            fc2_out = self.make_add(f"{b}/mlp/fc2/BiasAdd", [fc2_out, fc2_bias_name], self.io_dtype, [nc, n_p, d])
+            self.make_add_bias(layer.mlp.fc2.bias, f"{b}/mlp/fc2/Add", root_input=fc2_out)
+            fc2_out = f"{b}/mlp/fc2/Add/output_0"
 
         # Residual 2.
         res2 = self.make_add(f"{b}/residual2/Add", [res1, fc2_out], self.io_dtype, [nc, n_p, d])
@@ -847,27 +827,9 @@ class Phi4MultimodalVisionEncoderModel(VisionEncoderModel):
         Input:  x [n_image_tokens, image_dim_out]   e.g. [545, 1152]
         Output:   [n_image_tokens, text_hidden_size] e.g. [545, 3072]
         """
-        n_tok = self.n_image_tokens  # 545
-        t_hid = self.text_hidden_size  # 3072
-
-        # img_projection_up: Linear(d, t_hid)
-        up_out = f"{self.make_matmul(image_embed.img_projection_up, '/vision/proj/up/MatMul', x)}/output_0"
-        if image_embed.img_projection_up.bias is not None:
-            self.make_initializer(image_embed.img_projection_up.bias, "vision.proj.up.bias", to=self.io_dtype)
-            up_out = self.make_add("/vision/proj/up/BiasAdd", [up_out, "vision.proj.up.bias"], self.io_dtype, [n_tok, t_hid])
-
-        # GELU activation.
-        gelu_out = "/vision/proj/gelu/output_0"
-        self.make_node("Gelu", inputs=[up_out], outputs=[gelu_out], name="/vision/proj/gelu/Gelu", domain="com.microsoft")
-        self.make_value(gelu_out, self.io_dtype, shape=[n_tok, t_hid])
-
-        # img_projection_down: Linear(t_hid, t_hid)
-        down_out = f"{self.make_matmul(image_embed.img_projection_down, '/vision/proj/down/MatMul', gelu_out)}/output_0"
-        if image_embed.img_projection_down.bias is not None:
-            self.make_initializer(image_embed.img_projection_down.bias, "vision.proj.down.bias", to=self.io_dtype)
-            down_out = self.make_add("/vision/proj/down/BiasAdd", [down_out, "vision.proj.down.bias"], self.io_dtype, [n_tok, t_hid])
-
-        return down_out
+        return self.make_gelu_mlp(
+            image_embed.img_projection_up, image_embed.img_projection_down, x, [self.n_image_tokens, self.text_hidden_size], "/vision/proj"
+        )
 
     # ------------------------------------------------------------------
     # Main entry point
