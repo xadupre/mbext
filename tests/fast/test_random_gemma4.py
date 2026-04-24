@@ -3,6 +3,8 @@
 # Licensed under the MIT License.  See License.txt in the project root for
 # license information.
 # --------------------------------------------------------------------------
+import contextlib
+import io
 import unittest
 
 from modelbuilder.ext_test_case import ExtTestCase, hide_stdout, requires_cuda, requires_genai, requires_transformers
@@ -138,6 +140,43 @@ class TestRandomGemma4(ExtTestCase):
     @requires_cuda()
     def test_gemma4_bf16_cuda_greedy_generation(self):
         self.common_gemma4_greedy_generation("bf16", "cuda")
+
+    def test_gemma4_num_kv_shared_layers_warning(self):
+        """Creating a Gemma4Model with num_kv_shared_layers > 0 should print a warning."""
+        import torch
+        from transformers import AutoModelForCausalLM
+
+        from modelbuilder.builder import create_model
+
+        config = self._make_config(num_hidden_layers=2)
+        config.num_kv_shared_layers = 2
+
+        prefix = "test_gemma4_num_kv_shared_layers_warning"
+        model_dir = self.get_model_dir(prefix, clean=True)
+        torch.manual_seed(42)
+        model = AutoModelForCausalLM.from_config(config)
+        model.eval()
+        model.save_pretrained(model_dir)
+        tokenizer = self.make_word_level_tokenizer(bos_token="<bos>", bos_token_id=2, eos_token="</s>", eos_token_id=1)
+        tokenizer.save_pretrained(model_dir)
+
+        output_dir, cache_dir = self.get_dirs(prefix, clean=True)
+
+        captured = io.StringIO()
+        with contextlib.redirect_stdout(captured):
+            create_model(
+                model_name=MODEL_NAME,
+                input_path=model_dir,
+                output_dir=output_dir,
+                precision="fp32",
+                execution_provider="cpu",
+                cache_dir=cache_dir,
+                num_hidden_layers=config.num_hidden_layers,
+            )
+
+        output = captured.getvalue()
+        self.assertIn("num_kv_shared_layers", output)
+        self.assertIn("WARNING", output)
 
     @hide_stdout()
     @requires_genai()
