@@ -231,8 +231,6 @@ class TestMinistral3(ExtTestCase):
           float16).
         * The text decoder produces logits when fed ``inputs_embeds``.
         """
-        import json
-
         import torch
         from transformers import Mistral3ForConditionalGeneration
 
@@ -270,19 +268,10 @@ class TestMinistral3(ExtTestCase):
         # --- Verify ONNX artefacts and genai_config ---
         vision_onnx_path = os.path.join(output_dir, "vision_encoder.onnx")
         text_onnx_path = os.path.join(output_dir, "model.onnx")
-        genai_config_path = os.path.join(output_dir, "genai_config.json")
-        for path in (vision_onnx_path, text_onnx_path, genai_config_path):
+        for path in (vision_onnx_path, text_onnx_path):
             self.assertExists(path)
 
-        with open(genai_config_path) as f:
-            genai_config = json.load(f)
-        self.assertEqual(genai_config["model"]["type"], "phi3v")
-        self.assertIn("vision", genai_config["model"])
-        ve_cfg = genai_config["model"]["vision"]
-        self.assertEqual(ve_cfg["filename"], "vision_encoder.onnx")
-        self.assertEqual(ve_cfg["spatial_merge_size"], spatial_merge_size)
-        self.assertIn("embedding", genai_config["model"])
-        self.assertEqual(genai_config["model"]["embedding"]["filename"], "embedding.onnx")
+        self.check_phi3v_genai_config(output_dir, spatial_merge_size=spatial_merge_size)
 
         # --- Vision encoder: pixel_values dtype follows model precision ---
         # io_dtype = float16 for fp16, float32 for fp32/int4.
@@ -290,12 +279,10 @@ class TestMinistral3(ExtTestCase):
         num_patches_per_side = image_size // patch_size
         expected_merged_patches = (num_patches_per_side**2) // (spatial_merge_size**2)
 
-        vision_sess = self.check_ort(vision_onnx_path, provider=provider)
         pixel_values = np.zeros((1, vision_config.num_channels, image_size, image_size), dtype=np_dtype)
-        vision_outputs = vision_sess.run(None, {"pixel_values": pixel_values})
-        self.assertIsNotNone(vision_outputs[0])
-        self.assertEqual(vision_outputs[0].shape[0], expected_merged_patches)
-        self.assertEqual(vision_outputs[0].shape[1], text_config.hidden_size)
+        self.run_vision_encoder_ort_check(
+            vision_onnx_path, pixel_values, (expected_merged_patches, text_config.hidden_size), provider=provider
+        )
 
         # --- Text decoder: inputs_embeds dtype follows model precision ---
         # int4/cpu → float32 (io_dtype=FLOAT), fp16 → float16
@@ -305,21 +292,15 @@ class TestMinistral3(ExtTestCase):
         with torch.no_grad():
             inputs_embeds = model.model.language_model.embed_tokens(input_ids).numpy().astype(np_dtype)
 
-        text_sess = self.check_ort(text_onnx_path, provider=provider)
-        onnx_input_names = {inp.name for inp in text_sess.get_inputs()}
-        head_size = text_config.head_dim
-        onnx_feed = {
-            "inputs_embeds": inputs_embeds,
-            "attention_mask": np.ones((batch_size, seq_len), dtype=np.int64),
-            "position_ids": np.arange(seq_len, dtype=np.int64).reshape(batch_size, seq_len),
-        }
-        for i in range(num_hidden_layers):
-            onnx_feed[f"past_key_values.{i}.key"] = np.zeros((batch_size, text_config.num_key_value_heads, 0, head_size), dtype=np_dtype)
-            onnx_feed[f"past_key_values.{i}.value"] = np.zeros((batch_size, text_config.num_key_value_heads, 0, head_size), dtype=np_dtype)
-        onnx_feed = {k: v for k, v in onnx_feed.items() if k in onnx_input_names}
-
-        onnx_outputs = text_sess.run(None, onnx_feed)
-        self.assertIsNotNone(onnx_outputs[0])
+        self.run_inputs_embeds_decoder_check(
+            text_onnx_path,
+            inputs_embeds,
+            num_hidden_layers=num_hidden_layers,
+            num_key_value_heads=text_config.num_key_value_heads,
+            head_size=text_config.head_dim,
+            precision=precision,
+            provider=provider,
+        )
 
     @hide_stdout()
     def test_ministral3_conditional_generation_fp32_cpu_random_weights(self):

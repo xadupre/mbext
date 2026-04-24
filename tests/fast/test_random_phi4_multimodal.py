@@ -3,7 +3,6 @@
 # Licensed under the MIT License.  See License.txt in the project root for
 # license information.
 # --------------------------------------------------------------------------
-import json
 import os
 import unittest
 
@@ -215,29 +214,19 @@ class TestPhi4Multimodal(ExtTestCase):
         vision_onnx = os.path.join(output_dir, "vision_encoder.onnx")
         embed_onnx = os.path.join(output_dir, "embedding.onnx")
         text_onnx = os.path.join(output_dir, "model.onnx")
-        genai_cfg_path = os.path.join(output_dir, "genai_config.json")
-        for path in (vision_onnx, embed_onnx, text_onnx, genai_cfg_path):
+        for path in (vision_onnx, embed_onnx, text_onnx):
             self.assertExists(path)
 
         # --- genai_config.json structure ---
-        with open(genai_cfg_path) as f:
-            genai_cfg = json.load(f)
-        self.assertEqual(genai_cfg["model"]["type"], "phi3v")
-        self.assertIn("vision", genai_cfg["model"])
-        self.assertEqual(genai_cfg["model"]["vision"]["filename"], "vision_encoder.onnx")
-        self.assertIn("embedding", genai_cfg["model"])
-        self.assertEqual(genai_cfg["model"]["embedding"]["filename"], "embedding.onnx")
+        self.check_phi3v_genai_config(output_dir)
 
         # --- Vision encoder ORT forward pass ---
         # The vision encoder pixel_values dtype follows io_dtype (float16 for
         # fp16 models, float32 for fp32/int4 models).
         # n_cs = 2 → n_image_tokens = 2*3 + 1 + 2*3 = 13
         np_dtype = self.get_input_np_dtype(precision)
-        vis_sess = self.check_ort(vision_onnx, provider=provider)
         pixel_values = np.zeros((2, 3, 56, 56), dtype=np_dtype)
-        vis_out = vis_sess.run(None, {"pixel_values": pixel_values})
-        self.assertIsNotNone(vis_out[0])
-        self.assertEqual(vis_out[0].shape, (13, cfg.hidden_size))
+        vis_features = self.run_vision_encoder_ort_check(vision_onnx, pixel_values, (13, cfg.hidden_size), provider=provider)
 
         # --- Text decoder ORT forward pass ---
         batch_size, seq_len = 1, 5
@@ -245,21 +234,15 @@ class TestPhi4Multimodal(ExtTestCase):
         with torch.no_grad():
             inputs_embeds = model.model.embed_tokens(input_ids).numpy().astype(np_dtype)
 
-        text_sess = self.check_ort(text_onnx, provider=provider)
-        onnx_inputs = {inp.name for inp in text_sess.get_inputs()}
-        num_kv_heads = cfg.num_key_value_heads
-        head_dim = cfg.hidden_size // cfg.num_attention_heads
-        feed = {
-            "inputs_embeds": inputs_embeds,
-            "attention_mask": np.ones((batch_size, seq_len), dtype=np.int64),
-            "position_ids": np.arange(seq_len, dtype=np.int64).reshape(batch_size, seq_len),
-        }
-        for i in range(cfg.num_hidden_layers):
-            feed[f"past_key_values.{i}.key"] = np.zeros((batch_size, num_kv_heads, 0, head_dim), dtype=np_dtype)
-            feed[f"past_key_values.{i}.value"] = np.zeros((batch_size, num_kv_heads, 0, head_dim), dtype=np_dtype)
-        feed = {k: v for k, v in feed.items() if k in onnx_inputs}
-        text_out = text_sess.run(None, feed)
-        self.assertIsNotNone(text_out[0])
+        self.run_inputs_embeds_decoder_check(
+            text_onnx,
+            inputs_embeds,
+            num_hidden_layers=cfg.num_hidden_layers,
+            num_key_value_heads=cfg.num_key_value_heads,
+            head_size=cfg.hidden_size // cfg.num_attention_heads,
+            precision=precision,
+            provider=provider,
+        )
 
         # --- Embedding model ORT forward pass ---
         embed_sess = self.check_ort(embed_onnx, provider=provider)
@@ -267,7 +250,7 @@ class TestPhi4Multimodal(ExtTestCase):
         n_image_tokens = 13
         input_ids_with_img = np.array([[image_token_id] * n_image_tokens], dtype=np.int64)
         # image_features dtype must match the embedding model's expected I/O dtype
-        image_features = vis_out[0].astype(np_dtype)
+        image_features = vis_features.astype(np_dtype)
         embed_out = embed_sess.run(None, {"input_ids": input_ids_with_img, "image_features": image_features})
         self.assertIsNotNone(embed_out[0])
         self.assertEqual(embed_out[0].shape, (batch_size, n_image_tokens, cfg.hidden_size))
