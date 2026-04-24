@@ -4,6 +4,9 @@
 # license information.
 # --------------------------------------------------------------------------
 
+import numpy as np
+import onnx_ir as ir
+
 from .base import Model
 
 
@@ -19,6 +22,8 @@ class VisionEncoderModel(Model):
     * :meth:`make_patch_embedding` — Conv2d → Transpose NCHW→NHWC → Reshape.
     * :meth:`make_gelu_mlp` — ``Linear + GELU + Linear`` projector.
     * :meth:`make_silu_gated_mlp` — ``SiLU(gate) * up → down`` block.
+    * :meth:`make_vis_proj` — ``MatMul`` + optional bias ``Add`` projection.
+    * :meth:`make_vis_sdpa` — Scaled dot-product attention (Q @ K^T * scale [+ mask] → softmax → @ V).
 
     Subclasses override :meth:`make_attention`, :meth:`make_layer`, and
     :meth:`make_model` with architecture-specific logic.
@@ -249,3 +254,93 @@ class VisionEncoderModel(Model):
             self.make_add_bias(mlp.down_proj.bias, f"{b}/down_proj/Add", root_input=down)
             return f"{b}/down_proj/Add/output_0"
         return down
+
+    def make_vis_proj(self, linear, matmul_name, root_input):
+        """Build a linear projection (MatMul) with an optional bias Add.
+
+        Common pattern used by all vision-encoder attention blocks for Q, K, V,
+        and O projections.
+
+        Parameters
+        ----------
+        linear : nn.Linear
+            Linear layer providing the weight (and optional bias).
+        matmul_name : str
+            ONNX node name for the MatMul (e.g. ``"{b}/q_proj/MatMul"``).
+            When a bias is present, the Add node is named by replacing
+            ``/MatMul`` with ``/Add`` in this string.
+        root_input : str
+            Name of the input tensor.
+
+        Returns
+        -------
+        str
+            Output tensor name after the projection (and optional bias add).
+        """
+        out = f"{self.make_matmul(linear, matmul_name, root_input)}/output_0"
+        if linear.bias is not None:
+            add_name = matmul_name.replace("/MatMul", "/Add")
+            self.make_add_bias(linear.bias, add_name, root_input=out)
+            out = f"{add_name}/output_0"
+        return out
+
+    def make_vis_sdpa(self, b, q_t, k_T, v_t, scale, attn_shape, out_shape, causal_mask_name=None):
+        """Build scaled dot-product attention for vision encoders.
+
+        Computes ``softmax(Q @ K^T * scale [+ mask]) @ V``.
+
+        Parameters
+        ----------
+        b : str
+            Base prefix for all ONNX node names in this attention block
+            (e.g. ``"/vision/layers.0/attn"``).
+        q_t : str
+            Query tensor name after reshape/transpose.
+        k_T : str
+            Key tensor already transposed for the inner matmul
+            (last two dims are ``[head_dim, n_patches]``).
+        v_t : str
+            Value tensor name.
+        scale : float
+            Attention scale factor (typically ``head_dim ** -0.5``).
+        attn_shape : list
+            Shape annotation for the attention weight matrix
+            (e.g. ``[batch, n_heads, n_patches, n_patches]``).
+        out_shape : list
+            Shape annotation for the output tensor
+            (e.g. ``[batch, n_heads, n_patches, head_dim]``).
+        causal_mask_name : str, optional
+            Name of a pre-built causal-mask initializer to add to the
+            scaled attention weights before the softmax.  Pass ``None``
+            (default) for encoder-style full attention.
+
+        Returns
+        -------
+        str
+            Output tensor name of shape ``out_shape``.
+        """
+        np_dtype = {ir.DataType.FLOAT: np.float32, ir.DataType.FLOAT16: np.float16}.get(self.io_dtype, np.float32)
+
+        # Q @ K^T → raw attention weights.
+        attn_w_out = f"{b}/attn_w/MatMul/output_0"
+        self.make_node("MatMul", inputs=[q_t, k_T], outputs=[attn_w_out], name=f"{b}/attn_w/MatMul")
+        self.make_value(attn_w_out, self.io_dtype, shape=attn_shape)
+
+        # Scale.
+        scale_name = f"{b}/attn_scale"
+        self.make_initializer(np.array(scale, dtype=np_dtype), scale_name)
+        attn_ws = self.make_mul(f"{b}/attn_scale_mul", [attn_w_out, scale_name], self.io_dtype, attn_shape)
+
+        # Optional causal mask.
+        if causal_mask_name is not None:
+            attn_ws = self.make_add(f"{b}/causal_add", [attn_ws, causal_mask_name], self.io_dtype, attn_shape)
+
+        # Softmax.
+        attn_probs = self.make_softmax(f"{b}/attn_softmax", attn_ws, self.io_dtype, attn_shape)
+
+        # Probs @ V → attention output.
+        attn_out_t = f"{b}/attn_out/MatMul/output_0"
+        self.make_node("MatMul", inputs=[attn_probs, v_t], outputs=[attn_out_t], name=f"{b}/attn_out/MatMul")
+        self.make_value(attn_out_t, self.io_dtype, shape=out_shape)
+
+        return attn_out_t
