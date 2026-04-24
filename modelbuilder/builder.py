@@ -157,6 +157,12 @@ def create_model(model_name, input_path, output_dir, precision, execution_provid
 
     # List architecture options in alphabetical order
     if config.architectures[0] in ("DeepseekV3ForCausalLM", "DeepseekV4ForCausalLM"):
+        # Both DeepseekV3ForCausalLM (DeepSeek-V3) and DeepseekV4ForCausalLM
+        # (DeepSeek-V4-Flash) share the same MLA+MoE architecture and identical
+        # HuggingFace config fields, so a single builder handles both.
+        # Note: DeepseekV4ForCausalLM is not yet registered in the transformers
+        # model registry (as of transformers 5.6.2); use deepseek_v3 model_type
+        # with architectures=["DeepseekV4ForCausalLM"] to load V4 configs.
         from .builders.deepseek import DeepSeekV3Model
 
         onnx_model = DeepSeekV3Model(config, io_dtype, onnx_dtype, execution_provider, cache_dir, extra_options)

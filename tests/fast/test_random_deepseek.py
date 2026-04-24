@@ -66,6 +66,10 @@ def _make_tiny_deepseek_config(**overrides):
         eos_token_id=2,
     )
     cfg_kwargs.update(overrides)
+    # Always use the "deepseek_v3" model_type regardless of the architecture
+    # string.  DeepseekV4ForCausalLM is not yet registered in the transformers
+    # model registry, so its config must be built via deepseek_v3 and then the
+    # architectures field overridden (see test_fast_discrepancy_deepseek_v4_*).
     return AutoConfig.for_model("deepseek_v3", **cfg_kwargs)
 
 
