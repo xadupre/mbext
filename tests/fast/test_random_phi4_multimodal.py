@@ -22,7 +22,8 @@ def _make_small_phi4mm_config():
     second-to-last layer (layer index 2).
 
     The audio config is intentionally small:
-    * ``input_size=16`` mel bins → ``nemo_final_size=2`` (16/2/2/2).
+    * ``input_size=16`` mel bins → ``nemo_final_size=2`` (frequency dimension
+      after 3 stages of stride-2 Conv2d: 16 → 8 → 4 → 2).
     * ``num_blocks=2`` Conformer layers.
     * All hidden dims scaled to 32.
     """
@@ -259,11 +260,12 @@ class TestPhi4Multimodal(ExtTestCase):
         audio_input = torch.randn(1, n_frames, cfg.audio_config.input_size)
 
         # Reference PyTorch forward pass.
+        # Use tanh GELU approximation to match the com.microsoft Gelu ONNX op.
         audio_embed = model.model.embed_tokens_extend.audio_embed
         with torch.no_grad():
             hidden = audio_embed.encoder(audio_input, mask=None)  # [1, T/8, d]
             up = audio_embed.up_proj_for_speech(hidden)  # [1, T/8, text_h]
-            up = torch.nn.functional.gelu(up)  # exact GELU
+            up = torch.nn.functional.gelu(up, approximate="tanh")  # tanh approx matches ONNX Gelu
             pt_result = audio_embed.down_proj_for_speech(up)[0].numpy()  # [T/8, text_h]
 
         onnx_result = sess.run(None, {"audio_features": audio_input.numpy()})[0]

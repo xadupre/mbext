@@ -1077,7 +1077,10 @@ class Phi4MultimodalAudioEncoderModel(VisionEncoderModel):
         # Split into gate and up: each [1, n, mid]
         split_g = f"{name}/Split/output_0"
         split_u = f"{name}/Split/output_1"
-        self.make_node("Split", inputs=[combined], outputs=[split_g, split_u], name=f"{name}/Split", axis=-1, num_outputs=2)
+        split_sizes = ir.Tensor(np.array([mid, mid], dtype=np.int64), name=f"{name}/split_sizes")
+        self.make_node("Constant", inputs=[], outputs=[f"{name}/split_sizes"], name=f"{name}/split_sizes/Constant", value=split_sizes)
+        self.make_value(f"{name}/split_sizes", ir.DataType.INT64, shape=[2])
+        self.make_node("Split", inputs=[combined, f"{name}/split_sizes"], outputs=[split_g, split_u], name=f"{name}/Split", axis=-1)
         self.make_value(split_g, self.io_dtype, shape=[1, None, mid])
         self.make_value(split_u, self.io_dtype, shape=[1, None, mid])
 
@@ -1130,7 +1133,12 @@ class Phi4MultimodalAudioEncoderModel(VisionEncoderModel):
         # Split: [1, ep*2, n] → left [1, ep, n], right [1, ep, n]
         split_l = f"{name}/Split/output_0"
         split_r = f"{name}/Split/output_1"
-        self.make_node("Split", inputs=[conv_out], outputs=[split_l, split_r], name=f"{name}/Split", axis=1, num_outputs=2)
+        glu_split_sizes = ir.Tensor(np.array([ep, ep], dtype=np.int64), name=f"{name}/glu_split_sizes")
+        self.make_node(
+            "Constant", inputs=[], outputs=[f"{name}/glu_split_sizes"], name=f"{name}/glu_split_sizes/Constant", value=glu_split_sizes
+        )
+        self.make_value(f"{name}/glu_split_sizes", ir.DataType.INT64, shape=[2])
+        self.make_node("Split", inputs=[conv_out, f"{name}/glu_split_sizes"], outputs=[split_l, split_r], name=f"{name}/Split", axis=1)
         self.make_value(split_l, self.io_dtype, shape=[1, ep, None])
         self.make_value(split_r, self.io_dtype, shape=[1, ep, None])
 
@@ -1192,7 +1200,9 @@ class Phi4MultimodalAudioEncoderModel(VisionEncoderModel):
         )
         dw_out = f"{name}/dw_conv/output_0"
 
-        # Causal trim: slice off last (k-1) elements on the time axis
+        # Causal trim: the DW conv uses symmetric padding [pad, pad], producing
+        # n + (k-1) output frames.  Remove the right-padded (k-1) tail to obtain
+        # exactly n frames, emulating left-only (causal) padding.
         dw_trimmed = self.make_slice(f"{name}/dw_trim", dw_out, self.io_dtype, [1, ep, None], starts=[0], ends=[-(k - 1)], axes=[2])
 
         # PW Conv1d: [1, ep, n] → [1, ds, n]
@@ -1420,7 +1430,8 @@ class Phi4MultimodalAudioEncoderModel(VisionEncoderModel):
         # 5. Projection: up_proj_for_speech + GELU + down_proj_for_speech
         # up_proj: [1, n, d] → [1, n, th]
         up = self._make_audio_linear("/audio/proj/up", audio_embed.up_proj_for_speech, hidden, [1, None, th])
-        # GELU (com.microsoft domain, tanh approximation)
+        # GELU: com.microsoft Gelu uses the tanh approximation of GELU (same as
+        # torch.nn.functional.gelu(..., approximate='tanh')).
         gelu_out = "/audio/proj/gelu/output_0"
         self.make_node("Gelu", inputs=[up], outputs=[gelu_out], name="/audio/proj/gelu/Gelu", domain="com.microsoft")
         self.make_value(gelu_out, self.io_dtype, shape=[1, None, th])
