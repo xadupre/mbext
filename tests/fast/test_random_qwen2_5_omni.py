@@ -499,7 +499,7 @@ class TestRandomQwen25OmniVision(ExtTestCase):
         log_data = dict(
             precision=precision,
             model_id=QWEN2_5_OMNI_MODEL_NAME,
-            experiment="genai_multimodal_text_generate",
+            experiment="genai_pipeline_load",
             provider=provider,
             test=prefix,
             input_type="text",
