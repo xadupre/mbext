@@ -185,6 +185,7 @@ class VisionEncoderModel(Model):
         d = self.vis_hidden_size
         n_p = self.n_patches
         bs = list(batch_shape)
+        nb = len(bs)  # number of batch dimensions
 
         self.make_initializer(conv_weight, weight_name, to=self.io_dtype)
         self.make_conv(
@@ -200,8 +201,12 @@ class VisionEncoderModel(Model):
         )
         conv_out = f"{node_prefix}/Conv/output_0"
 
-        transposed = self.make_transpose(f"{node_prefix}/Transpose", conv_out, self.io_dtype, bs + [n_h, n_w, d], perm=[0, 2, 3, 1])
-        patch_embed = self.make_reshape(f"{node_prefix}/Reshape", [transposed, bs + [n_p, d]], self.io_dtype, bs + [n_p, d])
+        # Permute NCHW → NHWC, preserving all leading batch dimensions.
+        # For batch_shape=[nc]: [0, 2, 3, 1]; for batch_shape=[a, b]: [0, 1, 3, 4, 2].
+        perm = list(range(nb)) + [nb + 1, nb + 2, nb]
+        transposed = self.make_transpose(f"{node_prefix}/Transpose", conv_out, self.io_dtype, bs + [n_h, n_w, d], perm=perm)
+        out_shape = bs + [n_p, d]
+        patch_embed = self.make_reshape(f"{node_prefix}/Reshape", [transposed, out_shape], self.io_dtype, out_shape)
         return patch_embed
 
     def make_silu_gated_mlp(self, layer_id, mlp, root_input, intermediate_shape):
