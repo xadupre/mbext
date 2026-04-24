@@ -690,31 +690,14 @@ class Phi4MultimodalVisionEncoderModel(VisionEncoderModel):
         nc = self.n_crops
         n_p = self.n_patches
         d = self.vis_hidden_size
-        n_h = n_w = self.n_patches_per_side
 
         # Graph input.
         pixel_values_in = self.make_value("pixel_values", self.io_dtype, shape=[nc, self.num_channels, self.crop_size, self.crop_size])
         self.graph.inputs.append(pixel_values_in)
 
-        # Conv2d: [nc, 3, H, W] → [nc, d, n_h, n_w].
-        conv_w = "vision.embeddings.patch_embedding.weight"
-        self.make_initializer(vision_embed.patch_embedding.weight, conv_w, to=self.io_dtype)
-        self.make_conv(
-            "/vision/patch_embed/Conv",
-            ["pixel_values", conv_w],
-            self.io_dtype,
-            [nc, d, n_h, n_w],
-            dilations=[1, 1],
-            group=1,
-            kernel_shape=[self.patch_size, self.patch_size],
-            pads=[0, 0, 0, 0],
-            strides=[self.patch_size, self.patch_size],
+        patch_embed = self.make_patch_embedding(
+            "pixel_values", vision_embed.patch_embedding.weight, "vision.embeddings.patch_embedding.weight", [nc]
         )
-        conv_out = "/vision/patch_embed/Conv/output_0"
-
-        # Flatten NCHW → NHWC → merge spatial: [nc, n_h*n_w, d].
-        transposed = self.make_transpose("/vision/patch_embed/Transpose", conv_out, self.io_dtype, [nc, n_h, n_w, d], perm=[0, 2, 3, 1])
-        patch_embed = self.make_reshape("/vision/patch_embed/Reshape", [transposed, [nc, n_p, d]], self.io_dtype, [nc, n_p, d])
 
         # Fixed position embeddings (no interpolation for fixed crop_size).
         # shape: [1, n_patches, d] broadcast-added to [nc, n_patches, d].

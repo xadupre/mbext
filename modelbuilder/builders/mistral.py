@@ -370,36 +370,8 @@ class Ministral3VisionEncoderModel(VisionEncoderModel):
 
         Returns the value name of shape [1, n_patches, vis_hidden_size].
         """
-        # Conv2d weights: [hidden_size, in_channels, patch_size, patch_size]
-        conv_w = "vision.patch_conv.weight"
-        self.make_initializer(vt.patch_conv.weight, conv_w, to=self.io_dtype)
-
-        n_h = n_w = self.n_patches_per_side
-        self.make_conv(
-            "/vision/patch_conv/Conv",
-            ["pixel_values", conv_w],
-            self.io_dtype,
-            [1, self.vis_hidden_size, n_h, n_w],
-            dilations=[1, 1],
-            group=1,
-            kernel_shape=[self.patch_size, self.patch_size],
-            pads=[0, 0, 0, 0],
-            strides=[self.patch_size, self.patch_size],
-        )
-        conv_out = "/vision/patch_conv/Conv/output_0"
-
-        # Transpose NCHW→NHWC: [1, hidden_size, n_h, n_w] → [1, n_h, n_w, hidden_size]
-        # then Reshape to merge spatial dims: → [1, n_patches, hidden_size].
-        # Transpose-before-Reshape avoids a rank-changing Reshape before a Transpose,
-        # which can confuse graph optimisers.
-        transposed = self.make_transpose(
-            "/vision/patch_embed/Transpose", conv_out, self.io_dtype, [1, n_h, n_w, self.vis_hidden_size], perm=[0, 2, 3, 1]
-        )
-        patch_embed = self.make_reshape(
-            "/vision/patch_embed/Reshape",
-            [transposed, [1, self.n_patches, self.vis_hidden_size]],
-            self.io_dtype,
-            [1, self.n_patches, self.vis_hidden_size],
+        patch_embed = self.make_patch_embedding(
+            "pixel_values", vt.patch_conv.weight, "vision.patch_conv.weight", [1], node_prefix="/vision/patch_conv"
         )
 
         # ln_pre (SimplifiedLayerNormalization)

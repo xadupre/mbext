@@ -15,6 +15,9 @@ class VisionEncoderModel(Model):
     ``Qwen25OmniVisionEncoderModel`` (Qwen2.5-Omni visual tower):
 
     * :meth:`make_rms_norm` — ``SimplifiedLayerNormalization`` node.
+    * :meth:`make_layer_norm` — ``LayerNormalization`` node (with bias).
+    * :meth:`make_patch_embedding` — Conv2d → Transpose NCHW→NHWC → Reshape.
+    * :meth:`make_gelu_mlp` — ``Linear + GELU + Linear`` projector.
     * :meth:`make_silu_gated_mlp` — ``SiLU(gate) * up → down`` block.
 
     Subclasses override :meth:`make_attention`, :meth:`make_layer`, and
@@ -150,6 +153,56 @@ class VisionEncoderModel(Model):
             out = self.make_add(f"{basename}/linear_2/Add", [out, bias_name], self.io_dtype, shape)
 
         return out
+
+    def make_patch_embedding(self, pixel_values_name, conv_weight, weight_name, batch_shape, node_prefix="/vision/patch_embed"):
+        """Build a Conv2d patch embedding: NCHW → Transpose NHWC → Reshape.
+
+        Shared by vision encoders that embed image patches with a strided
+        convolution followed by a reshape to sequence form.
+
+        Parameters
+        ----------
+        pixel_values_name : str
+            Name of the input tensor (already registered in the graph).
+        conv_weight : torch.Tensor
+            Convolution weight of shape
+            ``[out_channels, in_channels, patch_size, patch_size]``.
+        weight_name : str
+            Initializer name to use for the convolution weight.
+        batch_shape : list of int
+            Leading batch dimensions, e.g. ``[1]`` for a single crop or
+            ``[n_crops]`` for multi-crop models.
+        node_prefix : str, optional
+            Common prefix for ONNX node and value names.  Defaults to
+            ``"/vision/patch_embed"``.
+
+        Returns
+        -------
+        str
+            Output value name of shape ``[*batch_shape, n_patches, vis_hidden_size]``.
+        """
+        n_h = n_w = self.n_patches_per_side
+        d = self.vis_hidden_size
+        n_p = self.n_patches
+        bs = list(batch_shape)
+
+        self.make_initializer(conv_weight, weight_name, to=self.io_dtype)
+        self.make_conv(
+            f"{node_prefix}/Conv",
+            [pixel_values_name, weight_name],
+            self.io_dtype,
+            bs + [d, n_h, n_w],
+            dilations=[1, 1],
+            group=1,
+            kernel_shape=[self.patch_size, self.patch_size],
+            pads=[0, 0, 0, 0],
+            strides=[self.patch_size, self.patch_size],
+        )
+        conv_out = f"{node_prefix}/Conv/output_0"
+
+        transposed = self.make_transpose(f"{node_prefix}/Transpose", conv_out, self.io_dtype, bs + [n_h, n_w, d], perm=[0, 2, 3, 1])
+        patch_embed = self.make_reshape(f"{node_prefix}/Reshape", [transposed, bs + [n_p, d]], self.io_dtype, bs + [n_p, d])
+        return patch_embed
 
     def make_silu_gated_mlp(self, layer_id, mlp, root_input, intermediate_shape):
         """Build a SiLU-gated MLP: ``SiLU(gate_proj) * up_proj → down_proj``.
