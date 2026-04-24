@@ -3,7 +3,10 @@
 # Licensed under the MIT License.  See License.txt in the project root for
 # license information.
 # --------------------------------------------------------------------------
-"""Builder for DeepSeek-V3 / DeepSeek-V4-Flash (DeepseekV3ForCausalLM).
+"""Builder for DeepSeek-V3 / DeepSeek-V4-Flash (DeepseekV3ForCausalLM / DeepseekV4ForCausalLM).
+
+Both architectures share the same MLA+MoE design and the same HuggingFace config
+fields, so a single builder handles both.
 
 Architecture highlights:
 * Multi-head Latent Attention (MLA): compressed KV via low-rank projection.
@@ -15,6 +18,12 @@ Architecture highlights:
 * MoE FFN for layers with index >= first_k_dense_replace (with shared expert).
 * Dense MLP for the first first_k_dense_replace layers.
 * Interleaved RoPE applied only to the qk_rope_head_dim dimensions.
+
+Note on fp8/fp4: DeepSeek's proprietary inference/model.py uses fp8/fp4 quantized
+kernels for their in-house CUDA inference engine.  The HuggingFace checkpoints
+store weights as standard bfloat16, and the transformers library exposes them as
+ordinary PyTorch tensors.  This builder exports ONNX from those float weights;
+fp8/fp4 quantization is not required and is not applied here.
 
 Note: The ORT MoE fused kernel uses softmax-based routing, which is an
 approximation of DeepSeek's sigmoid-based grouped-topk routing.  The model

@@ -156,7 +156,7 @@ def create_model(model_name, input_path, output_dir, precision, execution_provid
     config_only = "config_only" in extra_options
 
     # List architecture options in alphabetical order
-    if config.architectures[0] == "DeepseekV3ForCausalLM":
+    if config.architectures[0] in ("DeepseekV3ForCausalLM", "DeepseekV4ForCausalLM"):
         from .builders.deepseek import DeepSeekV3Model
 
         onnx_model = DeepSeekV3Model(config, io_dtype, onnx_dtype, execution_provider, cache_dir, extra_options)

@@ -7,8 +7,17 @@
 
 These tests use a tiny synthetic config to validate that the builder can
 export an ONNX model and that PyTorch vs ONNX logit discrepancies are within
-acceptable tolerances.  The architecture exercised is the same one used by
-``deepseek-ai/DeepSeek-V4-Flash`` (``DeepseekV3ForCausalLM``).
+acceptable tolerances.
+
+Architecture strings dispatched to the same builder (DeepSeekV3Model):
+  - ``DeepseekV3ForCausalLM`` (DeepSeek-V3 / deepseek_v3 transformers model type)
+  - ``DeepseekV4ForCausalLM`` (DeepSeek-V4-Flash — same MLA+MoE structure as V3)
+
+Note: ``DeepseekV4ForCausalLM`` is not yet registered in the transformers
+model registry, so the synthetic config is created with
+``deepseek_v3`` as the ``model_type`` and the architecture string is
+patched afterwards.  This exercises the builder dispatch path for V4 without
+requiring a separate registered config class.
 """
 
 import unittest
@@ -61,11 +70,11 @@ def _make_tiny_deepseek_config(**overrides):
 
 
 class TestDeepSeekV3(ExtTestCase):
-    def common_fast_deepseek_random_weights(self, precision, provider):
+    def common_fast_deepseek_random_weights(self, precision, provider, arch="DeepseekV3ForCausalLM"):
         from transformers import AutoModelForCausalLM
 
         num_hidden_layers = 3
-        config = _make_tiny_deepseek_config(num_hidden_layers=num_hidden_layers)
+        config = _make_tiny_deepseek_config(num_hidden_layers=num_hidden_layers, architectures=[arch])
         # qk_head_dim = qk_nope + qk_rope = 16; used as head_size for KV cache
         kv_head_size = config.qk_head_dim  # = 16
 
@@ -107,6 +116,13 @@ class TestDeepSeekV3(ExtTestCase):
     @requires_cuda()
     def test_fast_discrepancy_deepseek_bf16_cuda(self):
         self.common_fast_deepseek_random_weights("bf16", "cuda")
+
+    @hide_stdout()
+    def test_fast_discrepancy_deepseek_v4_dispatch_fp32_cpu(self):
+        # Verify that DeepseekV4ForCausalLM dispatches to the same builder.
+        # DeepseekV4ForCausalLM is not yet in the transformers registry, so we
+        # create the config via deepseek_v3 and patch the architecture string.
+        self.common_fast_deepseek_random_weights("fp32", "cpu", arch="DeepseekV4ForCausalLM")
 
 
 if __name__ == "__main__":
