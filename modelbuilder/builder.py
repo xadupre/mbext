@@ -308,6 +308,20 @@ def create_model(model_name, input_path, output_dir, precision, execution_provid
         from .builders.phi import Phi4MMModel
 
         onnx_model = Phi4MMModel(config, io_dtype, onnx_dtype, execution_provider, cache_dir, extra_options)
+    elif config.architectures[0] == "Phi4MultimodalForCausalLM":
+        if extra_options.get("multimodal", False):
+            from .builders.phi import Phi4MultimodalConditionalGenerationModel
+
+            onnx_model = Phi4MultimodalConditionalGenerationModel(
+                config, io_dtype, onnx_dtype, execution_provider, cache_dir, extra_options
+            )
+        else:
+            print("WARNING: This is only generating the text component of the model.")
+            print("Use --extra_options multimodal=true to export the full vision+embedding+text pipeline.")
+            extra_options["exclude_embeds"] = True
+            from .builders.phi import Phi4MultimodalTextModel
+
+            onnx_model = Phi4MultimodalTextModel(config, io_dtype, onnx_dtype, execution_provider, cache_dir, extra_options)
     elif config.architectures[0] == "Qwen2ForCausalLM":
         from .builders.qwen import QwenModel
 

@@ -3,10 +3,17 @@
 # Licensed under the MIT License.  See License.txt in the project root for
 # license information.
 # --------------------------------------------------------------------------
+import copy
+import json
+import os
+
+import numpy as np
 import onnx_ir as ir
 import torch
 
 from .base import Model
+from .base_embedding import EmbeddingModel
+from .base_vision import VisionEncoderModel
 from .mistral import MistralModel
 
 
@@ -437,3 +444,530 @@ class Phi4MMModel(Phi3VModel):
         layer.mlp.down_proj.scaling["default"] = layer.mlp.down_proj.scaling["vision"]
 
         super().make_layer(layer_id, layer)
+
+
+class Phi4MultimodalVisionEncoderModel(VisionEncoderModel):
+    """ONNX graph builder for the Phi-4-multimodal-instruct vision encoder.
+
+    Exports the vision tower (patch embedding + transformer blocks + AvgPool2d
+    compression + crop merging + projection) to ``vision_encoder.onnx``.
+
+    For a fixed 448×448 image the processor creates exactly two crops:
+    one sub-crop and one global crop, both of size 448×448.
+
+    Inputs
+    ------
+    pixel_values : float [2, 3, 448, 448]
+        Pre-processed pixel values for all crops (sub-crop first, then global).
+
+    Outputs
+    -------
+    image_features : io_dtype [num_image_tokens, text_hidden_size]
+        Merged and projected image features for injection into text embeddings.
+        For a 448×448 image: num_image_tokens = 545.
+    """
+
+    def __init__(self, config, io_dtype, onnx_dtype, ep, cache_dir, extra_options):
+        vc = config.vision_config
+
+        # Patch a copy of config with vision encoder attributes so that
+        # Model.__init__ can initialise the shared graph/values state.
+        vis_config = copy.deepcopy(config)
+        vis_config.hidden_size = vc.hidden_size
+        vis_config.intermediate_size = vc.intermediate_size
+        vis_config.num_attention_heads = vc.num_attention_heads
+        vis_config.num_key_value_heads = vc.num_attention_heads
+        vis_config.num_hidden_layers = vc.num_hidden_layers
+        vis_config.head_dim = vc.hidden_size // vc.num_attention_heads
+        vis_config.hidden_act = vc.hidden_act
+        vis_config.vocab_size = 1
+        vis_config.max_position_embeddings = (vc.image_size // vc.patch_size) ** 2
+        vis_config.rms_norm_eps = vc.layer_norm_eps
+        vis_config.rope_scaling = None
+
+        extra_options = {**extra_options, "filename": self.FILENAME, "exclude_lm_head": True, "exclude_embeds": True}
+
+        super().__init__(vis_config, io_dtype, onnx_dtype, ep, cache_dir, extra_options)
+
+        self.graph.name = "phi4mm_vision_encoder"
+
+        # Store the original full config for text_hidden_size and image_token_id.
+        self.config = config
+        self.vision_config = vc
+
+        # Vision-specific dimensions.
+        self.crop_size = vc.image_size  # 448
+        self.patch_size = vc.patch_size  # 14
+        self.num_channels = vc.num_channels  # 3
+        self.n_patches_per_side = vc.image_size // vc.patch_size  # 32
+        self.n_patches = self.n_patches_per_side**2  # 1024
+        self.vis_hidden_size = vc.hidden_size  # 1152
+        self.vis_intermediate_size = vc.intermediate_size  # 4304
+        self.vis_num_heads = vc.num_attention_heads  # 16
+        self.vis_head_dim = vc.hidden_size // vc.num_attention_heads  # 72
+        self.vis_attn_scale = float(self.vis_head_dim**-0.5)
+        self.vis_rms_norm_eps = vc.layer_norm_eps  # 1e-6
+
+        # feature_layer = -2 means we extract the hidden state after
+        # layer (num_hidden_layers - 2) = layer 25 (0-indexed).
+        self.vis_feature_layer_idx = vc.num_hidden_layers + vc.feature_layer  # 25
+
+        # After AvgPool2d(kernel=2, stride=2): n_patches_per_side → n//2.
+        self.n_compressed_per_side = self.n_patches_per_side // 2  # 16
+        self.n_compressed_patches = self.n_compressed_per_side**2  # 256
+
+        # Text hidden size for the projector output.
+        self.text_hidden_size = config.hidden_size  # 3072
+
+        # Fixed: one sub-crop + one global crop (total 2 crops for 448×448).
+        self.n_crops = 2
+
+        # Total image tokens per image (for a 448×448 image):
+        #   sub:    n_cs * (n_cs + 1) = 16 * 17 = 272
+        #   global extensor: 1
+        #   global: n_cs * (n_cs + 1) = 16 * 17 = 272
+        #   total:  545
+        n_cs = self.n_compressed_per_side
+        self.n_sub_tokens = n_cs * (n_cs + 1)
+        self.n_global_tokens = n_cs * (n_cs + 1)
+        self.n_image_tokens = self.n_sub_tokens + 1 + self.n_global_tokens
+
+    # ------------------------------------------------------------------
+    # Vision attention (no RoPE, standard SDPA)
+    # ------------------------------------------------------------------
+
+    def make_attention(self, layer_id, attention, root_input, **kwargs):
+        """Build one Phi4MultimodalVisionAttention layer.
+
+        root_input: [n_crops, n_patches, vis_hidden_size]
+        Stores the attention output in layernorm_attrs["skip_input"].
+        """
+        b = f"/vision/layers.{layer_id}/attn"
+        nc = self.n_crops
+        n_p = self.n_patches
+        d = self.vis_hidden_size
+        nh = self.vis_num_heads
+        hd = self.vis_head_dim
+
+        # Q / K / V projections (with bias).
+        q = f"{self.make_matmul(attention.q_proj, f'{b}/q_proj/MatMul', root_input)}/output_0"
+        if attention.q_proj.bias is not None:
+            self.make_add_bias(attention.q_proj.bias, f"{b}/q_proj/Add", root_input=q)
+            q = f"{b}/q_proj/Add/output_0"
+
+        k = f"{self.make_matmul(attention.k_proj, f'{b}/k_proj/MatMul', root_input)}/output_0"
+        if attention.k_proj.bias is not None:
+            self.make_add_bias(attention.k_proj.bias, f"{b}/k_proj/Add", root_input=k)
+            k = f"{b}/k_proj/Add/output_0"
+
+        v = f"{self.make_matmul(attention.v_proj, f'{b}/v_proj/MatMul', root_input)}/output_0"
+        if attention.v_proj.bias is not None:
+            self.make_add_bias(attention.v_proj.bias, f"{b}/v_proj/Add", root_input=v)
+            v = f"{b}/v_proj/Add/output_0"
+
+        # Reshape to [nc, n_patches, n_heads, head_dim] then transpose to [nc, n_heads, n_patches, head_dim].
+        qkv_4d = [nc, n_p, nh, hd]
+        q_4d = self.make_reshape(f"{b}/q_reshape", [q, [nc, n_p, nh, hd]], self.io_dtype, qkv_4d)
+        k_4d = self.make_reshape(f"{b}/k_reshape", [k, [nc, n_p, nh, hd]], self.io_dtype, qkv_4d)
+        v_4d = self.make_reshape(f"{b}/v_reshape", [v, [nc, n_p, nh, hd]], self.io_dtype, qkv_4d)
+
+        qkv_t = [nc, nh, n_p, hd]
+        q_t = self.make_transpose(f"{b}/q_t", q_4d, self.io_dtype, qkv_t, perm=[0, 2, 1, 3])
+        v_t = self.make_transpose(f"{b}/v_t", v_4d, self.io_dtype, qkv_t, perm=[0, 2, 1, 3])
+        # k_T: [nc, nh, hd, n_p] — pre-transposed for matmul
+        k_T = self.make_transpose(f"{b}/k_T", k_4d, self.io_dtype, [nc, nh, hd, n_p], perm=[0, 2, 3, 1])
+
+        # Scaled dot-product attention with causal mask.
+        # The HF vision attention uses SDPA with is_causal=True; replicate that here.
+        attn_w_out = f"{b}/attn_w/MatMul/output_0"
+        self.make_node("MatMul", inputs=[q_t, k_T], outputs=[attn_w_out], name=f"{b}/attn_w/MatMul")
+        self.make_value(attn_w_out, self.io_dtype, shape=[nc, nh, n_p, n_p])
+
+        np_dtype = {ir.DataType.FLOAT: np.float32, ir.DataType.FLOAT16: np.float16}.get(self.io_dtype, np.float32)
+        scale_name = f"{b}/scale"
+        self.make_initializer(np.array(self.vis_attn_scale, dtype=np_dtype), scale_name)
+        attn_ws = self.make_mul(f"{b}/attn_scale", [attn_w_out, scale_name], self.io_dtype, [nc, nh, n_p, n_p])
+
+        # Causal mask: upper-triangular entries set to -inf so softmax ignores them.
+        # Shape [1, 1, n_p, n_p] broadcasts over (nc, nh).
+        causal_mask_name = f"{b}/causal_mask"
+        causal_np = np.full((1, 1, n_p, n_p), fill_value=0.0, dtype=np_dtype)
+        causal_np[:, :, np.triu_indices(n_p, k=1)[0], np.triu_indices(n_p, k=1)[1]] = np.finfo(np_dtype).min / 2
+        self.make_initializer(causal_np, causal_mask_name)
+        attn_ws_masked = self.make_add(f"{b}/causal_add", [attn_ws, causal_mask_name], self.io_dtype, [nc, nh, n_p, n_p])
+        attn_probs = self.make_softmax(f"{b}/softmax", attn_ws_masked, self.io_dtype, [nc, nh, n_p, n_p])
+
+        attn_out_t = f"{b}/attn_out/MatMul/output_0"
+        self.make_node("MatMul", inputs=[attn_probs, v_t], outputs=[attn_out_t], name=f"{b}/attn_out/MatMul")
+        self.make_value(attn_out_t, self.io_dtype, shape=qkv_t)
+
+        # Transpose + Reshape back to [nc, n_patches, hidden].
+        attn_out = self.make_transpose(f"{b}/attn_out_t", attn_out_t, self.io_dtype, [nc, n_p, nh, hd], perm=[0, 2, 1, 3])
+        attn_out_3d = self.make_reshape(f"{b}/attn_out_reshape", [attn_out, [nc, n_p, d]], self.io_dtype, [nc, n_p, d])
+
+        # O projection (with bias).
+        o = f"{self.make_matmul(attention.out_proj, f'{b}/out_proj/MatMul', attn_out_3d)}/output_0"
+        if attention.out_proj.bias is not None:
+            self.make_add_bias(attention.out_proj.bias, f"{b}/out_proj/Add", root_input=o)
+            o = f"{b}/out_proj/Add/output_0"
+
+        self.layernorm_attrs["skip_input"] = o
+
+    # ------------------------------------------------------------------
+    # Single transformer layer
+    # ------------------------------------------------------------------
+
+    def make_layer(self, layer_id, layer):
+        """Build one Phi4MultimodalVisionEncoderLayer.
+
+        Pipeline: LN1 → attention → residual → LN2 → MLP → residual.
+        """
+        root_input = self.layernorm_attrs["root_input"]
+        b = f"/vision/layers.{layer_id}"
+        nc = self.n_crops
+        n_p = self.n_patches
+        d = self.vis_hidden_size
+        ff = self.vis_intermediate_size
+
+        # Layer norm 1.
+        norm1 = self.make_layer_norm(
+            f"{b}/layer_norm1/LayerNorm",
+            root_input,
+            layer.layer_norm1.weight,
+            layer.layer_norm1.bias,
+            shape=[nc, n_p, d],
+            weight_name=f"vision.layers.{layer_id}.layer_norm1.weight",
+            bias_name=f"vision.layers.{layer_id}.layer_norm1.bias",
+        )
+
+        # Attention.
+        self.make_attention(layer_id, layer.self_attn, norm1)
+        attn_out = self.layernorm_attrs["skip_input"]
+
+        # Residual 1.
+        res1 = self.make_add(f"{b}/residual1/Add", [root_input, attn_out], self.io_dtype, [nc, n_p, d])
+
+        # Layer norm 2.
+        norm2 = self.make_layer_norm(
+            f"{b}/layer_norm2/LayerNorm",
+            res1,
+            layer.layer_norm2.weight,
+            layer.layer_norm2.bias,
+            shape=[nc, n_p, d],
+            weight_name=f"vision.layers.{layer_id}.layer_norm2.weight",
+            bias_name=f"vision.layers.{layer_id}.layer_norm2.bias",
+        )
+
+        # MLP: fc1 → GELU → fc2 (with optional bias on each).
+        fc1_out = f"{self.make_matmul(layer.mlp.fc1, f'{b}/mlp/fc1/MatMul', norm2)}/output_0"
+        if layer.mlp.fc1.bias is not None:
+            self.make_add_bias(layer.mlp.fc1.bias, f"{b}/mlp/fc1/Add", root_input=fc1_out)
+            fc1_out = f"{b}/mlp/fc1/Add/output_0"
+
+        gelu_out = f"{b}/mlp/gelu/output_0"
+        self.make_node("Gelu", inputs=[fc1_out], outputs=[gelu_out], name=f"{b}/mlp/gelu/Gelu", domain="com.microsoft")
+        self.make_value(gelu_out, self.io_dtype, shape=[nc, n_p, ff])
+
+        fc2_out = f"{self.make_matmul(layer.mlp.fc2, f'{b}/mlp/fc2/MatMul', gelu_out)}/output_0"
+        if layer.mlp.fc2.bias is not None:
+            self.make_add_bias(layer.mlp.fc2.bias, f"{b}/mlp/fc2/Add", root_input=fc2_out)
+            fc2_out = f"{b}/mlp/fc2/Add/output_0"
+
+        # Residual 2.
+        res2 = self.make_add(f"{b}/residual2/Add", [res1, fc2_out], self.io_dtype, [nc, n_p, d])
+
+        self.layernorm_attrs["root_input"] = res2
+
+    # ------------------------------------------------------------------
+    # Patch embedding (Conv2d + position embeddings)
+    # ------------------------------------------------------------------
+
+    def _build_patch_embedding(self, vision_embed):
+        """Build Conv2d patch embedding + fixed position embeddings.
+
+        Returns value name of shape [n_crops, n_patches, vis_hidden_size].
+        """
+        nc = self.n_crops
+        n_p = self.n_patches
+        d = self.vis_hidden_size
+
+        # Graph input.
+        pixel_values_in = self.make_value("pixel_values", self.io_dtype, shape=[nc, self.num_channels, self.crop_size, self.crop_size])
+        self.graph.inputs.append(pixel_values_in)
+
+        patch_embed = self.make_patch_embedding(
+            "pixel_values", vision_embed.patch_embedding.weight, "vision.embeddings.patch_embedding.weight", [nc]
+        )
+
+        # Fixed position embeddings (no interpolation for fixed crop_size).
+        # shape: [1, n_patches, d] broadcast-added to [nc, n_patches, d].
+        pos_w = vision_embed.position_embedding.weight.detach().unsqueeze(0)  # [1, n_patches, d]
+        pos_name = "vision.embeddings.position_embedding.weight"
+        self.make_initializer(pos_w, pos_name, to=self.io_dtype)
+
+        embed_out = self.make_add("/vision/pos_embed/Add", [patch_embed, pos_name], self.io_dtype, [nc, n_p, d])
+        return embed_out
+
+    # ------------------------------------------------------------------
+    # AvgPool2d(kernel=2, stride=2) compression
+    # ------------------------------------------------------------------
+
+    def _build_avg_pool(self, x):
+        """Apply AvgPool2d(2, 2) to compress patch features.
+
+        Input shape:  [n_crops, n_patches, d]  =  [2, 1024, 1152]
+        Output shape: [n_crops, n_compressed_patches, d]  =  [2, 256, 1152]
+        """
+        nc = self.n_crops
+        n_h = n_w = self.n_patches_per_side  # 32
+        d = self.vis_hidden_size  # 1152
+        nc_s = self.n_compressed_per_side  # 16
+        n_cp = self.n_compressed_patches  # 256
+
+        # [nc, n_patches, d] → [nc, n_h, n_w, d] → [nc, d, n_h, n_w]
+        r1 = self.make_reshape("/vision/pool/Reshape1", [x, [nc, n_h, n_w, d]], self.io_dtype, [nc, n_h, n_w, d])
+        r2 = self.make_transpose("/vision/pool/Transpose1", r1, self.io_dtype, [nc, d, n_h, n_w], perm=[0, 3, 1, 2])
+
+        # AveragePool: [nc, d, n_h, n_w] → [nc, d, nc_s, nc_s]
+        pool_out = "/vision/pool/AveragePool/output_0"
+        self.make_node("AveragePool", inputs=[r2], outputs=[pool_out], name="/vision/pool/AveragePool", kernel_shape=[2, 2], strides=[2, 2])
+        self.make_value(pool_out, self.io_dtype, shape=[nc, d, nc_s, nc_s])
+
+        # [nc, d, nc_s, nc_s] → [nc, nc_s, nc_s, d] → [nc, n_compressed_patches, d]
+        r3 = self.make_transpose("/vision/pool/Transpose2", pool_out, self.io_dtype, [nc, nc_s, nc_s, d], perm=[0, 2, 3, 1])
+        r4 = self.make_reshape("/vision/pool/Reshape2", [r3, [nc, n_cp, d]], self.io_dtype, [nc, n_cp, d])
+        return r4
+
+    # ------------------------------------------------------------------
+    # Crop merging: sub_img + global_extensor + global_img
+    # ------------------------------------------------------------------
+
+    def _build_crop_merging(self, x, image_embed):
+        """Merge sub-crop and global-crop with feature extensors.
+
+        The pixel_values layout mirrors the HF model: index 0 = global image,
+        index 1 = sub-crop (for a single 448×448 image with area_ratio=1).
+
+        The HF model then combines them as:
+          cat([sub_img, global_img_feature_extensor, global_img], dim=1)
+
+        Input:  x [n_crops=2, n_compressed_patches=256, d=1152]
+        Output: merged [n_image_tokens=545, d=1152]
+        """
+        nc = self.n_crops  # noqa: F841 - kept for readability alongside n_cp/n_cs/d
+        n_cp = self.n_compressed_patches  # 256
+        n_cs = self.n_compressed_per_side  # 16
+        d = self.vis_hidden_size  # 1152
+
+        # ---- Sub-crop (index 1: processor puts global first) ----
+        sub_slice = self.make_slice("/vision/merge/sub_slice", x, self.io_dtype, [1, n_cp, d], starts=[1], ends=[2], axes=[0])
+        sub_r = self.make_reshape("/vision/merge/sub_reshape", [sub_slice, [1, n_cs, n_cs, d]], self.io_dtype, [1, n_cs, n_cs, d])
+
+        # Append feature-extensor column (repeated sub_img_feature_extensor).
+        # sub_img_feature_extensor has shape [1, 1, 1, d]; expand to [1, n_cs, 1, d].
+        sub_ext = image_embed.sub_img_feature_extensor.expand(1, n_cs, 1, d).reshape(1, n_cs, 1, d).detach()
+        sub_ext_name = "vision.sub_img_feature_extensor"
+        self.make_initializer(sub_ext, sub_ext_name, to=self.io_dtype)
+        sub_cat = self.make_concat("/vision/merge/sub_cat", [sub_r, sub_ext_name], self.io_dtype, [1, n_cs, n_cs + 1, d], axis=2)
+        sub_flat = self.make_reshape(
+            "/vision/merge/sub_flat", [sub_cat, [1, self.n_sub_tokens, d]], self.io_dtype, [1, self.n_sub_tokens, d]
+        )
+
+        # ---- Global-image extensor (single token separator) ----
+        global_ext_name = "vision.global_img_feature_extensor"
+        self.make_initializer(image_embed.global_img_feature_extensor.detach(), global_ext_name, to=self.io_dtype)
+
+        # ---- Global crop (index 0: first in HF layout) ----
+        global_slice = self.make_slice("/vision/merge/global_slice", x, self.io_dtype, [1, n_cp, d], starts=[0], ends=[1], axes=[0])
+        global_r = self.make_reshape("/vision/merge/global_reshape", [global_slice, [1, n_cs, n_cs, d]], self.io_dtype, [1, n_cs, n_cs, d])
+
+        # The HF code uses sub_img_feature_extensor for the global image column too.
+        global_col_name = "vision.global_col_feature_extensor"
+        self.make_initializer(sub_ext, global_col_name, to=self.io_dtype)
+        global_cat = self.make_concat(
+            "/vision/merge/global_cat", [global_r, global_col_name], self.io_dtype, [1, n_cs, n_cs + 1, d], axis=2
+        )
+        global_flat = self.make_reshape(
+            "/vision/merge/global_flat", [global_cat, [1, self.n_global_tokens, d]], self.io_dtype, [1, self.n_global_tokens, d]
+        )
+
+        # Concatenate: [sub | global_extensor | global] along seq dim.
+        merged = self.make_concat(
+            "/vision/merge/concat", [sub_flat, global_ext_name, global_flat], self.io_dtype, [1, self.n_image_tokens, d], axis=1
+        )
+
+        # Squeeze the batch=1 dimension: [1, n_tokens, d] → [n_tokens, d].
+        squeezed = self.make_reshape("/vision/merge/squeeze", [merged, [self.n_image_tokens, d]], self.io_dtype, [self.n_image_tokens, d])
+        return squeezed
+
+    # ------------------------------------------------------------------
+    # Projection: Linear(d, t_hid) + GELU + Linear(t_hid, t_hid)
+    # ------------------------------------------------------------------
+
+    def _build_projector(self, image_embed, x):
+        """Project compressed features into the text hidden space.
+
+        Input:  x [n_image_tokens, image_dim_out]   e.g. [545, 1152]
+        Output:   [n_image_tokens, text_hidden_size] e.g. [545, 3072]
+        """
+        return self.make_gelu_mlp(
+            image_embed.img_projection_up, image_embed.img_projection_down, x, [self.n_image_tokens, self.text_hidden_size], "/vision/proj"
+        )
+
+    # ------------------------------------------------------------------
+    # Main entry point
+    # ------------------------------------------------------------------
+
+    def _load_hf_model(self, input_path):
+        from transformers import Phi4MultimodalForCausalLM
+
+        src = input_path if os.path.isdir(input_path) else self.model_name_or_path
+        extra_kwargs = {} if os.path.isdir(input_path) else {"cache_dir": self.cache_dir}
+        return Phi4MultimodalForCausalLM.from_pretrained(src, token=self.hf_token, trust_remote_code=self.hf_remote, **extra_kwargs)
+
+    def make_model(self, input_path):
+        """Load HF weights and build the vision encoder ONNX graph."""
+        hf_model = self._load_hf_model(input_path)
+        hf_model.eval()
+
+        image_embed = hf_model.model.embed_tokens_extend.image_embed
+        vis_model = image_embed.img_processor  # Phi4MultimodalVisionModel
+
+        # Step 1: Patch embedding + position embedding.
+        x = self._build_patch_embedding(vis_model.embeddings)
+
+        # Step 2: Transformer layers 0 … vis_feature_layer_idx (inclusive).
+        self.layernorm_attrs["root_input"] = x
+        for layer_id in range(self.vis_feature_layer_idx + 1):
+            self.make_layer(layer_id, vis_model.encoder.layers[layer_id])
+        x = self.layernorm_attrs["root_input"]
+
+        # Step 3: AvgPool2d(2, 2) compression.
+        x = self._build_avg_pool(x)
+
+        # Step 4: Merge crops (sub + global_extensor + global).
+        x = self._build_crop_merging(x, image_embed)
+
+        # Step 5: Project to text hidden size.
+        image_features = self._build_projector(image_embed, x)
+
+        # Graph output.
+        self.make_node("Identity", inputs=[image_features], outputs=["image_features"], name="/vision/output/Identity")
+        out_val = self.make_value("image_features", self.io_dtype, shape=[self.n_image_tokens, self.text_hidden_size])
+        self.graph.outputs.append(out_val)
+
+        self.graph.sort()
+
+
+class Phi4MultimodalEmbeddingModel(EmbeddingModel):
+    """ONNX embedding model for the Phi-4-multimodal-instruct phi3v pipeline.
+
+    Scatters vision-encoder ``image_features`` into the text-token embeddings
+    at positions marked with ``image_token_id``.
+    """
+
+    def _load_hf_model(self, input_path):
+        from transformers import Phi4MultimodalForCausalLM
+
+        src = input_path if os.path.isdir(input_path) else self.model_name_or_path
+        extra_kwargs = {} if os.path.isdir(input_path) else {"cache_dir": self.cache_dir}
+        return Phi4MultimodalForCausalLM.from_pretrained(src, token=self.hf_token, trust_remote_code=self.hf_remote, **extra_kwargs)
+
+    # EmbeddingModel.make_model calls self.load_hf_model (note: no leading underscore).
+    def load_hf_model(self, input_path):
+        return self._load_hf_model(input_path)
+
+    def get_embed_weight(self, hf_model):
+        return hf_model.model.embed_tokens.weight.detach().float().numpy()
+
+
+class Phi4MultimodalTextModel(MistralModel):
+    """Text decoder for ``Phi4MultimodalForCausalLM``.
+
+    Structurally identical to Phi3MiniModel (MistralModel) but loaded from
+    the full multimodal checkpoint.  The model is built with
+    ``exclude_embeds=True`` so it accepts ``inputs_embeds`` directly.
+    """
+
+    def load_weights(self, input_path):
+        from transformers import Phi4MultimodalForCausalLM
+
+        model = Phi4MultimodalForCausalLM.from_pretrained(
+            input_path, cache_dir=self.cache_dir, token=self.hf_token, trust_remote_code=self.hf_remote
+        )
+        return model
+
+
+class Phi4MultimodalConditionalGenerationModel(Model):
+    """Orchestrates exporting the Phi-4-multimodal-instruct full pipeline.
+
+    Exports three ONNX artefacts:
+
+    * ``vision_encoder.onnx`` — Phi4MM vision tower + AvgPool2d + projector.
+    * ``embedding.onnx``      — token embeddings + ScatterND image scatter.
+    * ``model.onnx``          — text decoder (``inputs_embeds`` → logits).
+    * ``genai_config.json``   — ``phi3v`` VLM config for onnxruntime-genai.
+    """
+
+    def __init__(self, config, io_dtype, onnx_dtype, ep, cache_dir, extra_options):
+        # --- Vision encoder ---
+        self.vision_encoder = Phi4MultimodalVisionEncoderModel(config, io_dtype, onnx_dtype, ep, cache_dir, extra_options)
+
+        # --- Embedding model ---
+        embed_extra_options = dict(extra_options)
+        embed_extra_options["image_token_id"] = config.vision_config.image_token_id
+        self.embedding_model = Phi4MultimodalEmbeddingModel(config, io_dtype, ir.DataType.FLOAT, ep, cache_dir, embed_extra_options)
+
+        # --- Text decoder (with exclude_embeds=True) ---
+        text_extra_options = dict(extra_options)
+        text_extra_options["exclude_embeds"] = True
+        self.text_model = Phi4MultimodalTextModel(config, io_dtype, onnx_dtype, ep, cache_dir, text_extra_options)
+
+    # ------------------------------------------------------------------
+    # builder.py interface
+    # ------------------------------------------------------------------
+
+    def make_model(self, input_path):
+        print("Building vision encoder for Phi4MultimodalForCausalLM...")
+        self.vision_encoder.make_model(input_path)
+        print("Building embedding model for Phi4MultimodalForCausalLM...")
+        self.embedding_model.make_model(input_path)
+        print("Building text decoder for Phi4MultimodalForCausalLM...")
+        self.text_model.make_model(input_path)
+
+    def save_model(self, out_dir):
+        self.vision_encoder.save_model(out_dir)
+        self.embedding_model.save_model(out_dir)
+        self.text_model.save_model(out_dir)
+
+    def make_genai_config(self, model_name_or_path, extra_kwargs, out_dir):
+        # Let the text model write genai_config.json first, then extend it
+        # with vision + embedding sections for the phi3v pipeline.
+        self.text_model.make_genai_config(model_name_or_path, extra_kwargs, out_dir)
+
+        config_path = os.path.join(out_dir, "genai_config.json")
+        with open(config_path) as f:
+            genai_config = json.load(f)
+
+        # onnxruntime-genai uses "phi3v" as the model type for the
+        # Vision + Embedding + Decoder multimodal pipeline.
+        genai_config["model"]["type"] = "phi3v"
+
+        genai_config["model"]["vision"] = {
+            "filename": self.vision_encoder.FILENAME,
+            "num_img_tokens": self.vision_encoder.n_image_tokens,
+            "inputs": {"pixel_values": "pixel_values"},
+            "outputs": {"image_features": "image_features"},
+        }
+
+        genai_config["model"]["embedding"] = {
+            "filename": self.embedding_model.FILENAME,
+            "inputs": {"input_ids": "input_ids", "image_features": "image_features"},
+            "outputs": {"inputs_embeds": "inputs_embeds"},
+        }
+
+        with open(config_path, "w") as f:
+            json.dump(genai_config, f, indent=4)
+
+    def save_processing(self, model_name_or_path, extra_kwargs, out_dir):
+        self.text_model.save_processing(model_name_or_path, extra_kwargs, out_dir)
