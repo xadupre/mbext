@@ -550,20 +550,9 @@ class Phi4MultimodalVisionEncoderModel(VisionEncoderModel):
         hd = self.vis_head_dim
 
         # Q / K / V projections (with bias).
-        q = f"{self.make_matmul(attention.q_proj, f'{b}/q_proj/MatMul', root_input)}/output_0"
-        if attention.q_proj.bias is not None:
-            self.make_add_bias(attention.q_proj.bias, f"{b}/q_proj/Add", root_input=q)
-            q = f"{b}/q_proj/Add/output_0"
-
-        k = f"{self.make_matmul(attention.k_proj, f'{b}/k_proj/MatMul', root_input)}/output_0"
-        if attention.k_proj.bias is not None:
-            self.make_add_bias(attention.k_proj.bias, f"{b}/k_proj/Add", root_input=k)
-            k = f"{b}/k_proj/Add/output_0"
-
-        v = f"{self.make_matmul(attention.v_proj, f'{b}/v_proj/MatMul', root_input)}/output_0"
-        if attention.v_proj.bias is not None:
-            self.make_add_bias(attention.v_proj.bias, f"{b}/v_proj/Add", root_input=v)
-            v = f"{b}/v_proj/Add/output_0"
+        q = self.make_vis_proj(attention.q_proj, f"{b}/q_proj/MatMul", root_input)
+        k = self.make_vis_proj(attention.k_proj, f"{b}/k_proj/MatMul", root_input)
+        v = self.make_vis_proj(attention.v_proj, f"{b}/v_proj/MatMul", root_input)
 
         # Reshape to [nc, n_patches, n_heads, head_dim] then transpose to [nc, n_heads, n_patches, head_dim].
         qkv_4d = [nc, n_p, nh, hd]
@@ -574,42 +563,26 @@ class Phi4MultimodalVisionEncoderModel(VisionEncoderModel):
         qkv_t = [nc, nh, n_p, hd]
         q_t = self.make_transpose(f"{b}/q_t", q_4d, self.io_dtype, qkv_t, perm=[0, 2, 1, 3])
         v_t = self.make_transpose(f"{b}/v_t", v_4d, self.io_dtype, qkv_t, perm=[0, 2, 1, 3])
-        # k_T: [nc, nh, hd, n_p] — pre-transposed for matmul
+        # k_T: [nc, nh, hd, n_p] — pre-transposed for matmul.
         k_T = self.make_transpose(f"{b}/k_T", k_4d, self.io_dtype, [nc, nh, hd, n_p], perm=[0, 2, 3, 1])
 
-        # Scaled dot-product attention with causal mask.
-        # The HF vision attention uses SDPA with is_causal=True; replicate that here.
-        attn_w_out = f"{b}/attn_w/MatMul/output_0"
-        self.make_node("MatMul", inputs=[q_t, k_T], outputs=[attn_w_out], name=f"{b}/attn_w/MatMul")
-        self.make_value(attn_w_out, self.io_dtype, shape=[nc, nh, n_p, n_p])
-
-        np_dtype = {ir.DataType.FLOAT: np.float32, ir.DataType.FLOAT16: np.float16}.get(self.io_dtype, np.float32)
-        scale_name = f"{b}/scale"
-        self.make_initializer(np.array(self.vis_attn_scale, dtype=np_dtype), scale_name)
-        attn_ws = self.make_mul(f"{b}/attn_scale", [attn_w_out, scale_name], self.io_dtype, [nc, nh, n_p, n_p])
-
-        # Causal mask: upper-triangular entries set to -inf so softmax ignores them.
+        # Build causal mask: upper-triangular entries set to -inf so softmax ignores them.
         # Shape [1, 1, n_p, n_p] broadcasts over (nc, nh).
+        np_dtype = {ir.DataType.FLOAT: np.float32, ir.DataType.FLOAT16: np.float16}.get(self.io_dtype, np.float32)
         causal_mask_name = f"{b}/causal_mask"
         causal_np = np.full((1, 1, n_p, n_p), fill_value=0.0, dtype=np_dtype)
         causal_np[:, :, np.triu_indices(n_p, k=1)[0], np.triu_indices(n_p, k=1)[1]] = np.finfo(np_dtype).min / 2
         self.make_initializer(causal_np, causal_mask_name)
-        attn_ws_masked = self.make_add(f"{b}/causal_add", [attn_ws, causal_mask_name], self.io_dtype, [nc, nh, n_p, n_p])
-        attn_probs = self.make_softmax(f"{b}/softmax", attn_ws_masked, self.io_dtype, [nc, nh, n_p, n_p])
 
-        attn_out_t = f"{b}/attn_out/MatMul/output_0"
-        self.make_node("MatMul", inputs=[attn_probs, v_t], outputs=[attn_out_t], name=f"{b}/attn_out/MatMul")
-        self.make_value(attn_out_t, self.io_dtype, shape=qkv_t)
+        # Scaled dot-product attention with causal mask.
+        attn_out_t = self.make_vis_sdpa(b, q_t, k_T, v_t, self.vis_attn_scale, [nc, nh, n_p, n_p], qkv_t, causal_mask_name=causal_mask_name)
 
         # Transpose + Reshape back to [nc, n_patches, hidden].
         attn_out = self.make_transpose(f"{b}/attn_out_t", attn_out_t, self.io_dtype, [nc, n_p, nh, hd], perm=[0, 2, 1, 3])
         attn_out_3d = self.make_reshape(f"{b}/attn_out_reshape", [attn_out, [nc, n_p, d]], self.io_dtype, [nc, n_p, d])
 
         # O projection (with bias).
-        o = f"{self.make_matmul(attention.out_proj, f'{b}/out_proj/MatMul', attn_out_3d)}/output_0"
-        if attention.out_proj.bias is not None:
-            self.make_add_bias(attention.out_proj.bias, f"{b}/out_proj/Add", root_input=o)
-            o = f"{b}/out_proj/Add/output_0"
+        o = self.make_vis_proj(attention.out_proj, f"{b}/out_proj/MatMul", attn_out_3d)
 
         self.layernorm_attrs["skip_input"] = o
 

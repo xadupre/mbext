@@ -883,21 +883,10 @@ class Qwen25OmniVisionEncoderModel(VisionEncoderModel):
         hd = self.vis_head_dim
         rope_input = kwargs.get("rotary_pos_emb", "rotary_pos_emb")
 
-        # QKV projections: use base-class make_matmul (handles fp16/int4 automatically).
-        q = f"{self.make_matmul(attention.q, f'{b}/q_proj/MatMul', root_input)}/output_0"
-        if attention.q.bias is not None:
-            self.make_add_bias(attention.q.bias, f"{b}/q_proj/Add", root_input=q)
-            q = f"{b}/q_proj/Add/output_0"
-
-        k = f"{self.make_matmul(attention.k, f'{b}/k_proj/MatMul', root_input)}/output_0"
-        if attention.k.bias is not None:
-            self.make_add_bias(attention.k.bias, f"{b}/k_proj/Add", root_input=k)
-            k = f"{b}/k_proj/Add/output_0"
-
-        v = f"{self.make_matmul(attention.v, f'{b}/v_proj/MatMul', root_input)}/output_0"
-        if attention.v.bias is not None:
-            self.make_add_bias(attention.v.bias, f"{b}/v_proj/Add", root_input=v)
-            v = f"{b}/v_proj/Add/output_0"
+        # QKV projections with optional bias.
+        q = self.make_vis_proj(attention.q, f"{b}/q_proj/MatMul", root_input)
+        k = self.make_vis_proj(attention.k, f"{b}/k_proj/MatMul", root_input)
+        v = self.make_vis_proj(attention.v, f"{b}/v_proj/MatMul", root_input)
 
         # Reshape to [n_patches, num_heads, head_dim].
         q_4d = self.make_reshape(f"{b}/q_reshape", [q, [0, nh, hd]], self.io_dtype, [n, nh, hd])
@@ -913,28 +902,18 @@ class Qwen25OmniVisionEncoderModel(VisionEncoderModel):
         k_t = self.make_transpose(f"{b}/k_t", k_rope, self.io_dtype, [nh, n, hd], perm=[1, 0, 2])
         v_t = self.make_transpose(f"{b}/v_t", v_4d, self.io_dtype, [nh, n, hd], perm=[1, 0, 2])
 
-        # Scaled dot-product attention (full attention, no causal mask).
+        # K^T: [num_heads, head_dim, n_patches].
         k_T = self.make_transpose(f"{b}/k_T", k_t, self.io_dtype, [nh, hd, n], perm=[0, 2, 1])
-        attn_w_out = f"{b}/attn_w/MatMul/output_0"
-        self.make_node("MatMul", inputs=[q_t, k_T], outputs=[attn_w_out], name=f"{b}/attn_w/MatMul")
-        self.make_value(attn_w_out, self.io_dtype, shape=[nh, n, n])
 
-        np_dtype = np.float16 if self.io_dtype == ir.DataType.FLOAT16 else np.float32
-        scale_name = f"{b}/attn_scale"
-        self.make_initializer(np.array(float(hd**-0.5), dtype=np_dtype), scale_name)
-        attn_ws = self.make_mul(f"{b}/attn_scale_mul", [attn_w_out, scale_name], self.io_dtype, [nh, n, n])
-        attn_probs = self.make_softmax(f"{b}/attn_softmax", attn_ws, self.io_dtype, [nh, n, n])
-
-        attn_out_t = f"{b}/attn_out_t/MatMul/output_0"
-        self.make_node("MatMul", inputs=[attn_probs, v_t], outputs=[attn_out_t], name=f"{b}/attn_out_t/MatMul")
-        self.make_value(attn_out_t, self.io_dtype, shape=[nh, n, hd])
+        # Scaled dot-product attention (full attention, no causal mask).
+        attn_out_t = self.make_vis_sdpa(b, q_t, k_T, v_t, float(hd**-0.5), [nh, n, n], [nh, n, hd])
 
         # Transpose back to [n_patches, num_heads, head_dim] and flatten to [n_patches, d].
         attn_back = self.make_transpose(f"{b}/attn_back", attn_out_t, self.io_dtype, [n, nh, hd], perm=[1, 0, 2])
         attn_flat = self.make_reshape(f"{b}/attn_flat", [attn_back, [0, d]], self.io_dtype, [n, d])
 
         # O projection (no bias in Qwen2.5-Omni vision attention).
-        o = f"{self.make_matmul(attention.proj, f'{b}/o_proj/MatMul', attn_flat)}/output_0"
+        o = self.make_vis_proj(attention.proj, f"{b}/o_proj/MatMul", attn_flat)
 
         # Follow base-class convention: store output in layernorm_attrs["skip_input"].
         self.layernorm_attrs["skip_input"] = o
