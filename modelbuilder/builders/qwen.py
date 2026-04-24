@@ -950,31 +950,22 @@ class Qwen25OmniVisionEncoderModel(VisionEncoderModel):
         Reads hidden-states from self.layernorm_attrs["root_input"] and
         stores the output back there, following the base-class convention.
         """
-        root = self.layernorm_attrs["root_input"]
         b = f"/vision/layers.{layer_id}"
-        n = None
         d = self.vis_hidden_size
 
-        # Pre-attention RMSNorm.
-        norm1_out = self.make_rms_norm(f"{b}/norm1", root, block.norm1.weight, shape=[n, d])
-
-        # Attention (override that takes rotary_pos_emb as a kwarg).
-        self.make_attention(layer_id, block.attn, norm1_out, rotary_pos_emb="rotary_pos_emb")
-        attn_out = self.layernorm_attrs["skip_input"]
-
-        # Residual 1.
-        res1 = self.make_add(f"{b}/res1", [root, attn_out], self.io_dtype, [n, d])
-
-        # Pre-MLP RMSNorm.
-        norm2_out = self.make_rms_norm(f"{b}/norm2", res1, block.norm2.weight, shape=[n, d])
-
-        # MLP.
-        mlp_out = self.make_silu_gated_mlp(layer_id, block.mlp, norm2_out, [None, self.vis_intermediate_size])
-
-        # Residual 2.
-        res2 = self.make_add(f"{b}/res2", [res1, mlp_out], self.io_dtype, [n, d])
-
-        self.layernorm_attrs["root_input"] = res2
+        self._make_standard_vision_layer(
+            layer_id,
+            block.norm1.weight,
+            block.attn,
+            block.norm2.weight,
+            lambda norm2_out: self.make_silu_gated_mlp(layer_id, block.mlp, norm2_out, [None, self.vis_intermediate_size]),
+            [None, d],
+            norm1_name=f"{b}/norm1",
+            norm2_name=f"{b}/norm2",
+            res1_name=f"{b}/res1",
+            res2_name=f"{b}/res2",
+            attn_kwargs={"rotary_pos_emb": "rotary_pos_emb"},
+        )
 
     # ------------------------------------------------------------------
     # Patch merger
