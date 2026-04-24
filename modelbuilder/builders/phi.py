@@ -12,6 +12,7 @@ import onnx_ir as ir
 import torch
 
 from .base import Model
+from .base_audio import AudioEncoderModel
 from .base_embedding import EmbeddingModel
 from .base_vision import VisionEncoderModel
 from .mistral import MistralModel
@@ -801,7 +802,7 @@ class Phi4MultimodalVisionEncoderModel(VisionEncoderModel):
         self.graph.sort()
 
 
-class Phi4MultimodalAudioEncoderModel(VisionEncoderModel):
+class Phi4MultimodalAudioEncoderModel(AudioEncoderModel):
     """ONNX graph builder for the Phi-4-multimodal audio encoder.
 
     Exports the Conformer-based audio tower to ``audio_encoder.onnx``.
@@ -842,8 +843,6 @@ class Phi4MultimodalAudioEncoderModel(VisionEncoderModel):
         self.graph.name = "phi4mm_audio_encoder"
         self.config = config
         self.audio_config = ac
-        # Override `vis_rms_norm_eps` (from VisionEncoderModel) — used by make_layer_norm for all audio nodes.
-        self.vis_rms_norm_eps = 1e-5
 
         self.input_size = ac.input_size  # 80
         self.audio_hidden_size = ac.hidden_size  # 1024
@@ -859,46 +858,6 @@ class Phi4MultimodalAudioEncoderModel(VisionEncoderModel):
         self.bias_max_distance = ac.bias_max_distance  # 1000
         self.num_buckets = 2 * ac.bias_max_distance  # 2000 (bias_symmetric=False)
         self.text_hidden_size = config.hidden_size
-
-    # ------------------------------------------------------------------
-    # Helpers
-    # ------------------------------------------------------------------
-
-    def _make_audio_linear(self, name, linear, root_input, shape):
-        """MatMul + optional Add (bias) projection."""
-        prefix = name[1:].replace("/", ".")
-        w_name = f"{prefix}.weight"
-        self.make_initializer(linear.weight.T.detach(), w_name, to=self.io_dtype)
-        mm_out = f"{name}/MatMul/output_0"
-        self.make_node("MatMul", inputs=[root_input, w_name], outputs=[mm_out], name=f"{name}/MatMul")
-        self.make_value(mm_out, self.io_dtype, shape=shape)
-        if linear.bias is not None:
-            b_name = f"{prefix}.bias"
-            self.make_initializer(linear.bias.detach(), b_name, to=self.io_dtype)
-            add_out = f"{name}/Add/output_0"
-            self.make_node("Add", inputs=[mm_out, b_name], outputs=[add_out], name=f"{name}/Add")
-            self.make_value(add_out, self.io_dtype, shape=shape)
-            return add_out
-        return mm_out
-
-    def _make_swish(self, name, root_input, shape):
-        """sigmoid(x) * x (SiLU)."""
-        self.make_sigmoid(f"{name}/Sigmoid", root_input, self.io_dtype, shape)
-        return self.make_mul(f"{name}/Mul", [root_input, f"{name}/Sigmoid/output_0"], self.io_dtype, shape)
-
-    def _make_constant_i64(self, name, value):
-        """Create a scalar int64 Constant node, return its output name."""
-        t = ir.Tensor(np.array(value, dtype=np.int64), name=name)
-        self.make_node("Constant", inputs=[], outputs=[name], name=f"{name}/Constant", value=t)
-        self.make_value(name, ir.DataType.INT64, shape=[])
-        return name
-
-    def _make_constant_i64_1d(self, name, values):
-        """Create a 1-D int64 Constant node, return its output name."""
-        t = ir.Tensor(np.array(values, dtype=np.int64), name=name)
-        self.make_node("Constant", inputs=[], outputs=[name], name=f"{name}/Constant", value=t)
-        self.make_value(name, ir.DataType.INT64, shape=[len(values)])
-        return name
 
     # ------------------------------------------------------------------
     # Encoder embedding (mean-variance normalization)
@@ -1069,7 +1028,7 @@ class Phi4MultimodalAudioEncoderModel(VisionEncoderModel):
         mid = self.audio_intermediate_size
 
         # LayerNorm
-        ln_out = self.make_layer_norm(f"{name}/layer_norm", root_input, mlp.layer_norm.weight, mlp.layer_norm.bias, [1, None, d])
+        ln_out = self.make_audio_layer_norm(f"{name}/layer_norm", root_input, mlp.layer_norm.weight, mlp.layer_norm.bias, [1, None, d])
 
         # gate_up_proj: [1, n, d] → [1, n, 2*mid]
         combined = self._make_audio_linear(f"{name}/gate_up_proj", mlp.gate_up_proj, ln_out, [1, None, 2 * mid])
@@ -1235,7 +1194,9 @@ class Phi4MultimodalAudioEncoderModel(VisionEncoderModel):
         prefix = name[1:].replace("/", ".")
 
         # LayerNorm
-        ln_out = self.make_layer_norm(f"{name}/layer_norm", root_input, conv_mod.layer_norm.weight, conv_mod.layer_norm.bias, [1, None, ep])
+        ln_out = self.make_audio_layer_norm(
+            f"{name}/layer_norm", root_input, conv_mod.layer_norm.weight, conv_mod.layer_norm.bias, [1, None, ep]
+        )
 
         # GLU
         glu_out = self._make_glu(f"{name}/glu", conv_mod.glu, ln_out)
@@ -1361,7 +1322,7 @@ class Phi4MultimodalAudioEncoderModel(VisionEncoderModel):
         residual = self.make_add(f"{b}/res_ffin", [hidden, ffin_scaled], self.io_dtype, [1, None, d])
 
         # Attention
-        attn_ln = self.make_layer_norm(
+        attn_ln = self.make_audio_layer_norm(
             f"{b}/layer_norm_att", residual, layer.layer_norm_att.weight, layer.layer_norm_att.bias, [1, None, d]
         )
         attn_out = self._make_audio_attention(f"{b}/self_attn", layer.self_attn, att_bias, attn_ln)
@@ -1377,7 +1338,7 @@ class Phi4MultimodalAudioEncoderModel(VisionEncoderModel):
         h = self.make_add(f"{b}/res_ffout", [h, ffout_scaled], self.io_dtype, [1, None, d])
 
         # Final LayerNorm
-        return self.make_layer_norm(f"{b}/layer_norm", h, layer.layer_norm.weight, layer.layer_norm.bias, [1, None, d])
+        return self.make_audio_layer_norm(f"{b}/layer_norm", h, layer.layer_norm.weight, layer.layer_norm.bias, [1, None, d])
 
     # ------------------------------------------------------------------
     # Weight loading
