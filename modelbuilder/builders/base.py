@@ -297,6 +297,7 @@ class Model(LocalFunctionsMixin):
             "rope": True,  # Use rotary embeddings in attention subgraph
             "q_norm": False,  # LayerNorm after MatMul in Q path
             "k_norm": False,  # LayerNorm after MatMul in K path
+            "v_norm": False,  # LayerNorm after MatMul in V path (no learnable scale)
             "sinks": False,  # Sink values for softmax in attention
             # Attributes for packed Attention op:
             "root_input": "",  # Root input to attention
@@ -2407,6 +2408,60 @@ class Model(LocalFunctionsMixin):
         self.attention_attrs["q_path"] = f"{q_reshape_2_name}/output_0"
         self.attention_attrs["k_path"] = f"{k_reshape_2_name}/output_0"
 
+        # Optionally apply v_norm (RMSNorm without learnable scale)
+        if self.attention_attrs["v_norm"]:
+            # Reshape V MatMul from BxSxD to Bx(SxN)xH before LayerNorm
+            v_reshape_1_name = f"/model/layers.{layer_id}/attn/v_norm/Reshape_1"
+            v_reshape_1_inputs = [self.attention_attrs["v_path"], f"/model/constants/INT64/[0, -1, {self.head_size}]"]
+            v_reshape_1_output = f"{v_reshape_1_name}/output_0"
+            self.make_reshape(
+                v_reshape_1_name,
+                v_reshape_1_inputs,
+                dtype=self.io_dtype,
+                shape=["batch_size", "sequence_length * num_key_value_heads", self.head_size],
+            )
+
+            # Make V LayerNorm (no learnable scale: use constant all-ones weight)
+            # This matches Gemma4RMSNorm(with_scale=False) which normalises without
+            # a learnable scale, unlike the learnable q_norm and k_norm weights.
+            v_layernorm_name = f"/model/layers.{layer_id}/attn/v_norm/SimplifiedLayerNormalization"
+            v_weight_name = f"model.layers.{layer_id}.attn.v_norm.weight"
+            v_layernorm_output = f"{v_layernorm_name}/output_0"
+            # SimplifiedLayerNormalization requires a weight tensor; supply all-ones
+            # to implement plain RMS normalisation (no scaling after normalisation).
+            ones_weight = torch.ones(self.head_size, dtype=torch.float32)
+            self.make_initializer(ones_weight, v_weight_name, to=new_io_dtype)
+
+            v_layernorm_inputs = [v_reshape_1_output, v_weight_name]
+            v_layernorm_outputs = [v_layernorm_output]
+            if cast:
+                v_layernorm_inputs, v_layernorm_outputs = self.make_layernorm_casts(
+                    v_layernorm_name, v_layernorm_inputs, v_layernorm_outputs, old_io_dtype, new_io_dtype
+                )
+
+            self.make_node(
+                "SimplifiedLayerNormalization",
+                inputs=v_layernorm_inputs,
+                outputs=v_layernorm_outputs,
+                name=v_layernorm_name,
+                **layernorm_kwargs,
+            )
+            self.make_value(
+                v_layernorm_outputs[0], dtype=new_io_dtype, shape=["batch_size", "sequence_length * num_key_value_heads", self.head_size]
+            )
+
+            # Reshape V path after LayerNorm from Bx(SxN)xH to BxSxD
+            v_reshape_2_name = f"/model/layers.{layer_id}/attn/v_norm/Reshape_2"
+            v_reshape_2_inputs = [v_layernorm_output, f"/model/constants/INT64/[0, -1, {self.num_kv_heads * self.head_size}]"]
+            self.make_reshape(
+                v_reshape_2_name,
+                v_reshape_2_inputs,
+                dtype=self.io_dtype,
+                shape=["batch_size", "sequence_length", self.num_kv_heads * self.head_size],
+            )
+
+            self.attention_attrs["v_path"] = f"{v_reshape_2_name}/output_0"
+
     def make_repeat_kv(self, layer_id, root_input, past_kv, present_kv, **kwargs):
         # Make subgraph that repeats tensor of shape (batch_size, sequence_length, num_kv_heads, head_size)
         # to shape (batch_size, sequence_length, num_attn_heads, head_size) in an interleaved pattern
@@ -2936,7 +2991,7 @@ class Model(LocalFunctionsMixin):
                     self.attention_attrs["v_path"] = f"{v_add_name}/output_0"
 
     def make_attention_qk_subgraph(self, layer_id, attention, root_input, **kwargs):
-        # Make Q/K SimplifiedLayerNorm nodes
+        # Make Q/K/V SimplifiedLayerNorm nodes
         if self.attention_attrs["q_norm"] and self.attention_attrs["k_norm"]:
             self.make_qk_norm(layer_id, attention)
 
