@@ -20,8 +20,15 @@ class TestRandomGemma4(ExtTestCase):
         KV-cache shapes uniform across layer types.  PLE and shared-KV
         features are disabled so the export exercises only the core
         sliding/full-attention and v_norm paths.
+
+        ``layer_types`` is set explicitly so that the last layer is
+        ``"full_attention"`` (required by Gemma4) without relying on
+        the config's auto-correction that emits a WARNING.
         """
         from transformers import Gemma4TextConfig
+
+        # Build layer_types: (num_hidden_layers - 1) sliding + 1 full.
+        layer_types = ["sliding_attention"] * (num_hidden_layers - 1) + ["full_attention"]
 
         return Gemma4TextConfig(
             architectures=["Gemma4ForCausalLM"],
@@ -32,6 +39,7 @@ class TestRandomGemma4(ExtTestCase):
             hidden_activation="gelu_pytorch_tanh",
             hidden_size=512,
             intermediate_size=1376,
+            layer_types=layer_types,
             max_position_embeddings=2048,
             num_attention_heads=8,
             num_hidden_layers=num_hidden_layers,
