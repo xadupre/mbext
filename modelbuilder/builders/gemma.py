@@ -200,6 +200,10 @@ class Gemma4Model(Gemma3Model):
         self._original_architecture = config.architectures[0]
 
         # Gemma4 uses attention scale = 1.0 (no query_pre_attn_scalar).
+        # The parent Gemma2Model set this via `config.query_pre_attn_scalar**-0.5`
+        # using the placeholder value 1.0 added above, so this is a no-op for 1.0
+        # but makes the intention explicit for any future config that sets
+        # query_pre_attn_scalar to a non-1.0 value.
         self.attention_attrs["scale"] = 1.0
 
         # Gemma4RMSNorm stores the actual scale weight (initialised to ones) and applies it

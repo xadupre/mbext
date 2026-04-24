@@ -2422,10 +2422,13 @@ class Model(LocalFunctionsMixin):
             )
 
             # Make V LayerNorm (no learnable scale: use constant all-ones weight)
+            # This matches Gemma4RMSNorm(with_scale=False) which normalises without
+            # a learnable scale, unlike the learnable q_norm and k_norm weights.
             v_layernorm_name = f"/model/layers.{layer_id}/attn/v_norm/SimplifiedLayerNormalization"
             v_weight_name = f"model.layers.{layer_id}.attn.v_norm.weight"
             v_layernorm_output = f"{v_layernorm_name}/output_0"
-            # v_norm has no learnable scale; create a constant all-ones weight as a torch tensor
+            # SimplifiedLayerNormalization requires a weight tensor; supply all-ones
+            # to implement plain RMS normalisation (no scaling after normalisation).
             ones_weight = torch.ones(self.head_size, dtype=torch.float32)
             self.make_initializer(ones_weight, v_weight_name, to=new_io_dtype)
 
