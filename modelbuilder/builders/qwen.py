@@ -1672,10 +1672,15 @@ class Qwen25OmniConditionalGenerationModel(Model):
         # ORT-GenAI uses "phi3v" as the model type for the multimodal pipeline.
         genai_config["model"]["type"] = "phi3v"
 
+        # ORT-GenAI's phi3v parser only accepts "pixel_values" for vision
+        # inputs; "rotary_pos_emb" is not a recognised field and would cause
+        # a JSON-parsing error at model-load time.  The rotary position
+        # embedding must therefore be pre-computed outside ORT-GenAI and
+        # baked into the ONNX graph or passed through a separate mechanism.
         genai_config["model"]["vision"] = {
             "filename": self.vision_encoder.FILENAME,
             "spatial_merge_size": spatial_merge_size,
-            "inputs": {"pixel_values": "pixel_values", "rotary_pos_emb": "rotary_pos_emb"},
+            "inputs": {"pixel_values": "pixel_values"},
             "outputs": {"image_features": "image_features"},
         }
 
