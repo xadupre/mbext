@@ -231,6 +231,9 @@ class Gemma4Model(Gemma3Model):
         num_kv_shared = getattr(config, "num_kv_shared_layers", 0)
         self._first_kv_shared_layer_idx = config.num_hidden_layers - num_kv_shared
         self._shared_kv_donor_map: dict[int, int] = {}
+        # Maps donor_id → (k_path_tensor_name, v_path_tensor_name); populated during
+        # make_attention() as non-shared layers are built.
+        self._donor_kv_paths: dict[int, tuple[str, str]] = {}
         if num_kv_shared > 0 and self._layer_types is not None:
             non_shared_types = self._layer_types[: self._first_kv_shared_layer_idx]
             for i in range(self._first_kv_shared_layer_idx, config.num_hidden_layers):
@@ -333,6 +336,9 @@ class Gemma4Model(Gemma3Model):
         else:
             # Gemma2Model.make_attention handles window_size toggle (local → full).
             Gemma2Model.make_attention(self, layer_id, attention, root_input, **kwargs)
+            # Save the donor's pre-GQA K/V tensor names so shared layers can reuse them.
+            # attention_attrs["k_path"] / ["v_path"] hold the post-norm, pre-GQA tensors.
+            self._donor_kv_paths[layer_id] = (self.attention_attrs["k_path"], self.attention_attrs["v_path"])
 
         self.head_size = original_head_size
         self.num_kv_heads = original_num_kv_heads
@@ -400,21 +406,14 @@ class Gemma4Model(Gemma3Model):
         """Build the ONNX attention subgraph for a shared-KV layer.
 
         Shared-KV layers (``num_kv_shared_layers > 0``) have no k_proj/v_proj/
-        k_norm/v_norm weights.  Instead they reuse the accumulated K/V tensors
-        from the last non-shared layer of the same type (the *donor* layer).
+        k_norm/v_norm weights.  Instead they reuse the K/V tensors computed by
+        the donor layer in the same forward pass.
 
-        The donor's ``present.{donor_id}.key/value`` outputs (shape
-        ``[batch, kv_heads, total_seq_len, head_size]``) are fed as ``past_k``
-        / ``past_v`` of the shared layer's GroupQueryAttention node, with
-        ``k_path`` and ``v_path`` left empty.  ORT GQA treats both ``key`` and
-        ``value`` as optional; when they are absent it simply attends over the
-        provided past K/V directly.  The shared layer's own
-        ``present.{i}.key/value`` outputs will equal the donor's present K/V
-        (GQA pass-through when no new current K/V is supplied).
-
-        The shared layer's ``past_key_values.{i}.key/value`` model inputs are
-        still declared (ORT GenAI expects a fixed number of KV-cache tensors)
-        but they are never consumed by any node in the graph.
+        The donor's pre-GQA k/v paths (post-norm, same ``[B, S, kv_heads * H]``
+        shape as Q) are wired as the current K/V inputs of this layer's GQA
+        node.  The shared layer maintains its **own** KV-cache (past/present
+        slots), which it updates at each step with the reused K/V — matching
+        HF's ``shared_kv_states`` pattern.
         """
         donor_id = self._shared_kv_donor_map[layer_id]
 
@@ -445,26 +444,27 @@ class Gemma4Model(Gemma3Model):
             )
             self.attention_attrs["q_path"] = f"{q_rotary_name}/output_0"
 
-        # --- Donor's present K/V (full sequence, post-norm, post-RoPE) ---
-        donor_present_k = self.output_names["present.key"][donor_id]
-        donor_present_v = self.output_names["present.value"][donor_id]
+        # --- Donor's current K/V (post-norm, pre-GQA, shape [B, S, kv_heads * H]) ---
+        donor_k_path, donor_v_path = self._donor_kv_paths[donor_id]
 
-        # --- Shared layer's own KV-cache output slots ---
-        present_k = self.output_names["present.key"][layer_id]
-        present_v = self.output_names["present.value"][layer_id]
+        # --- Shared layer's own KV-cache (past/present) ---
+        past_k, past_v, present_k, present_v = self.make_key_value_cache_names(layer_id)
 
         # --- GroupQueryAttention node ---
-        # k_path and v_path are empty: ORT GQA treats key/value as optional.
-        # past_k/past_v carry the donor's full accumulated K/V.
-        # GQA outputs present_k = past_k (pass-through) when k_path is absent.
+        # k_path/v_path = donor's current K/V (same S as Q).
+        # past_k/past_v = shared layer's own accumulated cache.
+        # GQA concatenates past_k with donor's k → present_k for shared layer.
+        # This mirrors HF's shared_kv_states semantics: both layers use identical
+        # K/V (same donor weights + same donor hidden state), so the shared
+        # layer's cache accumulates to the same content as the donor's cache.
         attn_name = f"/model/layers.{layer_id}/attn/{self.attention_attrs['op_type']}"
         self.make_group_query_attention(
             attn_name,
             q_path=self.attention_attrs["q_path"],
-            k_path="",
-            v_path="",
-            past_k=donor_present_k,
-            past_v=donor_present_v,
+            k_path=donor_k_path,
+            v_path=donor_v_path,
+            past_k=past_k,
+            past_v=past_v,
             seqlens_k=f"{self.mask_attrs['seqlens_k']}/output_0",
             total_seq_len=f"{self.mask_attrs['total_seq_len']}/output_0",
             cos_cache=cos_cache_name,

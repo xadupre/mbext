@@ -53,6 +53,95 @@ class TestRandomGemma4(ExtTestCase):
             enable_moe_block=False,
         )
 
+    @staticmethod
+    def _make_shared_kv_config(num_hidden_layers=4, num_kv_shared=2):
+        """Return a Gemma4TextConfig with ``num_kv_shared_layers > 0``.
+
+        Layer layout: [sliding, full, sliding, full, ...]
+        The last ``num_kv_shared`` layers share K/V with the last non-shared
+        layer of the same type.  Both non-shared and shared sections must
+        contain at least one sliding and one full-attention layer so that each
+        shared layer has a valid donor.
+
+        ``num_hidden_layers`` must be >= 4 so that at least one non-shared
+        sliding *and* one non-shared full-attention layer always exist.
+        """
+        from transformers import Gemma4TextConfig
+
+        layer_types = []
+        for i in range(num_hidden_layers):
+            layer_types.append("sliding_attention" if i % 2 == 0 else "full_attention")
+
+        return Gemma4TextConfig(
+            architectures=["Gemma4ForCausalLM"],
+            bos_token_id=2,
+            eos_token_id=1,
+            head_dim=64,
+            global_head_dim=64,
+            hidden_activation="gelu_pytorch_tanh",
+            hidden_size=512,
+            intermediate_size=1376,
+            layer_types=layer_types,
+            max_position_embeddings=2048,
+            num_attention_heads=8,
+            num_hidden_layers=num_hidden_layers,
+            num_key_value_heads=4,
+            rms_norm_eps=1e-6,
+            sliding_window=512,
+            vocab_size=32000,
+            hidden_size_per_layer_input=0,
+            num_kv_shared_layers=num_kv_shared,
+            enable_moe_block=False,
+        )
+
+    def common_fast_gemma4_shared_kv_random_weights(self, precision, provider):
+        import torch
+        from transformers import AutoModelForCausalLM
+
+        config = self._make_shared_kv_config()
+        torch.manual_seed(42)
+        model = AutoModelForCausalLM.from_config(config)
+        model.eval().to(provider)
+        tokenizer = self.make_word_level_tokenizer(bos_token="<bos>", bos_token_id=2, eos_token="</s>", eos_token_id=1)
+        self.run_random_weights_test(
+            model=model,
+            tokenizer=tokenizer,
+            model_name=MODEL_NAME,
+            basename=f"test_discrepancies_gemma4_shared_kv_{precision}_{provider}",
+            precision=precision,
+            provider=provider,
+            num_hidden_layers=config.num_hidden_layers,
+            num_key_value_heads=config.num_key_value_heads,
+            head_size=config.head_dim,
+            vocab_size=config.vocab_size,
+            create_model_kwargs={"num_hidden_layers": config.num_hidden_layers},
+            atol={"fp16": 1e-2, "bf16": 1e-2, "fp32": 1e-3, "int4": 1.5},
+        )
+
+    def common_gemma4_shared_kv_greedy_generation(self, precision, provider):
+        import torch
+        from transformers import AutoModelForCausalLM
+
+        config = self._make_shared_kv_config()
+        torch.manual_seed(42)
+        model = AutoModelForCausalLM.from_config(config)
+        model.eval().to(provider)
+        tokenizer = self.make_word_level_tokenizer(bos_token="<bos>", bos_token_id=2, eos_token="</s>", eos_token_id=1)
+        self.run_greedy_generation_test(
+            model=model,
+            tokenizer=tokenizer,
+            model_name=MODEL_NAME,
+            basename=f"test_generation_gemma4_shared_kv_{precision}_{provider}",
+            precision=precision,
+            provider=provider,
+            num_hidden_layers=config.num_hidden_layers,
+            num_key_value_heads=config.num_key_value_heads,
+            head_size=config.head_dim,
+            vocab_size=config.vocab_size,
+            eos_token_id=config.eos_token_id,
+            create_model_kwargs={"num_hidden_layers": config.num_hidden_layers},
+        )
+
     def common_fast_gemma4_random_weights(self, precision, provider):
         from transformers import AutoModelForCausalLM
 
@@ -187,6 +276,22 @@ class TestRandomGemma4(ExtTestCase):
             cache_dir=cache_dir,
             num_hidden_layers=num_hidden_layers,
         )
+
+    @hide_stdout()
+    def test_fast_discrepancy_gemma4_shared_kv_fp32_cpu(self):
+        self.common_fast_gemma4_shared_kv_random_weights("fp32", "cpu")
+
+    @hide_stdout()
+    def test_fast_discrepancy_gemma4_shared_kv_fp16_cpu(self):
+        self.common_fast_gemma4_shared_kv_random_weights("fp16", "cpu")
+
+    @hide_stdout()
+    def test_gemma4_shared_kv_fp32_cpu_greedy_generation(self):
+        self.common_gemma4_shared_kv_greedy_generation("fp32", "cpu")
+
+    @hide_stdout()
+    def test_gemma4_shared_kv_fp16_cpu_greedy_generation(self):
+        self.common_gemma4_shared_kv_greedy_generation("fp16", "cpu")
 
     @hide_stdout()
     @requires_genai()
