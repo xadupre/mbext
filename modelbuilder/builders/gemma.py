@@ -214,7 +214,7 @@ class Gemma4Model(Gemma3Model):
         # `normed_output * (1 + weight)`.  Clear the +1 offset set by GemmaModel.
         self.layernorm_attrs["add_offset"] = 0
 
-        # Warn about features not yet fully supported in the ONNX export.
+        # Warn about features not yet supported in the ONNX export.
         if getattr(config, "hidden_size_per_layer_input", 0):
             print(
                 "WARNING: Gemma4 Per-Layer Embeddings (PLE, hidden_size_per_layer_input="
@@ -222,8 +222,8 @@ class Gemma4Model(Gemma3Model):
             )
         if getattr(config, "num_kv_shared_layers", 0):
             print(
-                "WARNING: Gemma4 shared KV layers (num_kv_shared_layers="
-                f"{getattr(config, 'num_kv_shared_layers', 0)}) are not yet fully supported in the ONNX export."
+                "WARNING: Gemma4 Shared KV layers (num_kv_shared_layers="
+                f"{getattr(config, 'num_kv_shared_layers', 0)}) are not yet supported and will be ignored in the ONNX export."
             )
         if self._global_head_size != self.head_size:
             print(
