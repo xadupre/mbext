@@ -214,16 +214,11 @@ class Gemma4Model(Gemma3Model):
         # `normed_output * (1 + weight)`.  Clear the +1 offset set by GemmaModel.
         self.layernorm_attrs["add_offset"] = 0
 
-        # Warn about features not yet fully supported in the ONNX export.
+        # Warn about features not yet supported in the ONNX export.
         if getattr(config, "hidden_size_per_layer_input", 0):
             print(
                 "WARNING: Gemma4 Per-Layer Embeddings (PLE, hidden_size_per_layer_input="
                 f"{config.hidden_size_per_layer_input}) are not exported to ONNX and will be zeroed out."
-            )
-        if getattr(config, "num_kv_shared_layers", 0):
-            print(
-                "WARNING: Gemma4 shared KV layers (num_kv_shared_layers="
-                f"{getattr(config, 'num_kv_shared_layers', 0)}) are not yet fully supported in the ONNX export."
             )
         if self._global_head_size != self.head_size:
             print(
@@ -231,11 +226,39 @@ class Gemma4Model(Gemma3Model):
                 "Full-attention layers will use global_head_dim; genai_config.json head_size reflects the sliding-attention value."
             )
 
+        # Build shared-KV metadata: the last `num_kv_shared_layers` layers reuse K/V
+        # from the last non-shared layer of the same type (sliding or full attention).
+        num_kv_shared = getattr(config, "num_kv_shared_layers", 0)
+        self._first_kv_shared_layer_idx = config.num_hidden_layers - num_kv_shared
+        self._shared_kv_donor_map: dict[int, int] = {}
+        # Maps donor_id → (k_path_tensor_name, v_path_tensor_name); populated during
+        # make_attention() as non-shared layers are built.
+        self._donor_kv_paths: dict[int, tuple[str, str]] = {}
+        if num_kv_shared > 0 and self._layer_types is not None:
+            non_shared_types = self._layer_types[: self._first_kv_shared_layer_idx]
+            for i in range(self._first_kv_shared_layer_idx, config.num_hidden_layers):
+                layer_type = self._layer_types[i]
+                # Find the last non-shared layer with the same type.
+                for j in range(len(non_shared_types) - 1, -1, -1):
+                    if non_shared_types[j] == layer_type:
+                        self._shared_kv_donor_map[i] = j
+                        break
+                else:
+                    raise ValueError(
+                        f"Gemma4: shared-KV layer {i} (type '{layer_type}') has no donor: "
+                        f"no non-shared layer of type '{layer_type}' found among "
+                        f"layers 0..{self._first_kv_shared_layer_idx - 1}."
+                    )
+
     def is_local(self, layer_id):
         if self._layer_types is not None and layer_id < len(self._layer_types):
             return self._layer_types[layer_id] == "sliding_attention"
         # Fallback: treat every layer as local (sliding)
         return True
+
+    def is_shared_kv_layer(self, layer_id):
+        """Return True if layer_id reuses K/V from a donor layer (num_kv_shared_layers > 0)."""
+        return layer_id in self._shared_kv_donor_map
 
     def make_attention_init(self):
         super().make_attention_init()  # sets q_norm=True, k_norm=True via Gemma3Model
@@ -302,10 +325,165 @@ class Gemma4Model(Gemma3Model):
         if not self.is_local(layer_id):
             self.head_size = self._global_head_size
             self.num_kv_heads = self._global_num_kv_heads
-        # Gemma2Model.make_attention handles window_size toggle (local → full).
-        Gemma2Model.make_attention(self, layer_id, attention, root_input, **kwargs)
+
+        if self.is_shared_kv_layer(layer_id):
+            # Shared-KV layers have no k_proj/v_proj/k_norm/v_norm weights.
+            # Set window_size for the GQA node, then delegate to the shared path.
+            original_window_size = self.window_size
+            self.window_size = original_window_size if self.is_local(layer_id) else -1
+            self._make_shared_kv_attention(layer_id, attention, root_input, **kwargs)
+            self.window_size = original_window_size
+        else:
+            # Gemma2Model.make_attention handles window_size toggle (local → full).
+            Gemma2Model.make_attention(self, layer_id, attention, root_input, **kwargs)
+            # Save the donor's pre-GQA K/V tensor names so shared layers can reuse them.
+            # attention_attrs["k_path"] / ["v_path"] hold the post-norm, pre-GQA tensors.
+            self._donor_kv_paths[layer_id] = (self.attention_attrs["k_path"], self.attention_attrs["v_path"])
+
         self.head_size = original_head_size
         self.num_kv_heads = original_num_kv_heads
+
+    def _make_q_norm_only(self, layer_id, attention):
+        """Apply Q RMSNorm (SimplifiedLayerNormalization) without touching K or V.
+
+        Shared-KV layers have q_norm but no k_norm/v_norm weights: the donor's
+        K/V are already normalized, so only Q needs normalization here.
+        """
+        import onnx_ir as ir
+
+        layernorm_kwargs = {"epsilon": self.layernorm_attrs["epsilon"], "axis": -1, "stash_type": 1}
+        old_io_dtype = self.io_dtype
+        new_io_dtype = ir.DataType.FLOAT if self.layernorm_attrs["cast"]["use_fp32"] else self.io_dtype
+        cast = old_io_dtype != new_io_dtype
+
+        # Reshape Q from [B, S, D] to [B, S*N, H] before LayerNorm.
+        q_reshape_1_name = f"/model/layers.{layer_id}/attn/q_norm/Reshape_1"
+        q_reshape_1_inputs = [self.attention_attrs["q_path"], f"/model/constants/INT64/[0, -1, {self.head_size}]"]
+        self.make_reshape(
+            q_reshape_1_name,
+            q_reshape_1_inputs,
+            dtype=self.io_dtype,
+            shape=["batch_size", "sequence_length * num_attention_heads", self.head_size],
+        )
+        q_reshape_1_output = f"{q_reshape_1_name}/output_0"
+
+        # Q LayerNorm.
+        q_layernorm_name = f"/model/layers.{layer_id}/attn/q_norm/SimplifiedLayerNormalization"
+        q_weight_name = f"model.layers.{layer_id}.attn.q_norm.layernorm.weight"
+        q_layernorm_output = f"{q_layernorm_name}/output_0"
+        self.make_initializer(attention.q_norm.weight + self.layernorm_attrs["add_offset"], q_weight_name, to=new_io_dtype)
+
+        q_layernorm_inputs = [q_reshape_1_output, q_weight_name]
+        q_layernorm_outputs = [q_layernorm_output]
+        if cast:
+            q_layernorm_inputs, q_layernorm_outputs = self.make_layernorm_casts(
+                q_layernorm_name, q_layernorm_inputs, q_layernorm_outputs, old_io_dtype, new_io_dtype
+            )
+
+        self.make_node(
+            "SimplifiedLayerNormalization",
+            inputs=q_layernorm_inputs,
+            outputs=q_layernorm_outputs,
+            name=q_layernorm_name,
+            **layernorm_kwargs,
+        )
+        self.make_value(
+            q_layernorm_outputs[0], dtype=new_io_dtype, shape=["batch_size", "sequence_length * num_attention_heads", self.head_size]
+        )
+
+        # Reshape Q back from [B, S*N, H] to [B, S, D].
+        q_reshape_2_name = f"/model/layers.{layer_id}/attn/q_norm/Reshape_2"
+        q_reshape_2_inputs = [q_layernorm_output, f"/model/constants/INT64/[0, -1, {self.num_attn_heads * self.head_size}]"]
+        self.make_reshape(
+            q_reshape_2_name,
+            q_reshape_2_inputs,
+            dtype=self.io_dtype,
+            shape=["batch_size", "sequence_length", self.num_attn_heads * self.head_size],
+        )
+        self.attention_attrs["q_path"] = f"{q_reshape_2_name}/output_0"
+
+    def _make_shared_kv_attention(self, layer_id, attention, root_input, **kwargs):
+        """Build the ONNX attention subgraph for a shared-KV layer.
+
+        Shared-KV layers (``num_kv_shared_layers > 0``) have no k_proj/v_proj/
+        k_norm/v_norm weights.  Instead they reuse the K/V tensors computed by
+        the donor layer in the same forward pass.
+
+        The donor's pre-GQA k/v paths (post-norm, same ``[B, S, kv_heads * H]``
+        shape as Q) are wired as the current K/V inputs of this layer's GQA
+        node.  The shared layer maintains its **own** KV-cache (past/present
+        slots), which it updates at each step with the reused K/V — matching
+        HF's ``shared_kv_states`` pattern.
+        """
+        donor_id = self._shared_kv_donor_map[layer_id]
+
+        # --- Q projection ---
+        q_matmul_basename = f"/model/layers.{layer_id}/attn/q_proj/MatMul"
+        q_matmul_name = self.make_matmul(attention.q_proj, q_matmul_basename, root_input)
+        self.attention_attrs["q_path"] = f"{q_matmul_name}/output_0"
+
+        if attention.q_proj.bias is not None and attention.q_proj.bias.any():
+            q_add_name = f"/model/layers.{layer_id}/attn/q_proj/Add"
+            self.make_add_bias(attention.q_proj.bias, q_add_name, root_input=self.attention_attrs["q_path"])
+            self.attention_attrs["q_path"] = f"{q_add_name}/output_0"
+
+        # --- Q norm (shared layers always have q_norm, never k_norm/v_norm) ---
+        self._make_q_norm_only(layer_id, attention)
+
+        # --- Rotary embedding: passed as cos/sin caches to GQA (use_rope_in_attn=True) ---
+        cos_cache_name, sin_cache_name = "", ""
+        if self.attention_attrs["use_rope_in_attn"]:
+            cos_cache_name, sin_cache_name = self.make_rotary_embedding_caches()
+        else:
+            # When rotary is a separate op (e.g. DML), apply it to Q only.
+            q_rotary_name = f"/model/layers.{layer_id}/attn/q_rotary/RotaryEmbedding"
+            self.make_rotary_embedding(
+                q_rotary_name,
+                root_input=self.attention_attrs["q_path"],
+                position_ids=kwargs.get("position_ids", self.input_names["position_ids"]),
+            )
+            self.attention_attrs["q_path"] = f"{q_rotary_name}/output_0"
+
+        # --- Donor's current K/V (post-norm, pre-GQA, shape [B, S, kv_heads * H]) ---
+        donor_k_path, donor_v_path = self._donor_kv_paths[donor_id]
+
+        # --- Shared layer's own KV-cache (past/present) ---
+        past_k, past_v, present_k, present_v = self.make_key_value_cache_names(layer_id)
+
+        # --- GroupQueryAttention node ---
+        # k_path/v_path = donor's current K/V (same S as Q).
+        # past_k/past_v = shared layer's own accumulated cache.
+        # GQA concatenates past_k with donor's k → present_k for shared layer.
+        # This mirrors HF's shared_kv_states semantics: both layers use identical
+        # K/V (same donor weights + same donor hidden state), so the shared
+        # layer's cache accumulates to the same content as the donor's cache.
+        attn_name = f"/model/layers.{layer_id}/attn/{self.attention_attrs['op_type']}"
+        self.make_group_query_attention(
+            attn_name,
+            q_path=self.attention_attrs["q_path"],
+            k_path=donor_k_path,
+            v_path=donor_v_path,
+            past_k=past_k,
+            past_v=past_v,
+            seqlens_k=f"{self.mask_attrs['seqlens_k']}/output_0",
+            total_seq_len=f"{self.mask_attrs['total_seq_len']}/output_0",
+            cos_cache=cos_cache_name,
+            sin_cache=sin_cache_name,
+            present_k=present_k,
+            present_v=present_v,
+        )
+
+        # --- Output projection ---
+        attn_output = f"{attn_name}/output_0"
+        o_matmul_basename = f"/model/layers.{layer_id}/attn/o_proj/MatMul"
+        o_matmul_name = self.make_matmul(attention.o_proj, o_matmul_basename, attn_output)
+
+        o_bias_exists = attention.o_proj.bias is not None
+        if o_bias_exists:
+            o_add_name = f"/model/layers.{layer_id}/attn/o_proj/Add"
+            self.make_add_bias(attention.o_proj.bias, o_add_name, root_input=f"{o_matmul_name}/output_0")
+
+        self.layernorm_attrs["skip_input"] = f"{o_matmul_name if not o_bias_exists else o_add_name}/output_0"
 
     def make_key_value_cache_shape(self, layer_id, shape):
         """Return per-layer KV cache shape, honouring global_head_dim for full-attention layers."""
