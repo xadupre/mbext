@@ -13,7 +13,7 @@ from modelbuilder.ext_test_case import ExtTestCase, hide_stdout, requires_cuda, 
 MINISTRAL3_MODEL_NAME = "mistralai/Ministral-3-3B-Instruct-2512"
 
 
-def _make_mistral3_multimodal_config():
+def _make_ministral3_multimodal_config():
     """Return a tiny ``Mistral3Config`` for offline multimodal unit tests.
 
     Uses ``image_size=56`` (56/14=4 patches per side), ``patch_size=14``,
@@ -238,7 +238,7 @@ class TestMinistral3(ExtTestCase):
 
         from modelbuilder.builder import create_model
 
-        config = _make_mistral3_multimodal_config()
+        config = _make_ministral3_multimodal_config()
         vision_config = config.vision_config
         text_config = config.text_config
         image_size = vision_config.image_size
@@ -371,7 +371,7 @@ class TestMinistral3(ExtTestCase):
 
         from modelbuilder.builder import create_model
 
-        config = _make_mistral3_multimodal_config()
+        config = _make_ministral3_multimodal_config()
         vision_config = config.vision_config
         text_config = config.text_config
         image_size = vision_config.image_size
@@ -509,7 +509,7 @@ class TestMinistral3(ExtTestCase):
         from modelbuilder.builder import create_model
 
         # --- Tiny model configuration ---
-        config = _make_mistral3_multimodal_config()
+        config = _make_ministral3_multimodal_config()
         vision_config = config.vision_config
         text_config = config.text_config
         image_size = vision_config.image_size
@@ -672,7 +672,7 @@ class TestMinistral3(ExtTestCase):
         from modelbuilder.builder import create_model
 
         # --- Tiny model configuration ---
-        config = _make_mistral3_multimodal_config()
+        config = _make_ministral3_multimodal_config()
         vision_config = config.vision_config
         text_config = config.text_config
         image_size = vision_config.image_size
@@ -841,7 +841,7 @@ class TestMinistral3(ExtTestCase):
 
         from modelbuilder.builder import create_model
 
-        config = _make_mistral3_multimodal_config()
+        config = _make_ministral3_multimodal_config()
         vision_config = config.vision_config
         text_config = config.text_config
         image_size = vision_config.image_size
@@ -911,7 +911,7 @@ class TestMinistral3(ExtTestCase):
 
         from modelbuilder.builder import create_model
 
-        config = _make_mistral3_multimodal_config()
+        config = _make_ministral3_multimodal_config()
         vision_config = config.vision_config
         text_config = config.text_config
         image_size = vision_config.image_size
@@ -1031,7 +1031,7 @@ class TestMinistral3(ExtTestCase):
         from modelbuilder.builder import create_model
         from modelbuilder.builders.mistral import Ministral3VisionEncoderModel
 
-        config = _make_mistral3_multimodal_config()
+        config = _make_ministral3_multimodal_config()
         vision_config = config.vision_config
         text_config = config.text_config
         image_size = vision_config.image_size
