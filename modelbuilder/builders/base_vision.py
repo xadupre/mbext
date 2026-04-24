@@ -22,6 +22,7 @@ class VisionEncoderModel(Model):
     * :meth:`make_patch_embedding` — Conv2d → Transpose NCHW→NHWC → Reshape.
     * :meth:`make_gelu_mlp` — ``Linear + GELU + Linear`` projector.
     * :meth:`make_silu_gated_mlp` — ``SiLU(gate) * up → down`` block.
+    * :meth:`_make_standard_vision_layer` — shared ``norm → attn → residual → norm → mlp → residual`` template.
     * :meth:`make_vis_proj` — ``MatMul`` + optional bias ``Add`` projection.
     * :meth:`make_vis_sdpa` — Scaled dot-product attention (Q @ K^T * scale [+ mask] → softmax → @ V).
 
@@ -213,6 +214,119 @@ class VisionEncoderModel(Model):
         out_shape = bs + [n_p, d]
         patch_embed = self.make_reshape(f"{node_prefix}/Reshape", [transposed, out_shape], self.io_dtype, out_shape)
         return patch_embed
+
+    def _make_standard_vision_layer(
+        self,
+        layer_id,
+        norm1_weight,
+        attn_module,
+        norm2_weight,
+        mlp_fn,
+        hidden_shape,
+        *,
+        norm1_name=None,
+        norm2_name=None,
+        res1_name=None,
+        res2_name=None,
+        norm1_bias=None,
+        norm2_bias=None,
+        norm1_weight_name=None,
+        norm2_weight_name=None,
+        norm1_bias_name=None,
+        norm2_bias_name=None,
+        attn_kwargs=None,
+    ):
+        """Build the shared ``norm → attn → residual → norm → mlp → residual`` pattern.
+
+        This is the common structure used by all ViT-style vision encoder transformer
+        blocks.  Subclass ``make_layer`` implementations should extract the
+        layer-specific tensors and node-name strings, then delegate to this method.
+
+        Parameters
+        ----------
+        layer_id : int
+            Transformer layer index (used for node naming).
+        norm1_weight : torch.Tensor
+            Weight tensor for the first normalization layer.
+        attn_module : nn.Module
+            Attention sub-module (passed to :meth:`make_attention`).
+        norm2_weight : torch.Tensor
+            Weight tensor for the second normalization layer.
+        mlp_fn : callable
+            ``(norm2_out: str) -> str`` — builds the MLP sub-graph given the
+            output name of the second norm and returns the ONNX value name of
+            the MLP output (used as the second residual input).
+        hidden_shape : list
+            Shape annotation for hidden-state tensors (norm inputs/outputs and
+            residual outputs).
+        norm1_name : str, optional
+            ONNX node/value base-name for the first norm.  Defaults to
+            ``"/vision/layers.{layer_id}/norm1"``.
+        norm2_name : str, optional
+            ONNX node/value base-name for the second norm.  Defaults to
+            ``"/vision/layers.{layer_id}/norm2"``.
+        res1_name : str, optional
+            ONNX node name for the first residual Add.  Defaults to
+            ``"/vision/layers.{layer_id}/res1"``.
+        res2_name : str, optional
+            ONNX node name for the second residual Add.  Defaults to
+            ``"/vision/layers.{layer_id}/res2"``.
+        norm1_bias : torch.Tensor, optional
+            Bias tensor for the first norm.  When provided, emits a full
+            ``LayerNormalization``; when ``None``, emits ``SimplifiedLayerNormalization``.
+        norm2_bias : torch.Tensor, optional
+            Bias tensor for the second norm (same logic as ``norm1_bias``).
+        norm1_weight_name : str, optional
+            Initializer name for the first norm weight.
+        norm2_weight_name : str, optional
+            Initializer name for the second norm weight.
+        norm1_bias_name : str, optional
+            Initializer name for the first norm bias (only used when ``norm1_bias``
+            is not ``None``).
+        norm2_bias_name : str, optional
+            Initializer name for the second norm bias (only used when ``norm2_bias``
+            is not ``None``).
+        attn_kwargs : dict, optional
+            Extra keyword arguments forwarded to :meth:`make_attention`.
+        """
+        b = f"/vision/layers.{layer_id}"
+        root = self.layernorm_attrs["root_input"]
+
+        _norm1_name = norm1_name if norm1_name is not None else f"{b}/norm1"
+        _norm2_name = norm2_name if norm2_name is not None else f"{b}/norm2"
+        _res1_name = res1_name if res1_name is not None else f"{b}/res1"
+        _res2_name = res2_name if res2_name is not None else f"{b}/res2"
+
+        # Norm 1
+        if norm1_bias is not None:
+            norm1_out = self.make_layer_norm(
+                _norm1_name, root, norm1_weight, norm1_bias, hidden_shape, weight_name=norm1_weight_name, bias_name=norm1_bias_name
+            )
+        else:
+            norm1_out = self.make_rms_norm(_norm1_name, root, norm1_weight, hidden_shape, weight_name=norm1_weight_name)
+
+        # Attention
+        self.make_attention(layer_id, attn_module, norm1_out, **(attn_kwargs or {}))
+        attn_out = self.layernorm_attrs["skip_input"]
+
+        # Residual 1
+        res1 = self.make_add(_res1_name, [root, attn_out], self.io_dtype, hidden_shape)
+
+        # Norm 2
+        if norm2_bias is not None:
+            norm2_out = self.make_layer_norm(
+                _norm2_name, res1, norm2_weight, norm2_bias, hidden_shape, weight_name=norm2_weight_name, bias_name=norm2_bias_name
+            )
+        else:
+            norm2_out = self.make_rms_norm(_norm2_name, res1, norm2_weight, hidden_shape, weight_name=norm2_weight_name)
+
+        # MLP
+        mlp_out = mlp_fn(norm2_out)
+
+        # Residual 2
+        res2 = self.make_add(_res2_name, [res1, mlp_out], self.io_dtype, hidden_shape)
+
+        self.layernorm_attrs["root_input"] = res2
 
     def make_silu_gated_mlp(self, layer_id, mlp, root_input, intermediate_shape):
         """Build a SiLU-gated MLP: ``SiLU(gate_proj) * up_proj → down_proj``.

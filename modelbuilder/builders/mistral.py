@@ -312,41 +312,25 @@ class Ministral3VisionEncoderModel(VisionEncoderModel):
         by ``make_model`` before the first layer) and stores the output tensor
         name back there, following the ``Model.make_layer`` convention.
         """
-        root_input = self.layernorm_attrs["root_input"]
         b = f"/vision/layers.{layer_id}"
         n_p = self.n_patches
         d = self.vis_hidden_size
         ff = self.vis_intermediate_size
 
-        # attention_norm (RMSNorm, no skip)
-        norm1_out = self.make_rms_norm(
-            f"{b}/attention_norm/SimplifiedLayerNorm",
-            root_input,
+        self._make_standard_vision_layer(
+            layer_id,
             layer.attention_norm.weight,
-            shape=[1, n_p, d],
-            weight_name=f"{b}/attention_norm.weight",
+            layer.attention,
+            layer.ffn_norm.weight,
+            lambda norm2_out: self.make_silu_gated_mlp(layer_id, layer.feed_forward, norm2_out, [1, n_p, ff]),
+            [1, n_p, d],
+            norm1_name=f"{b}/attention_norm/SimplifiedLayerNorm",
+            norm2_name=f"{b}/ffn_norm/SimplifiedLayerNorm",
+            res1_name=f"{b}/residual1/Add",
+            res2_name=f"{b}/residual2/Add",
+            norm1_weight_name=f"{b}/attention_norm.weight",
+            norm2_weight_name=f"{b}/ffn_norm.weight",
         )
-
-        # Attention
-        self.make_attention(layer_id, layer.attention, norm1_out)
-        attn_out = self.layernorm_attrs["skip_input"]
-
-        # Residual 1
-        res1 = self.make_add(f"{b}/residual1/Add", [root_input, attn_out], self.io_dtype, [1, n_p, d])
-
-        # ffn_norm (RMSNorm, no skip)
-        norm2_out = self.make_rms_norm(
-            f"{b}/ffn_norm/SimplifiedLayerNorm", res1, layer.ffn_norm.weight, shape=[1, n_p, d], weight_name=f"{b}/ffn_norm.weight"
-        )
-
-        # Feed-forward (SiLU-gated MLP)
-        mlp_out = self.make_silu_gated_mlp(layer_id, layer.feed_forward, norm2_out, [1, n_p, ff])
-
-        # Residual 2
-        res2 = self.make_add(f"{b}/residual2/Add", [res1, mlp_out], self.io_dtype, [1, n_p, d])
-
-        # Store output for next layer or post-processing
-        self.layernorm_attrs["root_input"] = res2
 
     # ------------------------------------------------------------------ #
     #  Patch embedding (Conv2d + reshape + RMSNorm)                       #
