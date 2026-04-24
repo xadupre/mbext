@@ -286,10 +286,7 @@ class DeepSeekV3Model(Model):
 
     def make_moe_layer(self, layer_id, mlp, root_input):
         """MoE: fused routed experts + always-on shared expert."""
-        if self.ep in {"cpu", "cuda", "trt-rtx", "webgpu"}:
-            moe_out = self._make_moe_fused(layer_id, mlp, root_input)
-        else:
-            moe_out = self._make_moe_fused(layer_id, mlp, root_input)
+        moe_out = self._make_moe_fused(layer_id, mlp, root_input)
 
         # Shared expert: always applied
         shared_out = self._make_shared_expert(layer_id, mlp.shared_experts, root_input)
@@ -316,22 +313,13 @@ class DeepSeekV3Model(Model):
             shape=["batch_size * sequence_length", self.moe_attrs["num_experts"]],
         )
 
-        # Expert weights (transposed for ORT MoE kernel)
-        moe_inter = mlp.experts.intermediate_dim
+        # Expert weights – already in the format expected by the ORT MoE kernel:
+        #   gate_up_proj: [n_experts, 2*moe_inter, hidden]  (matches weight1 spec)
+        #   down_proj:    [n_experts, hidden, moe_inter]     (matches weight2 spec)
         gate_up_weight = f"model.layers.{layer_id}.moe.experts.gate_up_proj.weight"
         down_weight = f"model.layers.{layer_id}.moe.experts.down_proj.weight"
-        # gate_up_proj: [n_experts, 2*moe_inter, hidden] → transpose to [n_experts, hidden, 2*moe_inter]
-        self.make_initializer(
-            mlp.experts.gate_up_proj.transpose(-1, -2).reshape(self.moe_attrs["num_experts"], -1, self.hidden_size),
-            gate_up_weight,
-            to=self.io_dtype,
-        )
-        # down_proj: [n_experts, hidden, moe_inter] → transpose to [n_experts, moe_inter, hidden]
-        self.make_initializer(
-            mlp.experts.down_proj.transpose(-1, -2).reshape(self.moe_attrs["num_experts"], self.hidden_size, moe_inter),
-            down_weight,
-            to=self.io_dtype,
-        )
+        self.make_initializer(mlp.experts.gate_up_proj, gate_up_weight, to=self.io_dtype)
+        self.make_initializer(mlp.experts.down_proj, down_weight, to=self.io_dtype)
 
         moe_name = f"{basename}/MoE"
         self.make_base_moe_op(
