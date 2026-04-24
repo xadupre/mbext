@@ -773,7 +773,7 @@ class Phi4MultimodalVisionEncoderModel(VisionEncoderModel):
     # Projection: Linear(d, t_hid) + GELU + Linear(t_hid, t_hid)
     # ------------------------------------------------------------------
 
-    def _build_projector(self, image_embed, x):
+    def make_projector(self, image_embed, x):
         """Project compressed features into the text hidden space.
 
         Input:  x [n_image_tokens, image_dim_out]   e.g. [545, 1152]
@@ -818,7 +818,7 @@ class Phi4MultimodalVisionEncoderModel(VisionEncoderModel):
         x = self._build_crop_merging(x, image_embed)
 
         # Step 5: Project to text hidden size.
-        image_features = self._build_projector(image_embed, x)
+        image_features = self.make_projector(image_embed, x)
 
         # Graph output.
         self.make_node("Identity", inputs=[image_features], outputs=["image_features"], name="/vision/output/Identity")

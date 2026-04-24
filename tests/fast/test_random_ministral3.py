@@ -1045,7 +1045,7 @@ class TestMinistral3(ExtTestCase):
         (``atol=1e-4``).
 
         This test specifically guards the ``_build_patch_embedding`` and
-        ``_build_projector`` implementations against regressions in the
+        ``make_projector`` implementations against regressions in the
         reshape / transpose ordering.
         """
         import torch
@@ -1185,22 +1185,19 @@ class TestMinistral3(ExtTestCase):
 
     @hide_stdout()
     def test_ministral3_projector_linear1_bias_adds_bias_node(self):
-        """Exercises the bias-addition branch in _build_projector (line 528 of
-        mistral.py) by injecting a non-zero bias into the projector's linear_1.
+        """Exercises the bias-addition branch in make_projector by injecting a
+        non-zero bias into the projector's linear_1.
 
         The standard HuggingFace ``Mistral3MultiModalProjector.linear_1`` is
-        always created with ``bias=False``, so the branch
-
-            if lin1_bias is not None and torch.count_nonzero(lin1_bias) > 0:
-
-        is never reached during normal save/load cycles.  This test replaces
-        ``linear_1`` with an ``nn.Linear`` that carries a non-zero bias, then
-        patches ``Ministral3VisionEncoderModel._load_hf_model`` so the builder
-        receives the in-memory model directly (avoiding the round-trip through
-        ``save_pretrained`` / ``from_pretrained`` which would silently drop the
-        bias).  The resulting ``vision_encoder.onnx`` must contain a
-        ``/vision/projector/linear_1/MatMul/BiasAdd`` node, confirming that
-        line 528 was executed.
+        always created with ``bias=False``, so the bias branch inside
+        ``make_gelu_mlp`` is never reached during normal save/load cycles.
+        This test replaces ``linear_1`` with an ``nn.Linear`` that carries a
+        non-zero bias, then patches ``Ministral3VisionEncoderModel._load_hf_model``
+        so the builder receives the in-memory model directly (avoiding the
+        round-trip through ``save_pretrained`` / ``from_pretrained`` which would
+        silently drop the bias).  The resulting ``vision_encoder.onnx`` must
+        contain a ``/vision/projector/linear_1/Add`` node, confirming that the
+        bias branch was executed.
         """
         import onnx
         import torch
@@ -1301,14 +1298,14 @@ class TestMinistral3(ExtTestCase):
         vision_onnx_path = os.path.join(output_dir, "vision_encoder.onnx")
         self.assertExists(vision_onnx_path)
 
-        # A BiasAdd node for linear_1 must be present, confirming that line 528
-        # in _build_projector was executed (non-zero bias branch).
+        # An Add node for linear_1 must be present, confirming that the
+        # bias branch in make_gelu_mlp was executed (non-zero bias branch).
         vision_proto = onnx.load(vision_onnx_path, load_external_data=False)
         node_names = {node.name for node in vision_proto.graph.node}
         self.assertIn(
-            "/vision/projector/linear_1/MatMul/BiasAdd",
+            "/vision/projector/linear_1/Add",
             node_names,
-            "BiasAdd node for linear_1 should be present when projector.linear_1 has a non-zero bias",
+            "Add node for linear_1 should be present when projector.linear_1 has a non-zero bias",
         )
 
         # Verify the forward pass still produces the correct output shape.
