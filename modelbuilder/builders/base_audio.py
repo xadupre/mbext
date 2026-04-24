@@ -21,7 +21,7 @@ class AudioEncoderModel(Model):
       bias (standard LN, no simplified variant).
     * :meth:`_make_audio_linear` — ``MatMul`` + optional ``Add`` (bias)
       projection.
-    * :meth:`_make_swish` — ``sigmoid(x) * x`` (SiLU activation).
+    * :meth:`_make_swish` — ``com.microsoft.QuickGelu(alpha=1.0)`` (SiLU activation).
     * :meth:`_make_constant_i64` — scalar ``int64`` ``Constant`` node.
     * :meth:`_make_constant_i64_1d` — 1-D ``int64`` ``Constant`` node.
 
@@ -113,7 +113,9 @@ class AudioEncoderModel(Model):
         return mm_out
 
     def _make_swish(self, name, root_input, shape):
-        """Build a SiLU activation: ``sigmoid(x) * x``.
+        """Build a SiLU activation via ``com.microsoft.QuickGelu(alpha=1.0)``.
+
+        Computes ``sigmoid(x) * x`` (SiLU / Swish) using the fused contrib op.
 
         Parameters
         ----------
@@ -129,8 +131,10 @@ class AudioEncoderModel(Model):
         str
             Output value name.
         """
-        self.make_sigmoid(f"{name}/Sigmoid", root_input, self.io_dtype, shape)
-        return self.make_mul(f"{name}/Mul", [root_input, f"{name}/Sigmoid/output_0"], self.io_dtype, shape)
+        out = f"{name}/QuickGelu/output_0"
+        self.make_node("QuickGelu", inputs=[root_input], outputs=[out], name=f"{name}/QuickGelu", domain="com.microsoft", alpha=1.0)
+        self.make_value(out, self.io_dtype, shape=shape)
+        return out
 
     def _make_constant_i64(self, name, value):
         """Create a scalar ``int64`` ``Constant`` node.
