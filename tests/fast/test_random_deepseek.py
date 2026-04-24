@@ -22,7 +22,7 @@ requiring a separate registered config class.
 
 import unittest
 
-from modelbuilder.ext_test_case import ExtTestCase, hide_stdout, requires_cuda
+from modelbuilder.ext_test_case import ExtTestCase, hide_stdout, requires_cuda, requires_transformers
 
 MODEL_NAME = "deepseek-ai/DeepSeek-V4-Flash"
 
@@ -73,6 +73,7 @@ def _make_tiny_deepseek_config(**overrides):
     return AutoConfig.for_model("deepseek_v3", **cfg_kwargs)
 
 
+@requires_transformers("5")
 class TestDeepSeekV3(ExtTestCase):
     def common_fast_deepseek_random_weights(self, precision, provider, arch="DeepseekV3ForCausalLM"):
         from transformers import AutoModelForCausalLM
