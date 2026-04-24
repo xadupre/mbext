@@ -240,6 +240,12 @@ class Gemma4Model(Gemma3Model):
                     if non_shared_types[j] == layer_type:
                         self._shared_kv_donor_map[i] = j
                         break
+                else:
+                    raise ValueError(
+                        f"Gemma4: shared-KV layer {i} (type '{layer_type}') has no donor: "
+                        f"no non-shared layer of type '{layer_type}' found among "
+                        f"layers 0..{self._first_kv_shared_layer_idx - 1}."
+                    )
 
     def is_local(self, layer_id):
         if self._layer_types is not None and layer_id < len(self._layer_types):
@@ -334,8 +340,8 @@ class Gemma4Model(Gemma3Model):
     def _make_q_norm_only(self, layer_id, attention):
         """Apply Q RMSNorm (SimplifiedLayerNormalization) without touching K or V.
 
-        Shared-KV layers carry q_norm but not k_norm/v_norm, so we cannot
-        call the usual make_qk_norm helper (which accesses both).
+        Shared-KV layers have q_norm but no k_norm/v_norm weights: the donor's
+        K/V are already normalized, so only Q needs normalization here.
         """
         import onnx_ir as ir
 

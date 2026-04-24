@@ -155,7 +155,10 @@ class TestRandomGemma4(ExtTestCase):
 
         # 4 layers: [sliding, full, sliding, full]
         # Non-shared layers: [0, 1] (sliding + full)
-        # Shared layers:    [2, 3] (sliding reuses layer 0; full reuses layer 1)
+        # Shared layers:    [2, 3] (sliding reuses layer 0 as donor; full reuses layer 1 as donor)
+        # first_kv_shared_layer_idx = 4 - 2 = 2
+        # Layer 2 (sliding): last non-shared sliding = layer 0 → donor = 0
+        # Layer 3 (full):    last non-shared full    = layer 1 → donor = 1
         num_hidden_layers = 4
         num_kv_shared = 2
         config = self._make_config(num_hidden_layers=num_hidden_layers)
