@@ -3,6 +3,9 @@
 # Licensed under the MIT License.  See License.txt in the project root for
 # license information.
 # --------------------------------------------------------------------------
+import json
+import os
+
 import numpy as np
 
 from .mistral import MistralModel
@@ -321,3 +324,16 @@ class Gemma4Model(Gemma3Model):
                 self.model_name_or_path, cache_dir=self.cache_dir, token=self.hf_token, trust_remote_code=self.hf_remote
             )
         return super().load_weights(input_path)
+
+    def make_genai_config(self, model_name_or_path, extra_kwargs, out_dir):
+        """`gemma4` is not a recognised architecture in onnxruntime-genai; replace with `gemma2`."""
+        super().make_genai_config(model_name_or_path, extra_kwargs, out_dir)
+
+        config_path = os.path.join(out_dir, "genai_config.json")
+        with open(config_path) as f:
+            genai_config = json.load(f)
+
+        genai_config["model"]["type"] = "gemma2"
+
+        with open(config_path, "w") as f:
+            json.dump(genai_config, f, indent=4)
