@@ -622,61 +622,30 @@ class Phi4MultimodalVisionEncoderModel(VisionEncoderModel):
 
         Pipeline: LN1 → attention → residual → LN2 → MLP → residual.
         """
-        root_input = self.layernorm_attrs["root_input"]
         b = f"/vision/layers.{layer_id}"
         nc = self.n_crops
         n_p = self.n_patches
         d = self.vis_hidden_size
         ff = self.vis_intermediate_size
 
-        # Layer norm 1.
-        norm1 = self.make_layer_norm(
-            f"{b}/layer_norm1/LayerNorm",
-            root_input,
+        self._make_standard_vision_layer(
+            layer_id,
             layer.layer_norm1.weight,
-            layer.layer_norm1.bias,
-            shape=[nc, n_p, d],
-            weight_name=f"vision.layers.{layer_id}.layer_norm1.weight",
-            bias_name=f"vision.layers.{layer_id}.layer_norm1.bias",
-        )
-
-        # Attention.
-        self.make_attention(layer_id, layer.self_attn, norm1)
-        attn_out = self.layernorm_attrs["skip_input"]
-
-        # Residual 1.
-        res1 = self.make_add(f"{b}/residual1/Add", [root_input, attn_out], self.io_dtype, [nc, n_p, d])
-
-        # Layer norm 2.
-        norm2 = self.make_layer_norm(
-            f"{b}/layer_norm2/LayerNorm",
-            res1,
+            layer.self_attn,
             layer.layer_norm2.weight,
-            layer.layer_norm2.bias,
-            shape=[nc, n_p, d],
-            weight_name=f"vision.layers.{layer_id}.layer_norm2.weight",
-            bias_name=f"vision.layers.{layer_id}.layer_norm2.bias",
+            lambda norm2_out: self.make_gelu_mlp(layer.mlp.fc1, layer.mlp.fc2, norm2_out, [nc, n_p, ff], f"{b}/mlp"),
+            [nc, n_p, d],
+            norm1_name=f"{b}/layer_norm1/LayerNorm",
+            norm2_name=f"{b}/layer_norm2/LayerNorm",
+            res1_name=f"{b}/residual1/Add",
+            res2_name=f"{b}/residual2/Add",
+            norm1_bias=layer.layer_norm1.bias,
+            norm2_bias=layer.layer_norm2.bias,
+            norm1_weight_name=f"vision.layers.{layer_id}.layer_norm1.weight",
+            norm2_weight_name=f"vision.layers.{layer_id}.layer_norm2.weight",
+            norm1_bias_name=f"vision.layers.{layer_id}.layer_norm1.bias",
+            norm2_bias_name=f"vision.layers.{layer_id}.layer_norm2.bias",
         )
-
-        # MLP: fc1 → GELU → fc2 (with optional bias on each).
-        fc1_out = f"{self.make_matmul(layer.mlp.fc1, f'{b}/mlp/fc1/MatMul', norm2)}/output_0"
-        if layer.mlp.fc1.bias is not None:
-            self.make_add_bias(layer.mlp.fc1.bias, f"{b}/mlp/fc1/Add", root_input=fc1_out)
-            fc1_out = f"{b}/mlp/fc1/Add/output_0"
-
-        gelu_out = f"{b}/mlp/gelu/output_0"
-        self.make_node("Gelu", inputs=[fc1_out], outputs=[gelu_out], name=f"{b}/mlp/gelu/Gelu", domain="com.microsoft")
-        self.make_value(gelu_out, self.io_dtype, shape=[nc, n_p, ff])
-
-        fc2_out = f"{self.make_matmul(layer.mlp.fc2, f'{b}/mlp/fc2/MatMul', gelu_out)}/output_0"
-        if layer.mlp.fc2.bias is not None:
-            self.make_add_bias(layer.mlp.fc2.bias, f"{b}/mlp/fc2/Add", root_input=fc2_out)
-            fc2_out = f"{b}/mlp/fc2/Add/output_0"
-
-        # Residual 2.
-        res2 = self.make_add(f"{b}/residual2/Add", [res1, fc2_out], self.io_dtype, [nc, n_p, d])
-
-        self.layernorm_attrs["root_input"] = res2
 
     # ------------------------------------------------------------------
     # Patch embedding (Conv2d + position embeddings)
