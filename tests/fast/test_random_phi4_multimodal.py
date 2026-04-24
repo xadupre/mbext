@@ -212,13 +212,14 @@ class TestPhi4Multimodal(ExtTestCase):
 
         # --- File existence ---
         vision_onnx = os.path.join(output_dir, "vision_encoder.onnx")
+        audio_onnx = os.path.join(output_dir, "audio_encoder.onnx")
         embed_onnx = os.path.join(output_dir, "embedding.onnx")
         text_onnx = os.path.join(output_dir, "model.onnx")
-        for path in (vision_onnx, embed_onnx, text_onnx):
+        for path in (vision_onnx, audio_onnx, embed_onnx, text_onnx):
             self.assertExists(path)
 
         # --- genai_config.json structure ---
-        self.check_phi3v_genai_config(output_dir)
+        self.check_phi3v_genai_config(output_dir, has_speech=True, speech_filename="audio_encoder.onnx")
 
         # --- Vision encoder ORT forward pass ---
         # The vision encoder pixel_values dtype follows io_dtype (float16 for
@@ -251,7 +252,11 @@ class TestPhi4Multimodal(ExtTestCase):
         input_ids_with_img = np.array([[image_token_id] * n_image_tokens], dtype=np.int64)
         # image_features dtype must match the embedding model's expected I/O dtype
         image_features = vis_features.astype(np_dtype)
-        embed_out = embed_sess.run(None, {"input_ids": input_ids_with_img, "image_features": image_features})
+        # audio_features: empty (no audio tokens in this test sequence)
+        audio_features = np.zeros((0, cfg.hidden_size), dtype=np_dtype)
+        embed_out = embed_sess.run(
+            None, {"input_ids": input_ids_with_img, "image_features": image_features, "audio_features": audio_features}
+        )
         self.assertIsNotNone(embed_out[0])
         self.assertEqual(embed_out[0].shape, (batch_size, n_image_tokens, cfg.hidden_size))
 
