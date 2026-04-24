@@ -884,34 +884,30 @@ class Qwen25OmniVisionEncoderModel(VisionEncoderModel):
         hd = self.vis_head_dim
         rope_input = kwargs.get("rotary_pos_emb", "rotary_pos_emb")
 
-        # QKV projections with optional bias.
+        # QKV projections with optional bias: [n, d]
         q = self.make_vis_proj(attention.q, f"{b}/q_proj/MatMul", root_input)
         k = self.make_vis_proj(attention.k, f"{b}/k_proj/MatMul", root_input)
         v = self.make_vis_proj(attention.v, f"{b}/v_proj/MatMul", root_input)
 
-        # Reshape to [n_patches, num_heads, head_dim].
+        # Reshape to [n, nh, hd] for 2-D RoPE application.
         q_4d = self.make_reshape(f"{b}/q_reshape", [q, [0, nh, hd]], self.io_dtype, [n, nh, hd])
         k_4d = self.make_reshape(f"{b}/k_reshape", [k, [0, nh, hd]], self.io_dtype, [n, nh, hd])
-        v_4d = self.make_reshape(f"{b}/v_reshape", [v, [0, nh, hd]], self.io_dtype, [n, nh, hd])
 
-        # Apply 2-D RoPE to Q and K.
+        # Apply 2-D RoPE to Q and K: [n, nh, hd].
         q_rope = self.make_vision_rope(f"{b}/q_rope", q_4d, rope_input, n, hd)
         k_rope = self.make_vision_rope(f"{b}/k_rope", k_4d, rope_input, n, hd)
 
-        # Transpose to [num_heads, n_patches, head_dim] for batched MatMul.
-        q_t = self.make_transpose(f"{b}/q_t", q_rope, self.io_dtype, [nh, n, hd], perm=[1, 0, 2])
-        k_t = self.make_transpose(f"{b}/k_t", k_rope, self.io_dtype, [nh, n, hd], perm=[1, 0, 2])
-        v_t = self.make_transpose(f"{b}/v_t", v_4d, self.io_dtype, [nh, n, hd], perm=[1, 0, 2])
+        # Reshape from [n, nh, hd] to [1, n, d] for MultiHeadAttention.
+        q_mha = self.make_reshape(f"{b}/q_mha_reshape", [q_rope, [1, -1, d]], self.io_dtype, [1, n, d])
+        k_mha = self.make_reshape(f"{b}/k_mha_reshape", [k_rope, [1, -1, d]], self.io_dtype, [1, n, d])
+        # V is not rotated; reshape directly from [n, d] to [1, n, d].
+        v_mha = self.make_reshape(f"{b}/v_mha_reshape", [v, [1, -1, d]], self.io_dtype, [1, n, d])
 
-        # K^T: [num_heads, head_dim, n_patches].
-        k_T = self.make_transpose(f"{b}/k_T", k_t, self.io_dtype, [nh, hd, n], perm=[0, 2, 1])
+        # Fused MultiHeadAttention (full attention, no causal mask): [1, n, d] → [1, n, d].
+        attn_out = self.make_vis_mha(b, q_mha, k_mha, v_mha, nh, float(hd**-0.5), [1, n, d])
 
-        # Scaled dot-product attention (full attention, no causal mask).
-        attn_out_t = self.make_vis_sdpa(b, q_t, k_T, v_t, float(hd**-0.5), [nh, n, n], [nh, n, hd])
-
-        # Transpose back to [n_patches, num_heads, head_dim] and flatten to [n_patches, d].
-        attn_back = self.make_transpose(f"{b}/attn_back", attn_out_t, self.io_dtype, [n, nh, hd], perm=[1, 0, 2])
-        attn_flat = self.make_reshape(f"{b}/attn_flat", [attn_back, [0, d]], self.io_dtype, [n, d])
+        # Reshape back to [n, d] for the O projection.
+        attn_flat = self.make_reshape(f"{b}/attn_flat", [attn_out, [-1, d]], self.io_dtype, [n, d])
 
         # O projection (no bias in Qwen2.5-Omni vision attention).
         o = self.make_vis_proj(attention.proj, f"{b}/o_proj/MatMul", attn_flat)

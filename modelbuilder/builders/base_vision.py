@@ -24,7 +24,8 @@ class VisionEncoderModel(Model):
     * :meth:`make_silu_gated_mlp` — ``SiLU(gate) * up → down`` block.
     * :meth:`_make_standard_vision_layer` — shared ``norm → attn → residual → norm → mlp → residual`` template.
     * :meth:`make_vis_proj` — ``MatMul`` + optional bias ``Add`` projection.
-    * :meth:`make_vis_sdpa` — Scaled dot-product attention (Q @ K^T * scale [+ mask] → softmax → @ V).
+    * :meth:`make_vis_sdpa` — Decomposed scaled dot-product attention (Q @ K^T * scale [+ mask] → softmax → @ V).
+    * :meth:`make_vis_mha` — Fused scaled dot-product attention via ``com.microsoft.MultiHeadAttention``.
 
     Subclasses override :meth:`make_attention`, :meth:`make_layer`, and
     :meth:`make_model` with architecture-specific logic.
@@ -458,3 +459,47 @@ class VisionEncoderModel(Model):
         self.make_value(attn_out_t, self.io_dtype, shape=out_shape)
 
         return attn_out_t
+
+    def make_vis_mha(self, b, q, k, v, num_heads, scale, out_shape, add_qk_name=None):
+        """Build scaled dot-product attention using ``com.microsoft.MultiHeadAttention``.
+
+        Replaces the decomposed ``Q @ K^T * scale → softmax → @ V`` sequence
+        with the fused ORT contrib kernel, which can exploit flash-attention
+        or other efficient backends at runtime.
+
+        Parameters
+        ----------
+        b : str
+            Base prefix for all ONNX node names in this attention block
+            (e.g. ``"/vision/layers.0/attn"``).
+        q : str
+            Query tensor name, shape ``[batch, seq, num_heads * head_dim]``.
+        k : str
+            Key tensor name, shape ``[batch, kv_seq, num_heads * head_dim]``.
+        v : str
+            Value tensor name, shape ``[batch, kv_seq, num_heads * head_dim]``.
+        num_heads : int
+            Number of attention heads.
+        scale : float
+            Attention scale factor (typically ``head_dim ** -0.5``).
+        out_shape : list
+            Shape annotation for the output tensor
+            (e.g. ``[batch, seq, num_heads * head_dim]``).
+        add_qk_name : str or None, optional
+            Name of an additive bias tensor of shape
+            ``[batch, num_heads, seq, kv_seq]`` (or broadcast-compatible) to
+            add to ``Q @ K^T`` before softmax.  Used for causal attention.
+            Defaults to ``None`` for encoder-style full attention.
+
+        Returns
+        -------
+        str
+            Output tensor name of shape ``out_shape``.
+        """
+        inputs = [q, k, v, "", "", add_qk_name or ""]
+        output = f"{b}/mha/output_0"
+        self.make_node(
+            "MultiHeadAttention", inputs=inputs, outputs=[output], name=f"{b}/mha", domain="com.microsoft", num_heads=num_heads, scale=scale
+        )
+        self.make_value(output, self.io_dtype, shape=out_shape)
+        return output
