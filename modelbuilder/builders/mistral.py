@@ -388,7 +388,7 @@ class Ministral3VisionEncoderModel(VisionEncoderModel):
     #  Multimodal projector                                               #
     # ------------------------------------------------------------------ #
 
-    def _build_projector(self, proj, root_input):
+    def make_projector(self, proj, root_input):
         """Build the Mistral3MultiModalProjector.
 
         root_input: [1, n_patches, vis_hidden_size]
@@ -447,37 +447,7 @@ class Ministral3VisionEncoderModel(VisionEncoderModel):
         merged_out = f"{self.make_matmul(proj.patch_merger.merging_layer, '/vision/projector/merging_layer/MatMul', merged)}/output_0"
 
         # --- linear_1 + gelu + linear_2 ---
-        t_hid = self.text_hidden_size
-        lin1_name = "/vision/projector/linear_1/MatMul"
-        lin1_out = f"{self.make_matmul(proj.linear_1, lin1_name, merged_out)}/output_0"
-        lin1_bias = getattr(proj.linear_1, "bias", None)
-        if lin1_bias is not None and torch.count_nonzero(lin1_bias) > 0:
-            lin1_bias_name = "vision.projector.linear_1.bias"
-            self.make_initializer(lin1_bias, lin1_bias_name, to=self.io_dtype)
-            lin1_add_name = f"{lin1_name}/BiasAdd"
-            lin1_add_out = f"{lin1_add_name}/output_0"
-            self.make_node("Add", inputs=[lin1_out, lin1_bias_name], outputs=[lin1_add_out], name=lin1_add_name)
-            self.make_value(lin1_add_out, self.io_dtype, shape=[nm, t_hid])
-            lin1_out = lin1_add_out
-
-        # GELU activation (default projector_hidden_act is "gelu")
-        gelu_out = "/vision/projector/gelu/output_0"
-        self.make_node("Gelu", inputs=[lin1_out], outputs=[gelu_out], name="/vision/projector/gelu/Gelu", domain="com.microsoft")
-        self.make_value(gelu_out, self.io_dtype, shape=[nm, t_hid])
-
-        # linear_2: [nm, text_hidden_size] -> [nm, text_hidden_size]
-        lin2_name = "/vision/projector/linear_2/MatMul"
-        lin2_out = f"{self.make_matmul(proj.linear_2, lin2_name, gelu_out)}/output_0"
-        lin2_bias = getattr(proj.linear_2, "bias", None)
-        if lin2_bias is not None and torch.count_nonzero(lin2_bias) > 0:
-            lin2_bias_name = "vision.projector.linear_2.bias"
-            self.make_initializer(lin2_bias, lin2_bias_name, to=self.io_dtype)
-            lin2_add_name = f"{lin2_name}/BiasAdd"
-            lin2_add_out = f"{lin2_add_name}/output_0"
-            self.make_node("Add", inputs=[lin2_out, lin2_bias_name], outputs=[lin2_add_out], name=lin2_add_name)
-            self.make_value(lin2_add_out, self.io_dtype, shape=[nm, t_hid])
-            lin2_out = lin2_add_out
-        return lin2_out
+        return self.make_gelu_mlp(proj.linear_1, proj.linear_2, merged_out, [nm, self.text_hidden_size], "/vision/projector")
 
     # ------------------------------------------------------------------ #
     #  Main entry points                                                  #
@@ -513,7 +483,7 @@ class Ministral3VisionEncoderModel(VisionEncoderModel):
         x = self.layernorm_attrs["root_input"]
 
         # Projector
-        image_features = self._build_projector(proj, x)
+        image_features = self.make_projector(proj, x)
 
         # Graph output (rename via Identity so the output has the clean name)
         self.make_node("Identity", inputs=[image_features], outputs=["image_features"], name="/vision/output/Identity")
