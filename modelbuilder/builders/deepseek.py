@@ -22,7 +22,6 @@ structure and weight layout are correct; numerical routing accuracy may differ.
 """
 
 import numpy as np
-import onnx_ir as ir
 
 from .base import Model
 
@@ -337,8 +336,7 @@ class DeepSeekV3Model(Model):
 
         # SiLU(gate) * up
         silu_name = f"{b}/silu/Sigmoid"
-        self.make_node("Sigmoid", inputs=[gate_name], outputs=[f"{silu_name}/output_0"], name=silu_name)
-        self.make_value(f"{silu_name}/output_0", self.io_dtype, shape=["batch_size", "sequence_length", inter])
+        self.make_sigmoid(silu_name, gate_name, self.io_dtype, ["batch_size", "sequence_length", inter])
         mul_name = f"{b}/silu/Mul"
         self.make_mul(mul_name, [f"{silu_name}/output_0", gate_name], self.io_dtype, ["batch_size", "sequence_length", inter])
         act_mul_name = f"{b}/act_mul/Mul"
@@ -420,15 +418,13 @@ class DeepSeekV3Model(Model):
 
         # Tile by [1, 1, num_heads, 1] → [B, S, num_heads, rope_dim]
         tile_name = f"{name}/Tile"
-        repeats_name = f"{name}/tile_repeats"
-        repeats_tensor = ir.tensor(np.array([1, 1, num_heads, 1], dtype=np.int64), name=repeats_name)
-        self.make_node("Constant", inputs=[], outputs=[repeats_name], name=f"{repeats_name}/Constant", value=repeats_tensor)
-        self.make_value(repeats_name, ir.DataType.INT64, shape=[4])
-
-        tile_output = f"{tile_name}/output_0"
-        self.make_node("Tile", inputs=[f"{unsq_name}/output_0", repeats_name], outputs=[tile_output], name=tile_name)
-        self.make_value(tile_output, self.io_dtype, shape=[bs, seq, num_heads, rope_dim])
-        return tile_output
+        self.make_tile(
+            tile_name,
+            [f"{unsq_name}/output_0", f"/model/constants/INT64/[1, 1, {num_heads}, 1]"],
+            self.io_dtype,
+            [bs, seq, num_heads, rope_dim],
+        )
+        return f"{tile_name}/output_0"
 
     def _pad_v(self, name, v_4d, hv, hq, num_heads):
         """Zero-pad V from [..., hv] to [..., hq] along last axis.
@@ -442,19 +438,8 @@ class DeepSeekV3Model(Model):
         # ONNX Pad pads = [begin_dim0, begin_dim1, ..., end_dim0, end_dim1, ...]
         # We want to pad only the last dim at the end.
         # For a 4D tensor: pads = [0,0,0,0, 0,0,0,pad_amount]
-        pads_name = f"{name}/pads"
-        pads_tensor = ir.tensor(np.array([0, 0, 0, 0, 0, 0, 0, pad_amount], dtype=np.int64), name=pads_name)
-        self.make_node("Constant", inputs=[], outputs=[pads_name], name=f"{pads_name}/Constant", value=pads_tensor)
-        self.make_value(pads_name, ir.DataType.INT64, shape=[8])
-
+        pads_name = f"/model/constants/INT64/[0, 0, 0, 0, 0, 0, 0, {pad_amount}]"
         pad_output = f"{name}/output_0"
         self.make_node("Pad", inputs=[v_4d, pads_name], outputs=[pad_output], name=name)
         self.make_value(pad_output, self.io_dtype, shape=[bs, seq, num_heads, hq])
         return pad_output
-
-    def make_unsqueeze(self, name, inputs, dtype, shape):
-        """Create an Unsqueeze node."""
-        output = f"{name}/output_0"
-        self.make_node("Unsqueeze", inputs=inputs, outputs=[output], name=name)
-        self.make_value(output, dtype, shape=shape)
-        return output
