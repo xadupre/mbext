@@ -63,9 +63,17 @@ class TestRandomGemma4(ExtTestCase):
         contain at least one sliding and one full-attention layer so that each
         shared layer has a valid donor.
 
-        ``num_hidden_layers`` must be >= 4 so that at least one non-shared
-        sliding *and* one non-shared full-attention layer always exist.
+        ``num_hidden_layers`` must be >= 4 and ``num_kv_shared`` must satisfy
+        ``2 <= num_kv_shared <= num_hidden_layers - 2`` so that at least one
+        non-shared sliding *and* one non-shared full-attention layer always exist.
         """
+        if num_hidden_layers < 4:
+            raise ValueError(f"num_hidden_layers must be >= 4, got {num_hidden_layers}")
+        if num_kv_shared < 2 or num_kv_shared > num_hidden_layers - 2:
+            raise ValueError(
+                f"num_kv_shared must be in [2, num_hidden_layers - 2], "
+                f"got num_kv_shared={num_kv_shared}, num_hidden_layers={num_hidden_layers}"
+            )
         from transformers import Gemma4TextConfig
 
         layer_types = []
