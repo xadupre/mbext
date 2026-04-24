@@ -34,6 +34,8 @@ token generation via ``onnxruntime-genai``.
 | [google/gemma-2-2b](https://huggingface.co/google/gemma-2-2b) | `Gemma2ForCausalLM` | ✓ | | |
 | [google/gemma-3-4b-it](https://huggingface.co/google/gemma-3-4b-it) | `Gemma3ForCausalLM` (text-only) | ✓ | | |
 | [google/gemma-3-4b-it](https://huggingface.co/google/gemma-3-4b-it) | `Gemma3ForConditionalGeneration` (multimodal) | ✓ | | |
+| [google/gemma-4-E4B-it](https://huggingface.co/google/gemma-4-E4B-it) | `Gemma4ForCausalLM` | ✓ | | |
+| [google/gemma-4-E4B-it](https://huggingface.co/google/gemma-4-E4B-it) | `Gemma4ForConditionalGeneration` (text-only) | | | |
 | [openai/gpt-oss-20b](https://huggingface.co/openai/gpt-oss-20b) | `GptOssForCausalLM` | ✓ | | |
 | [ibm-granite/granite-3.3-2b-instruct](https://huggingface.co/ibm-granite/granite-3.3-2b-instruct) | `GraniteForCausalLM` | ✓ | | |
 | [internlm/internlm2-7b](https://huggingface.co/internlm/internlm2-7b) | `InternLM2ForCausalLM` | ✓ | | |
@@ -51,8 +53,11 @@ token generation via ``onnxruntime-genai``.
 | [microsoft/Phi-3-small-8k-instruct](https://huggingface.co/microsoft/Phi-3-small-8k-instruct) | `Phi3SmallForCausalLM` | ✓ | | |
 | [microsoft/Phi-3-vision-128k-instruct](https://huggingface.co/microsoft/Phi-3-vision-128k-instruct) | `Phi3VForCausalLM` | ✓ | | |
 | [microsoft/Phi-4-multimodal-instruct](https://huggingface.co/microsoft/Phi-4-multimodal-instruct) | `Phi4MMForCausalLM` | ✓ | | |
+| [microsoft/Phi-4-multimodal-instruct](https://huggingface.co/microsoft/Phi-4-multimodal-instruct) | `Phi4MultimodalForCausalLM` (multimodal) | ✓ | | |
 | [microsoft/Phi-3.5-MoE-instruct](https://huggingface.co/microsoft/Phi-3.5-MoE-instruct) | `PhiMoEForCausalLM` | ✓ | | |
 | [Qwen/Qwen2.5-VL-7B-Instruct](https://huggingface.co/Qwen/Qwen2.5-VL-7B-Instruct) | `Qwen2_5_VLForConditionalGeneration` | ✓ | | |
+| [Qwen/Qwen2.5-Omni-3B](https://huggingface.co/Qwen/Qwen2.5-Omni-3B) | `Qwen2_5OmniForConditionalGeneration` (text) | ✓ | | |
+| [Qwen/Qwen2.5-Omni-3B](https://huggingface.co/Qwen/Qwen2.5-Omni-3B) | `Qwen2_5OmniForConditionalGeneration` (multimodal) | ✓ | | |
 | [Qwen/Qwen3-0.6B](https://huggingface.co/Qwen/Qwen3-0.6B) | `Qwen3ForCausalLM` | ✓ | ✓ CPU | ✓ CPU |
 | [Qwen/Qwen3.5-3B](https://huggingface.co/Qwen/Qwen3.5-3B) | `Qwen3_5ForConditionalGeneration` | ✓ | | |
 | [Qwen/Qwen3-VL-4B-Instruct](https://huggingface.co/Qwen/Qwen3-VL-4B-Instruct) | `Qwen3VLForConditionalGeneration` | ✓ | | |
