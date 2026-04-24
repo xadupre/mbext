@@ -3,8 +3,6 @@
 # Licensed under the MIT License.  See License.txt in the project root for
 # license information.
 # --------------------------------------------------------------------------
-import contextlib
-import io
 import unittest
 
 from modelbuilder.ext_test_case import ExtTestCase, hide_stdout, requires_cuda, requires_genai, requires_transformers
@@ -141,17 +139,32 @@ class TestRandomGemma4(ExtTestCase):
     def test_gemma4_bf16_cuda_greedy_generation(self):
         self.common_gemma4_greedy_generation("bf16", "cuda")
 
-    def test_gemma4_num_kv_shared_layers_warning(self):
-        """Creating a Gemma4Model with num_kv_shared_layers > 0 should print a warning."""
+    @hide_stdout()
+    def test_gemma4_num_kv_shared_layers(self):
+        """Gemma4 with num_kv_shared_layers > 0 should export without errors.
+
+        Shared-KV layers (the last ``num_kv_shared_layers`` layers) have no
+        k_proj/v_proj/k_norm/v_norm weights and reuse the donor layer's K/V.
+        This test verifies that ``create_model`` completes successfully for such
+        a configuration and produces a valid ONNX model.
+        """
         import torch
         from transformers import AutoModelForCausalLM
 
         from modelbuilder.builder import create_model
 
-        config = self._make_config(num_hidden_layers=2)
-        config.num_kv_shared_layers = 2
+        # 4 layers: [sliding, full, sliding, full]
+        # Non-shared layers: [0, 1] (sliding + full)
+        # Shared layers:    [2, 3] (sliding reuses layer 0; full reuses layer 1)
+        num_hidden_layers = 4
+        num_kv_shared = 2
+        config = self._make_config(num_hidden_layers=num_hidden_layers)
+        # Override layer_types so that both non-shared and shared sections
+        # contain at least one sliding and one full-attention layer.
+        config.layer_types = ["sliding_attention", "full_attention", "sliding_attention", "full_attention"]
+        config.num_kv_shared_layers = num_kv_shared
 
-        prefix = "test_gemma4_num_kv_shared_layers_warning"
+        prefix = "test_gemma4_num_kv_shared_layers"
         model_dir = self.get_model_dir(prefix, clean=True)
         torch.manual_seed(42)
         model = AutoModelForCausalLM.from_config(config)
@@ -162,21 +175,15 @@ class TestRandomGemma4(ExtTestCase):
 
         output_dir, cache_dir = self.get_dirs(prefix, clean=True)
 
-        captured = io.StringIO()
-        with contextlib.redirect_stdout(captured):
-            create_model(
-                model_name=MODEL_NAME,
-                input_path=model_dir,
-                output_dir=output_dir,
-                precision="fp32",
-                execution_provider="cpu",
-                cache_dir=cache_dir,
-                num_hidden_layers=config.num_hidden_layers,
-            )
-
-        output = captured.getvalue()
-        self.assertIn("num_kv_shared_layers", output)
-        self.assertIn("WARNING", output)
+        create_model(
+            model_name=MODEL_NAME,
+            input_path=model_dir,
+            output_dir=output_dir,
+            precision="fp32",
+            execution_provider="cpu",
+            cache_dir=cache_dir,
+            num_hidden_layers=num_hidden_layers,
+        )
 
     @hide_stdout()
     @requires_genai()
