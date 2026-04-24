@@ -270,28 +270,11 @@ class Ministral3VisionEncoderModel(VisionEncoderModel):
         q_rope = self.make_rotary_embedding(f"{b}/q_rotary/RotaryEmbedding", q)
         k_rope = self.make_rotary_embedding(f"{b}/k_rotary/RotaryEmbedding", k)
 
-        # Reshape to [1, n_patches, n_heads, head_dim] and transpose to [1, n_heads, n_patches, head_dim]
-        qkv_shape_4d = [1, n_p, nh, hd]
-        q_4d = self.make_reshape(f"{b}/q_reshape", [q_rope, [1, n_p, nh, hd]], self.io_dtype, qkv_shape_4d)
-        k_4d = self.make_reshape(f"{b}/k_reshape", [k_rope, [1, n_p, nh, hd]], self.io_dtype, qkv_shape_4d)
-        v_4d = self.make_reshape(f"{b}/v_reshape", [v, [1, n_p, nh, hd]], self.io_dtype, qkv_shape_4d)
-
-        qkv_t_shape = [1, nh, n_p, hd]
-        q_t = self.make_transpose(f"{b}/q_t", q_4d, self.io_dtype, qkv_t_shape, perm=[0, 2, 1, 3])
-        v_t = self.make_transpose(f"{b}/v_t", v_4d, self.io_dtype, qkv_t_shape, perm=[0, 2, 1, 3])
-
-        # K^T: [1, nh, hd, n_p]
-        k_T = self.make_transpose(f"{b}/k_T", k_4d, self.io_dtype, [1, nh, hd, n_p], perm=[0, 2, 3, 1])
-
-        # Scaled dot-product attention (encoder, no causal mask)
-        attn_out_t = self.make_vis_sdpa(b, q_t, k_T, v_t, self.vis_attn_scale, [1, nh, n_p, n_p], qkv_t_shape)
-
-        # Transpose + Reshape back to [1, n_patches, hidden_size]
-        attn_out = self.make_transpose(f"{b}/attn_out_t", attn_out_t, self.io_dtype, [1, n_p, nh, hd], perm=[0, 2, 1, 3])
-        attn_out_2d = self.make_reshape(f"{b}/attn_out_reshape", [attn_out, [1, n_p, d]], self.io_dtype, [1, n_p, d])
+        # MultiHeadAttention: Q, K (post-RoPE), V already in [1, n_patches, hidden] format.
+        attn_out = self.make_vis_mha(b, q_rope, k_rope, v, nh, hd, d, [1], n_p)
 
         # O projection (no bias in Pixtral attention)
-        o = self.make_vis_proj(attention.o_proj, f"{b}/o_proj/MatMul", attn_out_2d)
+        o = self.make_vis_proj(attention.o_proj, f"{b}/o_proj/MatMul", attn_out)
 
         # Follow Model.make_attention convention: store output in layernorm_attrs["skip_input"]
         self.layernorm_attrs["skip_input"] = o

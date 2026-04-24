@@ -551,39 +551,16 @@ class Phi4MultimodalVisionEncoderModel(VisionEncoderModel):
         hd = self.vis_head_dim
 
         # Q / K / V projections (with bias).
+        # Q, K, V: [nc, n_patches, hidden]
         q = self.make_vis_proj(attention.q_proj, f"{b}/q_proj/MatMul", root_input)
         k = self.make_vis_proj(attention.k_proj, f"{b}/k_proj/MatMul", root_input)
         v = self.make_vis_proj(attention.v_proj, f"{b}/v_proj/MatMul", root_input)
 
-        # Reshape to [nc, n_patches, n_heads, head_dim] then transpose to [nc, n_heads, n_patches, head_dim].
-        qkv_4d = [nc, n_p, nh, hd]
-        q_4d = self.make_reshape(f"{b}/q_reshape", [q, [nc, n_p, nh, hd]], self.io_dtype, qkv_4d)
-        k_4d = self.make_reshape(f"{b}/k_reshape", [k, [nc, n_p, nh, hd]], self.io_dtype, qkv_4d)
-        v_4d = self.make_reshape(f"{b}/v_reshape", [v, [nc, n_p, nh, hd]], self.io_dtype, qkv_4d)
-
-        qkv_t = [nc, nh, n_p, hd]
-        q_t = self.make_transpose(f"{b}/q_t", q_4d, self.io_dtype, qkv_t, perm=[0, 2, 1, 3])
-        v_t = self.make_transpose(f"{b}/v_t", v_4d, self.io_dtype, qkv_t, perm=[0, 2, 1, 3])
-        # k_T: [nc, nh, hd, n_p] — pre-transposed for matmul.
-        k_T = self.make_transpose(f"{b}/k_T", k_4d, self.io_dtype, [nc, nh, hd, n_p], perm=[0, 2, 3, 1])
-
-        # Build causal mask: upper-triangular entries set to -inf so softmax ignores them.
-        # Shape [1, 1, n_p, n_p] broadcasts over (nc, nh).
-        np_dtype = {ir.DataType.FLOAT: np.float32, ir.DataType.FLOAT16: np.float16}.get(self.io_dtype, np.float32)
-        causal_mask_name = f"{b}/causal_mask"
-        causal_np = np.full((1, 1, n_p, n_p), fill_value=0.0, dtype=np_dtype)
-        causal_np[:, :, np.triu_indices(n_p, k=1)[0], np.triu_indices(n_p, k=1)[1]] = np.finfo(np_dtype).min / 2
-        self.make_initializer(causal_np, causal_mask_name)
-
-        # Scaled dot-product attention with causal mask.
-        attn_out_t = self.make_vis_sdpa(b, q_t, k_T, v_t, self.vis_attn_scale, [nc, nh, n_p, n_p], qkv_t, causal_mask_name=causal_mask_name)
-
-        # Transpose + Reshape back to [nc, n_patches, hidden].
-        attn_out = self.make_transpose(f"{b}/attn_out_t", attn_out_t, self.io_dtype, [nc, n_p, nh, hd], perm=[0, 2, 1, 3])
-        attn_out_3d = self.make_reshape(f"{b}/attn_out_reshape", [attn_out, [nc, n_p, d]], self.io_dtype, [nc, n_p, d])
+        # Causal MultiHeadAttention (unidirectional=1 replaces the explicit upper-triangular mask).
+        attn_out = self.make_vis_mha(b, q, k, v, nh, hd, d, [nc], n_p, unidirectional=1)
 
         # O projection (with bias).
-        o = self.make_vis_proj(attention.out_proj, f"{b}/out_proj/MatMul", attn_out_3d)
+        o = self.make_vis_proj(attention.out_proj, f"{b}/out_proj/MatMul", attn_out)
 
         self.layernorm_attrs["skip_input"] = o
 

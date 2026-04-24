@@ -25,6 +25,7 @@ class VisionEncoderModel(Model):
     * :meth:`_make_standard_vision_layer` — shared ``norm → attn → residual → norm → mlp → residual`` template.
     * :meth:`make_vis_proj` — ``MatMul`` + optional bias ``Add`` projection.
     * :meth:`make_vis_sdpa` — Scaled dot-product attention (Q @ K^T * scale [+ mask] → softmax → @ V).
+    * :meth:`make_vis_mha` — ``com.microsoft.MultiHeadAttention`` contrib-op attention (Q, K, V in BSH format).
 
     Subclasses override :meth:`make_attention`, :meth:`make_layer`, and
     :meth:`make_model` with architecture-specific logic.
@@ -458,3 +459,57 @@ class VisionEncoderModel(Model):
         self.make_value(attn_out_t, self.io_dtype, shape=out_shape)
 
         return attn_out_t
+
+    def make_vis_mha(self, b, q, k, v, num_heads, head_dim, hidden_size, batch_shape, seq_len, *, unidirectional=0):
+        """Build a ``com.microsoft.MultiHeadAttention`` node for vision encoders.
+
+        Replaces the manual Q @ K^T → scale → softmax → @ V sequence from
+        :meth:`make_vis_sdpa` with a single contrib-op node.  Q, K, and V must
+        already be in ``[*batch_shape, seq_len, hidden_size]`` format (i.e.
+        after any required rotary embedding but **before** head-splitting).
+
+        Parameters
+        ----------
+        b : str
+            Base prefix for ONNX node names (e.g. ``"/vision/layers.0/attn"``).
+        q : str
+            Query tensor name, shape ``[*batch_shape, seq_len, hidden_size]``.
+        k : str
+            Key tensor name, shape ``[*batch_shape, seq_len, hidden_size]``.
+        v : str
+            Value tensor name, shape ``[*batch_shape, seq_len, hidden_size]``.
+        num_heads : int
+            Number of attention heads.
+        head_dim : int
+            Dimension per attention head.
+        hidden_size : int
+            Total hidden size (``num_heads * head_dim``).
+        batch_shape : list
+            Leading batch dimensions (e.g. ``[1]`` for single-image or
+            ``[nc]`` for multi-crop models).
+        seq_len : int or None
+            Sequence length (number of patches), ``None`` for dynamic.
+        unidirectional : int, optional
+            ``0`` for bidirectional encoder-style attention (default),
+            ``1`` for causal decoder-style attention.
+
+        Returns
+        -------
+        str
+            Output tensor name, shape ``[*batch_shape, seq_len, hidden_size]``.
+        """
+        scale = float(head_dim**-0.5)
+        output = f"{b}/MHA/output_0"
+        self.make_node(
+            "MultiHeadAttention",
+            inputs=[q, k, v, "", "", "", "", ""],
+            outputs=[output, "", ""],
+            name=f"{b}/MHA",
+            domain="com.microsoft",
+            num_heads=num_heads,
+            scale=scale,
+            unidirectional=unidirectional,
+        )
+        out_shape = list(batch_shape) + [seq_len, hidden_size]
+        self.make_value(output, self.io_dtype, shape=out_shape)
+        return output
