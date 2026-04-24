@@ -5,7 +5,7 @@
 # --------------------------------------------------------------------------
 import unittest
 
-from modelbuilder.ext_test_case import ExtTestCase, hide_stdout, requires_cuda, requires_transformers
+from modelbuilder.ext_test_case import ExtTestCase, hide_stdout, requires_cuda, requires_genai, requires_transformers
 
 MODEL_NAME = "google/gemma-4-E4B-it"
 
@@ -130,6 +130,40 @@ class TestRandomGemma4(ExtTestCase):
     @requires_cuda()
     def test_gemma4_bf16_cuda_greedy_generation(self):
         self.common_gemma4_greedy_generation("bf16", "cuda")
+
+    @hide_stdout()
+    @requires_genai()
+    def test_gemma4_fp32_cpu_genai_generate(self):
+        import torch
+        from transformers import AutoModelForCausalLM
+
+        from modelbuilder.builder import create_model
+
+        prefix = "test_gemma4_fp32_cpu_genai_generate"
+        config = self._make_config(num_hidden_layers=2)
+
+        model_dir = self.get_model_dir(prefix, clean=False)
+        torch.manual_seed(42)
+        model = AutoModelForCausalLM.from_config(config)
+        model.eval()
+        model.save_pretrained(model_dir)
+
+        tokenizer = self.make_word_level_tokenizer(bos_token="<bos>", bos_token_id=2, eos_token="</s>", eos_token_id=1)
+        tokenizer.save_pretrained(model_dir)
+
+        output_dir, cache_dir = self.get_dirs(prefix, clean=False)
+
+        create_model(
+            model_name=MODEL_NAME,
+            input_path=model_dir,
+            output_dir=output_dir,
+            precision="fp32",
+            execution_provider="cpu",
+            cache_dir=cache_dir,
+            num_hidden_layers=config.num_hidden_layers,
+        )
+
+        self.run_genai_generation_test(output_dir, model, config.vocab_size, config.eos_token_id)
 
 
 if __name__ == "__main__":
