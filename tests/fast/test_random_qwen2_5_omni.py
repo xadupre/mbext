@@ -184,7 +184,7 @@ class TestRandomQwen25OmniVision(ExtTestCase):
 
     The audio encoder takes:
 
-    * ``input_features`` [num_mel_bins, n_frames] – mel-spectrogram for a single audio item.
+    * ``audio_embeds`` [num_mel_bins, n_frames] – mel-spectrogram for a single audio item.
 
     The embedding model replaces ``image_token_id`` and ``audio_token_id`` placeholders
     in ``input_ids`` with the corresponding encoder outputs.
@@ -284,8 +284,8 @@ class TestRandomQwen25OmniVision(ExtTestCase):
         self.assertEqual(genai_config["model"]["type"], "phi3v")
         self.assertIn("vision", genai_config["model"])
         self.assertEqual(genai_config["model"]["vision"]["filename"], "vision_encoder.onnx")
-        self.assertIn("audio", genai_config["model"])
-        self.assertEqual(genai_config["model"]["audio"]["filename"], "audio_encoder.onnx")
+        self.assertIn("speech", genai_config["model"])
+        self.assertEqual(genai_config["model"]["speech"]["filename"], "audio_encoder.onnx")
         self.assertIn("embedding", genai_config["model"])
         self.assertEqual(genai_config["model"]["embedding"]["filename"], "embedding.onnx")
 
@@ -341,7 +341,7 @@ class TestRandomQwen25OmniVision(ExtTestCase):
         n_pooled = (n_conv_out - 2) // 2 + 1  # after AvgPool1d(kernel=2, stride=2)
 
         torch.manual_seed(1)
-        # input_features: [num_mel_bins, n_frames] for audio_tower (single audio, 2D transposed)
+        # audio_embeds: [num_mel_bins, n_frames] for audio_tower (single audio, 2D transposed)
         input_features_2d = torch.randn(ac.num_mel_bins, n_frames)
 
         # PyTorch reference: call audio_tower directly with single-chunk inputs.
@@ -352,7 +352,7 @@ class TestRandomQwen25OmniVision(ExtTestCase):
         pt_aud_features = pt_aud_out.last_hidden_state.numpy().astype(np.float32)
 
         audio_sess = self.check_ort(audio_onnx_path)
-        audio_out = audio_sess.run(None, {"input_features": input_features_2d.numpy().astype(np.float32)})
+        audio_out = audio_sess.run(None, {"audio_embeds": input_features_2d.numpy().astype(np.float32)})
         self.assertIsNotNone(audio_out[0])
         self.assertEqual(audio_out[0].shape[0], n_pooled)
         self.assertEqual(audio_out[0].shape[1], ac.output_dim)

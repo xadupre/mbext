@@ -1088,7 +1088,7 @@ class Qwen25OmniAudioEncoderModel(Model):
 
     Inputs
     ------
-    input_features : float32 [num_mel_bins, n_frames]
+    audio_embeds : float32 [num_mel_bins, n_frames]
         Mel-spectrogram features for a single audio item (variable length).
 
     Outputs
@@ -1336,7 +1336,7 @@ class Qwen25OmniAudioEncoderModel(Model):
         n = None  # dynamic sequence length
 
         # --- Graph input: float32 mel-spectrogram [num_mel_bins, n_frames] ---
-        in_val = self.make_value("input_features", ir.DataType.FLOAT, shape=[self.num_mel_bins, n])
+        in_val = self.make_value("audio_embeds", ir.DataType.FLOAT, shape=[self.num_mel_bins, n])
         self.graph.inputs.append(in_val)
 
         # Constant axes tensor for Unsqueeze/Squeeze at batch dim 0.
@@ -1345,7 +1345,7 @@ class Qwen25OmniAudioEncoderModel(Model):
         self.make_value("/audio/batch_ax", ir.DataType.INT64, shape=[1])
 
         # --- Unsqueeze to [1, num_mel_bins, n_frames] for Conv1d ---
-        self.make_unsqueeze("/audio/unsqueeze_input", ["input_features", "/audio/batch_ax"], ir.DataType.FLOAT, [1, self.num_mel_bins, n])
+        self.make_unsqueeze("/audio/unsqueeze_input", ["audio_embeds", "/audio/batch_ax"], ir.DataType.FLOAT, [1, self.num_mel_bins, n])
         feat = "/audio/unsqueeze_input/output_0"
 
         # Cast to io_dtype if needed (Conv weights are stored in io_dtype)
@@ -1686,7 +1686,7 @@ class Qwen25OmniConditionalGenerationModel(Model):
 
         genai_config["model"]["speech"] = {
             "filename": self.audio_encoder.FILENAME,
-            "inputs": {"input_features": "input_features"},
+            "inputs": {"audio_embeds": "audio_embeds"},
             "outputs": {"audio_features": "audio_features"},
         }
 
