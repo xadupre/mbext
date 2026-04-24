@@ -1684,7 +1684,7 @@ class Qwen25OmniConditionalGenerationModel(Model):
             "outputs": {"image_features": "image_features"},
         }
 
-        genai_config["model"]["audio"] = {
+        genai_config["model"]["speech"] = {
             "filename": self.audio_encoder.FILENAME,
             "inputs": {"input_features": "input_features"},
             "outputs": {"audio_features": "audio_features"},
