@@ -324,6 +324,9 @@ class DeepSeekV3Model(Model):
         # Expert weights – already in the format expected by the ORT MoE kernel:
         #   gate_up_proj: [n_experts, 2*moe_inter, hidden]  (matches weight1 spec)
         #   down_proj:    [n_experts, hidden, moe_inter]     (matches weight2 spec)
+        # HuggingFace stores these as standard bfloat16 tensors; fp8/fp4
+        # quantization is specific to DeepSeek's proprietary inference engine
+        # and is not present in the HuggingFace checkpoint format.
         gate_up_weight = f"model.layers.{layer_id}.moe.experts.gate_up_proj.weight"
         down_weight = f"model.layers.{layer_id}.moe.experts.down_proj.weight"
         self.make_initializer(mlp.experts.gate_up_proj, gate_up_weight, to=self.io_dtype)
