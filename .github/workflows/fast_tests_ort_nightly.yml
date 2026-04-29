@@ -39,8 +39,11 @@ jobs:
       - name: Install dependencies
         run: pip install -e ".[dev]" "transformers==5.6" tokenizers
 
-      - name: Install onnxruntime nightly (overrides stable onnxruntime from dev deps)
-        run: pip install --pre onnxruntime --index-url https://ort.azureedge.net/whl/nightly/cpu/ --upgrade
+      - name: Remove existing onnxruntime before installing nightly
+        run: pip uninstall -y onnxruntime onnxruntime-gpu onnxruntime-directml onnxruntime-openvino 2>/dev/null || true
+
+      - name: Install onnxruntime nightly
+        run: pip install --pre onnxruntime --index-url https://ort.azureedge.net/whl/nightly/cpu/
 
       - name: pip freeze
         run: pip freeze
