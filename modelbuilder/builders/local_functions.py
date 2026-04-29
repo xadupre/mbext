@@ -78,7 +78,7 @@ class LocalFunctionsMixin:
         Formal inputs
         -------------
         ``X``           – input tensor ``[B, C, S]``
-        ``W``           – depthwise-conv weight ``[C, K]``  (squeezed from ``[C,1,K]``)
+        ``W``           – depthwise-conv weight ``[C, 1, K]``
         ``bias``        – conv bias ``[C]``
         ``past_state``  – causal-conv carry state ``[B, C, K-1]``
 
@@ -136,7 +136,6 @@ class LocalFunctionsMixin:
         nodes.append(ir.node("Unsqueeze", inputs=[s_scalar, idx0], outputs=[s_1d]))
 
         axes2 = ci("axes2", [2])  # slice along axis 2
-        axes1 = ci("axes1", [1])  # slice along axis 1
         large_end = ci("large_end", [_ONNX_LARGE_SLICE_END])  # effectively +∞ for end-of-tensor slice
         one_1d = ci("one_1d", [1])  # constant [1] for shape construction
 
@@ -174,14 +173,14 @@ class LocalFunctionsMixin:
             slice_k.dtype = io_dtype
             nodes.append(ir.node("Slice", inputs=[padded, starts_k, ends_k, axes2], outputs=[slice_k]))
 
-            # W_k = W[:, k:k+1]  → [C, 1]
+            # W_k = W[:, :, k:k+1]  → [C, 1, 1]
             ws = ci(f"ws_{k}", [k])
             we = ci(f"we_{k}", [k + 1])
             wk_sl = mkv(f"wk_sl_{k}")
             wk_sl.dtype = io_dtype
-            nodes.append(ir.node("Slice", inputs=[W, ws, we, axes1], outputs=[wk_sl]))
+            nodes.append(ir.node("Slice", inputs=[W, ws, we, axes2], outputs=[wk_sl]))
 
-            # Reshape W_k from [C, 1] to [1, C, 1] for broadcast multiplication
+            # Reshape W_k from [C, 1, 1] to [1, C, 1] for broadcast multiplication
             wk_r = mkv(f"wk_r_{k}")
             wk_r.dtype = io_dtype
             nodes.append(ir.node("Reshape", inputs=[wk_sl, w_shp], outputs=[wk_r]))
