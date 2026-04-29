@@ -43,7 +43,7 @@ jobs:
         run: pip uninstall -y onnxruntime onnxruntime-gpu onnxruntime-directml onnxruntime-openvino 2>/dev/null || true
 
       - name: Install onnxruntime nightly
-        run: pip install --pre onnxruntime --index-url https://ort.azureedge.net/whl/nightly/cpu/
+        run: pip install -i https://aiinfra.pkgs.visualstudio.com/PublicPackages/_packaging/ORT-Nightly/pypi/simple/ --pre onnxruntime
 
       - name: pip freeze
         run: pip freeze
