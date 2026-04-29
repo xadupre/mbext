@@ -1,0 +1,64 @@
+name: Fast Tests - ORT Nightly
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+  schedule:
+    - cron: "0 6 * * *"
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    name: ci (${{ matrix.os }}, py${{ matrix.python-version }}, torch-${{ matrix.torch-version || 'stable' }}, ort-nightly)
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+      id-token: write
+    strategy:
+      fail-fast: false
+      matrix:
+        os: ["ubuntu-latest"]
+        python-version: ["3.13"]
+        torch-version: ["2.11"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      # we install torch first to avoid downloading any CUDA dependency
+
+      - name: Install pytorch ${{ matrix.torch-version }} (Linux/Windows)
+        if: matrix.os != 'macos-latest'
+        run: pip install torch==2.11.0+cpu torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
+
+      - name: Install dependencies
+        run: pip install -e ".[dev]" "transformers==5.6" tokenizers
+
+      - name: Install onnxruntime nightly (overrides stable onnxruntime from dev deps)
+        run: pip install --pre onnxruntime --index-url https://ort.azureedge.net/whl/nightly/cpu/ --upgrade
+
+      - name: pip freeze
+        run: pip freeze
+
+      - name: Run fast tests
+        continue-on-error: true
+        run: DOCLEAN=1&&pytest tests/fast -v --cov=modelbuilder --cov-report=xml --cov-report=term-missing
+
+      - name: Upload coverage reports to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          flags: fast-tests-ort-nightly
+
+      - name: Upload stats artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: stats-${{ matrix.os }}-py${{ matrix.python-version }}-torch${{ matrix.torch-version }}-ort-nightly
+          path: stats/
+          if-no-files-found: ignore
