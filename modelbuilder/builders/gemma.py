@@ -174,6 +174,12 @@ class Gemma3Model(Gemma2Model):
         return super().make_rotary_embedding_caches(cos_cache_name=cos_cache_name, sin_cache_name=sin_cache_name)
 
 
+# AutoRound models (from Intel's auto-round library) may use any of these as quant_method.
+# These are treated uniformly: weights are loaded via AutoModelForCausalLM.from_pretrained so
+# that the auto-round library can dequantize them transparently if it is installed.
+_AUTOROUND_QUANT_ALIASES = frozenset({"auto-round", "autoround", "autround"})
+
+
 class Gemma4Model(Gemma3Model):
     def __init__(self, config, io_dtype, onnx_dtype, ep, cache_dir, extra_options):
         # Store per-layer head-dim info BEFORE super().__init__ because Gemma3Model.__init__
@@ -493,6 +499,20 @@ class Gemma4Model(Gemma3Model):
         return super().make_key_value_cache_shape(layer_id, shape)
 
     def load_weights(self, input_path):
+        if self.quant_type in _AUTOROUND_QUANT_ALIASES:
+            # AutoRound models (Intel/gemma-4-31B-it-int4-AutoRound and similar) are loaded
+            # via AutoModelForCausalLM.from_pretrained.  When the auto-round library is
+            # installed it transparently dequantizes the pre-quantized int4 weights so the
+            # builder receives standard float tensors.  If auto-round is absent transformers
+            # will warn and fall back to loading whatever safetensors data is present.
+            from transformers import AutoModelForCausalLM
+
+            extra_kwargs = {}
+            if "num_hidden_layers" in self.extra_options:
+                extra_kwargs["num_hidden_layers"] = self.num_layers
+            return AutoModelForCausalLM.from_pretrained(
+                self.model_name_or_path, cache_dir=self.cache_dir, token=self.hf_token, trust_remote_code=self.hf_remote, **extra_kwargs
+            )
         if self._original_architecture == "Gemma4ForConditionalGeneration":
             if self.quant_type is not None or input_path.endswith(".gguf"):
                 return super().load_weights(input_path)
