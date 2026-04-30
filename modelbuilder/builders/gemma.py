@@ -4,6 +4,7 @@
 # license information.
 # --------------------------------------------------------------------------
 import json
+import math
 import os
 
 import numpy as np
@@ -214,12 +215,15 @@ class Gemma4Model(Gemma3Model):
         # `normed_output * (1 + weight)`.  Clear the +1 offset set by GemmaModel.
         self.layernorm_attrs["add_offset"] = 0
 
-        # Warn about features not yet supported in the ONNX export.
-        if getattr(config, "hidden_size_per_layer_input", 0):
-            print(
-                "WARNING: Gemma4 Per-Layer Embeddings (PLE, hidden_size_per_layer_input="
-                f"{config.hidden_size_per_layer_input}) are not exported to ONNX and will be zeroed out."
-            )
+        # Per-Layer Embeddings (PLE): hidden_size_per_layer_input > 0 enables an
+        # additional residual block at the end of each decoder layer that conditions
+        # the hidden states on a per-token, per-layer embedding looked up from a
+        # separate vocabulary table.  Store the PLE dimension for use in
+        # make_embedding() and make_layer().
+        self._ple_dim = getattr(config, "hidden_size_per_layer_input", 0)
+        # Tensor name for the pre-computed packed PLE inputs, set by make_embedding().
+        self._ple_inputs_name: str = ""
+
         if self._global_head_size != self.head_size:
             print(
                 f"WARNING: Gemma4 global_head_dim ({self._global_head_size}) differs from head_dim ({self.head_size}). "
@@ -259,6 +263,264 @@ class Gemma4Model(Gemma3Model):
     def is_shared_kv_layer(self, layer_id):
         """Return True if layer_id reuses K/V from a donor layer (num_kv_shared_layers > 0)."""
         return layer_id in self._shared_kv_donor_map
+
+    def make_embedding(self, embedding):
+        super().make_embedding(embedding)
+        if self._ple_dim > 0:
+            # After the main embedding the scaled tensor in io_dtype lives at the Mul
+            # output (scale != 1 for all Gemma4 variants since embed_scale = sqrt(hidden)).
+            if self.embed_attrs["scale"] != 1:
+                inputs_embeds_name = "/model/embed_tokens/Mul/output_0"
+            else:
+                inputs_embeds_name = "/model/embed_tokens/Gather/output_0"
+            self._make_ple_pre_computation(inputs_embeds_name)
+
+    def _make_ple_pre_computation(self, inputs_embeds_name):
+        """Build ONNX nodes that compute the packed PLE tensor once per forward pass.
+
+        Produces ``self._ple_inputs_name``, a tensor of shape
+        ``[batch, seq, num_layers, ple_dim]`` in ``io_dtype``.
+
+        The computation mirrors HF's ``get_per_layer_inputs`` +
+        ``project_per_layer_inputs``::
+
+            token_embed  = embed_tokens_per_layer(input_ids) * sqrt(ple_dim)
+                         → reshape [B, S, L*D] → [B, S, L, D]
+
+            context_proj = per_layer_model_projection(inputs_embeds)
+                         * (1 / sqrt(hidden_size))
+                         → reshape [B, S, L*D] → [B, S, L, D]
+                         → per_layer_projection_norm (RMSNorm over D)
+
+            ple_inputs   = (context_proj + token_embed) * (1 / sqrt(2))
+        """
+        import onnx_ir as ir
+
+        basename = "/model/ple"
+        num_layers = self.num_layers
+        ple_dim = self._ple_dim
+        sln_kwargs = {"epsilon": self.layernorm_attrs["epsilon"], "axis": -1, "stash_type": 1}
+        use_fp32 = self.layernorm_attrs["cast"]["use_fp32"]
+        norm_dtype = ir.DataType.FLOAT if use_fp32 else self.io_dtype
+        cast = self.io_dtype != norm_dtype
+
+        # Locate the text-model sub-module that owns the PLE weights.
+        m = self.weights
+        if hasattr(m, "language_model"):
+            m = m.language_model
+        text_model = m.model
+
+        # ------------------------------------------------------------------
+        # 1. Token-identity component: embed_tokens_per_layer(input_ids)
+        # ------------------------------------------------------------------
+        ple_embed_weight = "model.embed_tokens_per_layer.weight"
+        self.make_initializer(text_model.embed_tokens_per_layer.weight, ple_embed_weight, to=self.io_dtype)
+
+        gather_name = f"{basename}/token_embed/Gather"
+        self.make_node(
+            "Gather", inputs=[ple_embed_weight, self.input_names["input_ids"]], outputs=[f"{gather_name}/output_0"], name=gather_name
+        )
+        self.make_value(f"{gather_name}/output_0", self.io_dtype, shape=["batch_size", "sequence_length", num_layers * ple_dim])
+
+        # Scale by sqrt(ple_dim) to match Gemma4TextScaledWordEmbedding.embed_scale.
+        ple_embed_scale = float(math.sqrt(ple_dim))
+        token_scaled = self.make_mul(
+            f"{basename}/token_embed/Mul",
+            [f"{gather_name}/output_0", f"/model/constants/{self.to_str_dtype(self.io_dtype)}/{ple_embed_scale}"],
+            self.io_dtype,
+            ["batch_size", "sequence_length", num_layers * ple_dim],
+        )
+        # Reshape to [B, S, L, D].
+        token_4d = self.make_reshape(
+            f"{basename}/token_embed/Reshape",
+            [token_scaled, [0, 0, num_layers, ple_dim]],
+            dtype=self.io_dtype,
+            shape=["batch_size", "sequence_length", num_layers, ple_dim],
+        )
+
+        # ------------------------------------------------------------------
+        # 2. Context-projection component
+        # ------------------------------------------------------------------
+        proj_matmul_name = f"{basename}/context_proj/MatMul"
+        self.make_matmul(text_model.per_layer_model_projection, proj_matmul_name, inputs_embeds_name)
+        proj_out = f"{proj_matmul_name}/output_0"
+
+        # Scale by 1 / sqrt(hidden_size).
+        proj_scale = float(self.hidden_size**-0.5)
+        proj_scaled = self.make_mul(
+            f"{basename}/context_proj/scale_Mul",
+            [proj_out, f"/model/constants/{self.to_str_dtype(self.io_dtype)}/{proj_scale}"],
+            self.io_dtype,
+            ["batch_size", "sequence_length", num_layers * ple_dim],
+        )
+        # Reshape to [B, S, L, D].
+        proj_4d = self.make_reshape(
+            f"{basename}/context_proj/Reshape",
+            [proj_scaled, [0, 0, num_layers, ple_dim]],
+            dtype=self.io_dtype,
+            shape=["batch_size", "sequence_length", num_layers, ple_dim],
+        )
+        # per_layer_projection_norm (RMSNorm, normalises over the ple_dim axis).
+        proj_norm_weight = "model.per_layer_projection_norm.weight"
+        self.make_initializer(
+            text_model.per_layer_projection_norm.weight + self.layernorm_attrs["add_offset"], proj_norm_weight, to=norm_dtype
+        )
+        sln_input = proj_4d
+        if cast:
+            cast_in_name = f"{basename}/proj_norm/Cast_in"
+            self.make_cast(cast_in_name, proj_4d, norm_dtype, shape=["batch_size", "sequence_length", num_layers, ple_dim])
+            sln_input = f"{cast_in_name}/output_0"
+        sln_name = f"{basename}/proj_norm/SLN"
+        sln_output = f"{sln_name}/output_0"
+        self.make_node(
+            "SimplifiedLayerNormalization", inputs=[sln_input, proj_norm_weight], outputs=[sln_output], name=sln_name, **sln_kwargs
+        )
+        self.make_value(sln_output, norm_dtype, shape=["batch_size", "sequence_length", num_layers, ple_dim])
+        proj_normed = sln_output
+        if cast:
+            cast_out_name = f"{basename}/proj_norm/Cast_out"
+            self.make_cast(cast_out_name, sln_output, self.io_dtype, shape=["batch_size", "sequence_length", num_layers, ple_dim])
+            proj_normed = f"{cast_out_name}/output_0"
+
+        # ------------------------------------------------------------------
+        # 3. Combine: (context_proj + token_embed) * (1 / sqrt(2))
+        # ------------------------------------------------------------------
+        combined = self.make_add(
+            f"{basename}/combined/Add", [proj_normed, token_4d], self.io_dtype, ["batch_size", "sequence_length", num_layers, ple_dim]
+        )
+        combine_scale = float(2.0**-0.5)
+        self._ple_inputs_name = self.make_mul(
+            f"{basename}/combined/Mul",
+            [combined, f"/model/constants/{self.to_str_dtype(self.io_dtype)}/{combine_scale}"],
+            self.io_dtype,
+            ["batch_size", "sequence_length", num_layers, ple_dim],
+        )
+
+    def make_layer(self, layer_id, layer):
+        # Run the standard Gemma2 decoder layer (attention + MLP + all LayerNorms).
+        Gemma2Model.make_layer(self, layer_id, layer)
+        # Append the PLE residual block when Per-Layer Embeddings are enabled.
+        if self._ple_dim > 0:
+            self._make_ple_layer_block(layer_id, layer)
+
+    def _make_ple_layer_block(self, layer_id, layer):
+        """Build the ONNX sub-graph for the per-layer embedding (PLE) residual block.
+
+        After the standard decoder block the HF forward pass computes::
+
+            residual = hidden_states
+            gate     = per_layer_input_gate(hidden_states)   # [B, S, ple_dim]
+            gate     = act_fn(gate)                          # FastGelu
+            gate     = gate * per_layer_input_i              # element-wise
+            proj     = per_layer_projection(gate)            # [B, S, hidden]
+            proj     = post_per_layer_input_norm(proj)
+            hidden_states = residual + proj
+
+        In the SkipLayerNorm chain the current hidden states are represented
+        lazily as ``root_input + skip_input``.  We materialise them with an
+        explicit Add node, compute the PLE contribution, and then set
+
+            root_input  ← layer_output  (the explicit sum)
+            skip_input  ← ple_contribution
+
+        so that the *next* layer's SkipLayerNorm correctly evaluates
+        ``norm(layer_output + ple_contribution) == norm(ple_output)``.
+        """
+        import onnx_ir as ir
+
+        basename = f"/model/layers.{layer_id}/ple"
+        ple_dim = self._ple_dim
+        sln_kwargs = {"epsilon": self.layernorm_attrs["epsilon"], "axis": -1, "stash_type": 1}
+        use_fp32 = self.layernorm_attrs["cast"]["use_fp32"]
+        norm_dtype = ir.DataType.FLOAT if use_fp32 else self.io_dtype
+        cast = self.io_dtype != norm_dtype
+
+        # ------------------------------------------------------------------
+        # Step 1. Materialise the layer output: hidden = root_input + skip
+        # ------------------------------------------------------------------
+        root_input = self.layernorm_attrs["root_input"]
+        skip_input = self.layernorm_attrs["skip_input"]
+        # Both are in norm_dtype (fp32 for fp16/bf16 models) at this point.
+        root_dtype = self.values[root_input].dtype if root_input in self.values else norm_dtype
+        layer_out_name = self.make_add(
+            f"{basename}/layer_output/Add", [root_input, skip_input], root_dtype, ["batch_size", "sequence_length", self.hidden_size]
+        )
+        # Cast to io_dtype for the MatMul ops whose weights are in io_dtype.
+        if cast and root_dtype != self.io_dtype:
+            cast_name = f"{basename}/layer_output/Cast"
+            self.make_cast(cast_name, layer_out_name, self.io_dtype, shape=["batch_size", "sequence_length", self.hidden_size])
+            layer_out_io = f"{cast_name}/output_0"
+        else:
+            layer_out_io = layer_out_name
+
+        # ------------------------------------------------------------------
+        # Step 2. Extract the per-layer PLE slice: [B, S, ple_dim]
+        # ------------------------------------------------------------------
+        ple_gather_name = f"{basename}/per_layer_input/Gather"
+        self.make_gather(
+            ple_gather_name,
+            [self._ple_inputs_name, f"/model/constants/INT64/{layer_id}"],
+            self.io_dtype,
+            ["batch_size", "sequence_length", ple_dim],
+            axis=2,
+        )
+        per_layer_input = f"{ple_gather_name}/output_0"
+
+        # ------------------------------------------------------------------
+        # Step 3. Gate projection + FastGelu activation
+        # ------------------------------------------------------------------
+        gate_matmul_name = f"{basename}/per_layer_input_gate/MatMul"
+        self.make_matmul(layer.per_layer_input_gate, gate_matmul_name, layer_out_io)
+        gate_out = f"{gate_matmul_name}/output_0"
+
+        # FastGelu (matches hidden_activation = "gelu_pytorch_tanh").
+        gelu_name = f"{basename}/act_fn/Gelu"
+        gelu_output = f"{gelu_name}/output_0"
+        self.make_node("Gelu", inputs=[gate_out], outputs=[gelu_output], name=gelu_name, approximate="tanh")
+        self.make_value(gelu_output, self.io_dtype, shape=["batch_size", "sequence_length", ple_dim])
+
+        # ------------------------------------------------------------------
+        # Step 4. Element-wise multiply with the per-layer input
+        # ------------------------------------------------------------------
+        gated = self.make_mul(f"{basename}/Mul", [gelu_output, per_layer_input], self.io_dtype, ["batch_size", "sequence_length", ple_dim])
+
+        # ------------------------------------------------------------------
+        # Step 5. Project back to hidden_size
+        # ------------------------------------------------------------------
+        proj_matmul_name = f"{basename}/per_layer_projection/MatMul"
+        self.make_matmul(layer.per_layer_projection, proj_matmul_name, gated)
+        proj_out = f"{proj_matmul_name}/output_0"
+
+        # ------------------------------------------------------------------
+        # Step 6. post_per_layer_input_norm (RMSNorm over hidden_size)
+        # ------------------------------------------------------------------
+        norm_weight_name = f"model.layers.{layer_id}.post_per_layer_input_norm.weight"
+        self.make_initializer(layer.post_per_layer_input_norm.weight + self.layernorm_attrs["add_offset"], norm_weight_name, to=norm_dtype)
+        sln_input = proj_out
+        if cast:
+            cast_in_name = f"{basename}/post_norm/Cast_in"
+            self.make_cast(cast_in_name, proj_out, norm_dtype, shape=["batch_size", "sequence_length", self.hidden_size])
+            sln_input = f"{cast_in_name}/output_0"
+        sln_name = f"{basename}/post_norm/SLN"
+        sln_output = f"{sln_name}/output_0"
+        self.make_node(
+            "SimplifiedLayerNormalization", inputs=[sln_input, norm_weight_name], outputs=[sln_output], name=sln_name, **sln_kwargs
+        )
+        self.make_value(sln_output, norm_dtype, shape=["batch_size", "sequence_length", self.hidden_size])
+        # ``sln_output`` is in norm_dtype (fp32 for fp16/bf16 models; io_dtype for fp32
+        # models).  The SkipLayerNorm chain expects fp32 tensors for both root_input and
+        # skip_input – no cast back to io_dtype is required here.
+        ple_contribution = sln_output
+
+        # ------------------------------------------------------------------
+        # Step 7. Update the SkipLayerNorm chain
+        #   root_input ← layer_output   (fp32)
+        #   skip_input ← ple_contribution (fp32 / norm_dtype)
+        # The next SkipLayerNorm will compute norm(layer_output + ple_contribution),
+        # which equals norm(hidden_states + ple_residual) as in the HF forward.
+        # ------------------------------------------------------------------
+        self.layernorm_attrs["root_input"] = layer_out_name
+        self.layernorm_attrs["skip_input"] = ple_contribution
 
     def make_attention_init(self):
         super().make_attention_init()  # sets q_norm=True, k_norm=True via Gemma3Model
