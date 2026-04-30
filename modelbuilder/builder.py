@@ -385,6 +385,10 @@ def create_model(model_name, input_path, output_dir, precision, execution_provid
         from .builders.qwen import Qwen35TextModel
 
         onnx_model = Qwen35TextModel(config, io_dtype, onnx_dtype, execution_provider, cache_dir, extra_options)
+    elif config.architectures[0] == "Qwen3_5ForCausalLM":
+        from .builders.qwen import Qwen35CausalLMModel
+
+        onnx_model = Qwen35CausalLMModel(config, io_dtype, onnx_dtype, execution_provider, cache_dir, extra_options)
     elif config.architectures[0] == "Qwen3VLForConditionalGeneration":
         text_config = config.text_config
         for key in text_config:

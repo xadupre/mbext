@@ -2820,3 +2820,26 @@ class Qwen35TextModel(Model):
         del self.input_names["past_key_values.value"]
         del self.output_names["present.key"]
         del self.output_names["present.value"]
+
+
+class Qwen35CausalLMModel(Qwen35TextModel):
+    """Qwen3.5 pure-text (CausalLM) decoder builder.
+
+    Handles ``Qwen3_5ForCausalLM`` – the text-only variant of Qwen3.5
+    (e.g. Qwen/Qwen3.5-4B) whose HF config is a flat ``Qwen3_5TextConfig``
+    with no ``text_config`` sub-config.
+
+    The ONNX interface mirrors the VL decoder: ``inputs_embeds``-based with
+    3-D mRoPE position IDs and the hybrid KV / recurrent-state cache.  The
+    only meaningful difference from :class:`Qwen35TextModel` is how the HF
+    weights are loaded – ``Qwen3_5ForCausalLM.from_pretrained`` is used
+    instead of ``Qwen3_5ForConditionalGeneration.from_pretrained``.
+    """
+
+    def load_weights(self, input_path):
+        from transformers import Qwen3_5ForCausalLM
+
+        print("Loading Qwen3_5ForCausalLM model...")
+        return Qwen3_5ForCausalLM.from_pretrained(
+            self.model_name_or_path, cache_dir=self.cache_dir, token=self.hf_token, trust_remote_code=self.hf_remote
+        )
