@@ -237,7 +237,7 @@ class LocalFunctionsMixin:
     # ------------------------------------------------------------------
 
     @classmethod
-    def _make_linear_attention_local_function(
+    def make_linear_attention_local_function(
         cls, q_num_heads: int, kv_num_heads: int, hk: int, hv: int, io_dtype: ir.DataType
     ) -> ir.Function:
         """Build an ONNX local function implementing ``com.microsoft:LinearAttention``.
@@ -529,7 +529,7 @@ class LocalFunctionsMixin:
         )
         return ir.Function("com.microsoft", "LinearAttention", "", graph=func_body, attributes={})
 
-    def _register_linear_attention_local_function(self, q_num_heads: int, kv_num_heads: int, hk: int, hv: int) -> None:
+    def register_linear_attention_local_function(self, q_num_heads: int, kv_num_heads: int, hk: int, hv: int) -> None:
         """Register the ``LinearAttention`` local function if ORT < 1.26.
 
         Embeds a GatedDeltaNet fallback body (ONNX Loop) into the model so
@@ -548,5 +548,5 @@ class LocalFunctionsMixin:
         if self._ort_version() < (1, 26):
             func_key = ("com.microsoft", "LinearAttention", "")
             if func_key not in self.model.functions:
-                func = self._make_linear_attention_local_function(q_num_heads, kv_num_heads, hk, hv, self.io_dtype)
+                func = self.make_linear_attention_local_function(q_num_heads, kv_num_heads, hk, hv, self.io_dtype)
                 self.model.functions[func_key] = func

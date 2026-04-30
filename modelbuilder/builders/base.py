@@ -899,7 +899,7 @@ class Model(LocalFunctionsMixin):
             # inputs[3] is past_recurrent_state with shape [B, nkv, hk, hv].
             past_val = self.values.get(inputs[3]) if len(inputs) >= 4 else None
             if past_val is not None and past_val.shape is not None and len(past_val.shape) >= 4:
-                self._register_linear_attention_local_function(
+                self.register_linear_attention_local_function(
                     int(kwargs.get("q_num_heads", 1)), int(kwargs.get("kv_num_heads", 1)), int(past_val.shape[2]), int(past_val.shape[3])
                 )
 
