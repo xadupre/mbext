@@ -270,7 +270,7 @@ class TestRandomQwen3_5_4B(ExtTestCase):
 
     @requires_transformers("5")
     @hide_stdout()
-    @requires_genai()
+    @requires_genai("0.14")
     def test_qwen3_5_4b_fp32_cpu_genai_generate(self):
         """Export a Qwen3.5-4B CausalLM model and verify ORT-GenAI generation.
 
