@@ -211,25 +211,27 @@ class TestRandomQwen3_5_4B(ExtTestCase):
     # ------------------------------------------------------------------ #
     # Tests: hybrid architecture build verification                       #
     # The linear_attention layers use com.microsoft:CausalConvWithState   #
-    # and com.microsoft:LinearAttention custom ops which are not part of  #
-    # standard onnxruntime.  We therefore only verify that the ONNX model #
-    # is produced without error; inference is left to the ORT-GenAI CI.   #
+    # and com.microsoft:LinearAttention custom ops.  When ORT < 1.26,    #
+    # both ops are provided as ONNX local-function fallbacks so inference #
+    # runs on the standard onnxruntime CPU EP as well.                    #
     # ------------------------------------------------------------------ #
 
     @requires_transformers("5")
     @hide_stdout()
     def test_qwen3_5_4b_fp32_cpu_hybrid_build(self):
-        """Verify that ``create_model`` successfully builds a hybrid Qwen3.5-4B model.
+        """Verify that ``create_model`` builds a hybrid Qwen3.5-4B CausalLM model.
 
         The hybrid architecture mixes one ``full_attention`` layer and one
-        ``linear_attention`` layer.  Only verifies that ``model.onnx`` is
-        produced and is a valid ONNX file; it does not attempt to run
-        inference with standard ``onnxruntime``.
+        ``linear_attention`` layer.  Both ``com.microsoft:CausalConvWithState``
+        and ``com.microsoft:LinearAttention`` custom ops are expected in the
+        graph.  When ORT < 1.26, the builder embeds ONNX local-function
+        fallbacks for both ops so inference also runs on standard
+        ``onnxruntime``.
         """
         import onnx
 
         config = _make_qwen3_5_4b_config(["full_attention", "linear_attention"])
-        _, output_dir = self._build_and_save_model(config, "fp32", "cpu")
+        model, output_dir = self._build_and_save_model(config, "fp32", "cpu")
 
         text_onnx_path = os.path.join(output_dir, "model.onnx")
         self.assertExists(text_onnx_path)
@@ -240,6 +242,12 @@ class TestRandomQwen3_5_4B(ExtTestCase):
         op_types = {node.op_type for node in onnx_model.graph.node}
         self.assertIn("CausalConvWithState", op_types)
         self.assertIn("LinearAttention", op_types)
+
+        # Run a prefill step to confirm the local-function fallbacks work
+        # with the installed onnxruntime (whether stable or nightly).
+        outputs = self._run_text_decoder(model, output_dir, config, "fp32", config.layer_types)
+        self.assertIsNotNone(outputs[0])
+        self.assertEqual(outputs[0].shape, (1, 5, 32000))
 
     @requires_transformers("5")
     @hide_stdout()
@@ -248,7 +256,7 @@ class TestRandomQwen3_5_4B(ExtTestCase):
         import onnx
 
         config = _make_qwen3_5_4b_config(["full_attention", "linear_attention"])
-        _, output_dir = self._build_and_save_model(config, "fp16", "cpu")
+        model, output_dir = self._build_and_save_model(config, "fp16", "cpu")
 
         text_onnx_path = os.path.join(output_dir, "model.onnx")
         self.assertExists(text_onnx_path)
@@ -259,6 +267,10 @@ class TestRandomQwen3_5_4B(ExtTestCase):
         op_types = {node.op_type for node in onnx_model.graph.node}
         self.assertIn("CausalConvWithState", op_types)
         self.assertIn("LinearAttention", op_types)
+
+        outputs = self._run_text_decoder(model, output_dir, config, "fp16", config.layer_types)
+        self.assertIsNotNone(outputs[0])
+        self.assertEqual(outputs[0].shape, (1, 5, 32000))
 
     # ------------------------------------------------------------------ #
     # GenAI generation test                                               #
