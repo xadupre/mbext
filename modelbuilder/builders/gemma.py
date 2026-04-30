@@ -264,6 +264,10 @@ class Gemma4Model(Gemma3Model):
         """Return True if layer_id reuses K/V from a donor layer (num_kv_shared_layers > 0)."""
         return layer_id in self._shared_kv_donor_map
 
+    def _ple_sln_kwargs(self):
+        """Return kwargs for SimplifiedLayerNormalization nodes in the PLE sub-graph."""
+        return {"epsilon": self.layernorm_attrs["epsilon"], "axis": -1, "stash_type": 1}
+
     def make_embedding(self, embedding):
         super().make_embedding(embedding)
         if self._ple_dim > 0:
@@ -299,7 +303,7 @@ class Gemma4Model(Gemma3Model):
         basename = "/model/ple"
         num_layers = self.num_layers
         ple_dim = self._ple_dim
-        sln_kwargs = {"epsilon": self.layernorm_attrs["epsilon"], "axis": -1, "stash_type": 1}
+        sln_kwargs = self._ple_sln_kwargs()
         use_fp32 = self.layernorm_attrs["cast"]["use_fp32"]
         norm_dtype = ir.DataType.FLOAT if use_fp32 else self.io_dtype
         cast = self.io_dtype != norm_dtype
@@ -430,7 +434,7 @@ class Gemma4Model(Gemma3Model):
 
         basename = f"/model/layers.{layer_id}/ple"
         ple_dim = self._ple_dim
-        sln_kwargs = {"epsilon": self.layernorm_attrs["epsilon"], "axis": -1, "stash_type": 1}
+        sln_kwargs = self._ple_sln_kwargs()
         use_fp32 = self.layernorm_attrs["cast"]["use_fp32"]
         norm_dtype = ir.DataType.FLOAT if use_fp32 else self.io_dtype
         cast = self.io_dtype != norm_dtype
