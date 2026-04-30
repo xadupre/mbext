@@ -2829,12 +2829,18 @@ class Qwen35CausalLMModel(Qwen35TextModel):
     (e.g. Qwen/Qwen3.5-4B) whose HF config is a flat ``Qwen3_5TextConfig``
     with no ``text_config`` sub-config.
 
-    The ONNX interface mirrors the VL decoder: ``inputs_embeds``-based with
-    3-D mRoPE position IDs and the hybrid KV / recurrent-state cache.  The
-    only meaningful difference from :class:`Qwen35TextModel` is how the HF
-    weights are loaded – ``Qwen3_5ForCausalLM.from_pretrained`` is used
-    instead of ``Qwen3_5ForConditionalGeneration.from_pretrained``.
+    Unlike the multimodal :class:`Qwen35TextModel`, this class includes the
+    embedding layer in the ONNX graph so the model accepts ``input_ids``
+    directly.  This is required for ORT-GenAI to be able to run generation
+    without a separate embedding model artifact.
     """
+
+    def __init__(self, config, io_dtype, onnx_dtype, ep, cache_dir, extra_options):
+        # Text-only model: include the embedding layer so the ONNX graph
+        # takes input_ids (not inputs_embeds).  This prevents the VL default
+        # of exclude_embeds=True set by Qwen35TextModel.__init__.
+        extra_options.setdefault("exclude_embeds", False)
+        super().__init__(config, io_dtype, onnx_dtype, ep, cache_dir, extra_options)
 
     def load_weights(self, input_path):
         from transformers import Qwen3_5ForCausalLM

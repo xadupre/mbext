@@ -70,7 +70,7 @@ class TestRandomQwen3_5_4B(ExtTestCase):
     def _build_and_save_model(self, config, precision, provider):
         """Create a random-weight ``Qwen3_5ForCausalLM`` and build its ONNX export.
 
-        Returns the ``(model, output_dir)`` tuple so callers can run inference.
+        Returns the output directory path.
         """
         import torch
         from transformers import AutoModelForCausalLM
@@ -95,20 +95,16 @@ class TestRandomQwen3_5_4B(ExtTestCase):
             execution_provider=provider,
             cache_dir=cache_dir,
         )
-        return model, output_dir
+        return output_dir
 
-    def _run_text_decoder(self, model, output_dir, config, precision, layer_types, cpu=True):
+    def _run_text_decoder(self, output_dir, config, precision, layer_types, cpu=True):
         """Load the ONNX text decoder and run a single prefill step.
 
         Returns the ONNX output list.
 
-        ``Qwen3_5ForCausalLM`` with ``inputs_embeds`` + 3-D position_ids
-        triggers a ``has_previous_state`` error when the PyTorch HybridCache is
-        used with only ``full_attention`` layers.  This helper therefore only
-        exercises the ONNX model (no PyTorch comparison).
+        ``Qwen35CausalLMModel`` includes the embedding layer in the ONNX graph
+        so the model takes ``input_ids`` directly (no ``inputs_embeds``).
         """
-        import torch
-
         text_onnx_path = os.path.join(output_dir, "model.onnx")
         self.assertExists(text_onnx_path)
 
@@ -118,12 +114,8 @@ class TestRandomQwen3_5_4B(ExtTestCase):
         batch_size = 1
         seq_len = 5
 
-        # Compute inputs_embeds from the saved model's embedding layer.
-        # Qwen3_5ForCausalLM uses model.model.embed_tokens (flat structure).
-        torch.manual_seed(0)
-        input_ids = torch.randint(0, config.vocab_size, (batch_size, seq_len))
-        with torch.no_grad():
-            inputs_embeds = model.model.embed_tokens(input_ids).numpy().astype(self.get_input_np_dtype(precision))
+        np.random.seed(0)
+        input_ids = np.random.randint(0, config.vocab_size, (batch_size, seq_len), dtype=np.int64)
 
         # 3D position_ids [3, batch_size, seq_len] for mRoPE.
         pos = np.arange(seq_len, dtype=np.int64)
@@ -132,7 +124,7 @@ class TestRandomQwen3_5_4B(ExtTestCase):
 
         np_dtype = self.get_input_np_dtype(precision)
         onnx_feed = {
-            "inputs_embeds": inputs_embeds,
+            "input_ids": input_ids,
             "attention_mask": np.ones((batch_size, seq_len), dtype=np.int64),
             "position_ids": position_ids_3d,
         }
@@ -175,12 +167,12 @@ class TestRandomQwen3_5_4B(ExtTestCase):
         All layers are ``full_attention``, so no custom ORT ops are needed and
         the test can run with the standard ``onnxruntime`` Python binding.
         Exercises mRoPE embedding, QK-norm, OffsetRMSNorm (1+weight), 3-D
-        position_ids, and the ``inputs_embeds``-based interface.
+        position_ids, and the ``input_ids``-based interface.
         """
         config = _make_qwen3_5_4b_config(["full_attention", "full_attention"])
-        model, output_dir = self._build_and_save_model(config, "fp32", "cpu")
+        output_dir = self._build_and_save_model(config, "fp32", "cpu")
 
-        outputs = self._run_text_decoder(model, output_dir, config, "fp32", ["full_attention", "full_attention"])
+        outputs = self._run_text_decoder(output_dir, config, "fp32", ["full_attention", "full_attention"])
         self.assertIsNotNone(outputs[0])
         # logits: [batch_size, seq_len, vocab_size]
         self.assertEqual(outputs[0].shape, (1, 5, 32000))
@@ -190,9 +182,9 @@ class TestRandomQwen3_5_4B(ExtTestCase):
     def test_qwen3_5_4b_fp16_cpu_full_attention(self):
         """fp16 variant of :meth:`test_qwen3_5_4b_fp32_cpu_full_attention`."""
         config = _make_qwen3_5_4b_config(["full_attention", "full_attention"])
-        model, output_dir = self._build_and_save_model(config, "fp16", "cpu")
+        output_dir = self._build_and_save_model(config, "fp16", "cpu")
 
-        outputs = self._run_text_decoder(model, output_dir, config, "fp16", ["full_attention", "full_attention"])
+        outputs = self._run_text_decoder(output_dir, config, "fp16", ["full_attention", "full_attention"])
         self.assertIsNotNone(outputs[0])
         self.assertEqual(outputs[0].shape, (1, 5, 32000))
 
@@ -202,9 +194,9 @@ class TestRandomQwen3_5_4B(ExtTestCase):
     def test_qwen3_5_4b_fp16_cuda_full_attention(self):
         """fp16 / CUDA variant of :meth:`test_qwen3_5_4b_fp32_cpu_full_attention`."""
         config = _make_qwen3_5_4b_config(["full_attention", "full_attention"])
-        model, output_dir = self._build_and_save_model(config, "fp16", "cuda")
+        output_dir = self._build_and_save_model(config, "fp16", "cuda")
 
-        outputs = self._run_text_decoder(model, output_dir, config, "fp16", ["full_attention", "full_attention"], cpu=False)
+        outputs = self._run_text_decoder(output_dir, config, "fp16", ["full_attention", "full_attention"], cpu=False)
         self.assertIsNotNone(outputs[0])
         self.assertEqual(outputs[0].shape, (1, 5, 32000))
 
@@ -231,7 +223,7 @@ class TestRandomQwen3_5_4B(ExtTestCase):
         import onnx
 
         config = _make_qwen3_5_4b_config(["full_attention", "linear_attention"])
-        model, output_dir = self._build_and_save_model(config, "fp32", "cpu")
+        output_dir = self._build_and_save_model(config, "fp32", "cpu")
 
         text_onnx_path = os.path.join(output_dir, "model.onnx")
         self.assertExists(text_onnx_path)
@@ -245,7 +237,7 @@ class TestRandomQwen3_5_4B(ExtTestCase):
 
         # Run a prefill step to confirm the local-function fallbacks work
         # with the installed onnxruntime (whether stable or nightly).
-        outputs = self._run_text_decoder(model, output_dir, config, "fp32", config.layer_types)
+        outputs = self._run_text_decoder(output_dir, config, "fp32", config.layer_types)
         self.assertIsNotNone(outputs[0])
         self.assertEqual(outputs[0].shape, (1, 5, 32000))
 
@@ -256,7 +248,7 @@ class TestRandomQwen3_5_4B(ExtTestCase):
         import onnx
 
         config = _make_qwen3_5_4b_config(["full_attention", "linear_attention"])
-        model, output_dir = self._build_and_save_model(config, "fp16", "cpu")
+        output_dir = self._build_and_save_model(config, "fp16", "cpu")
 
         text_onnx_path = os.path.join(output_dir, "model.onnx")
         self.assertExists(text_onnx_path)
@@ -268,7 +260,7 @@ class TestRandomQwen3_5_4B(ExtTestCase):
         self.assertIn("CausalConvWithState", op_types)
         self.assertIn("LinearAttention", op_types)
 
-        outputs = self._run_text_decoder(model, output_dir, config, "fp16", config.layer_types)
+        outputs = self._run_text_decoder(output_dir, config, "fp16", config.layer_types)
         self.assertIsNotNone(outputs[0])
         self.assertEqual(outputs[0].shape, (1, 5, 32000))
 
