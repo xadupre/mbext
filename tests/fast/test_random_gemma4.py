@@ -454,6 +454,41 @@ class TestRandomGemma4(ExtTestCase):
         """Gemma4 with Per-Layer Embeddings (PLE) – fp16 greedy generation check."""
         self.common_gemma4_ple_greedy_generation("fp16", "cpu")
 
+    @hide_stdout()
+    @requires_genai()
+    def test_gemma4_ple_fp32_cpu_genai_generate(self):
+        """Gemma4 with Per-Layer Embeddings (PLE) – fp32 ORT-GenAI generation check."""
+        import torch
+        from transformers import AutoModelForCausalLM
+
+        from modelbuilder.builder import create_model
+
+        prefix = "test_gemma4_ple_fp32_cpu_genai_generate"
+        config = self._make_ple_config(num_hidden_layers=2)
+
+        model_dir = self.get_model_dir(prefix, clean=False)
+        torch.manual_seed(42)
+        model = AutoModelForCausalLM.from_config(config)
+        model.eval()
+        model.save_pretrained(model_dir)
+
+        tokenizer = self.make_word_level_tokenizer(bos_token="<bos>", bos_token_id=2, eos_token="</s>", eos_token_id=1)
+        tokenizer.save_pretrained(model_dir)
+
+        output_dir, cache_dir = self.get_dirs(prefix, clean=False)
+
+        create_model(
+            model_name=MODEL_NAME,
+            input_path=model_dir,
+            output_dir=output_dir,
+            precision="fp32",
+            execution_provider="cpu",
+            cache_dir=cache_dir,
+            num_hidden_layers=config.num_hidden_layers,
+        )
+
+        self.run_genai_generation_test(output_dir, model, config.vocab_size, config.eos_token_id)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
