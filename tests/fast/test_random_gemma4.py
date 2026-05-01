@@ -150,6 +150,105 @@ class TestRandomGemma4(ExtTestCase):
             create_model_kwargs={"num_hidden_layers": config.num_hidden_layers},
         )
 
+    @staticmethod
+    def _make_ple_config(num_hidden_layers=2):
+        """Return a minimal Gemma4TextConfig with Per-Layer Embeddings (PLE) enabled.
+
+        Both ``vocab_size`` and ``vocab_size_per_layer_input`` are set to 1000
+        so that all token IDs generated during tests (by ``torch.randint`` or
+        ``model.generate()``) are valid for both embedding tables.  1000 is
+        chosen to be comfortably above ``num_kv_heads * head_dim = 256`` and
+        below the default 32000, keeping the test fast while avoiding false
+        positives in the ``has_lm_head`` check (``out_features == vocab_size``).
+        """
+        from transformers import Gemma4TextConfig
+
+        layer_types = ["sliding_attention"] * (num_hidden_layers - 1) + ["full_attention"]
+
+        return Gemma4TextConfig(
+            architectures=["Gemma4ForCausalLM"],
+            bos_token_id=2,
+            eos_token_id=1,
+            head_dim=64,
+            global_head_dim=64,
+            hidden_activation="gelu_pytorch_tanh",
+            hidden_size=512,
+            intermediate_size=1376,
+            layer_types=layer_types,
+            max_position_embeddings=2048,
+            num_attention_heads=8,
+            num_hidden_layers=num_hidden_layers,
+            num_key_value_heads=4,
+            rms_norm_eps=1e-6,
+            sliding_window=512,
+            # Match vocab_size and vocab_size_per_layer_input so that any
+            # generated token ID is valid for both embedding tables.
+            # 1000 > num_kv_heads * head_dim (= 256) avoids has_lm_head false positives.
+            vocab_size=1000,
+            hidden_size_per_layer_input=64,
+            vocab_size_per_layer_input=1000,
+            num_kv_shared_layers=0,
+            enable_moe_block=False,
+        )
+
+    def common_fast_gemma4_ple_random_weights(self, precision, provider):
+        """Export and run a random-weight Gemma4 model with PLE enabled."""
+        import torch
+        from transformers import AutoModelForCausalLM
+
+        config = self._make_ple_config()
+        num_hidden_layers = config.num_hidden_layers
+
+        torch.manual_seed(42)
+        model = AutoModelForCausalLM.from_config(config)
+        model.eval().to(provider)
+        tokenizer = self.make_word_level_tokenizer(bos_token="<bos>", bos_token_id=2, eos_token="</s>", eos_token_id=1)
+        self.run_random_weights_test(
+            model=model,
+            tokenizer=tokenizer,
+            model_name=MODEL_NAME,
+            basename=f"test_discrepancies_gemma4_ple_{precision}_{provider}",
+            precision=precision,
+            provider=provider,
+            num_hidden_layers=num_hidden_layers,
+            num_key_value_heads=config.num_key_value_heads,
+            head_size=config.head_dim,
+            # vocab_size matches vocab_size_per_layer_input so random IDs stay within
+            # both embedding table bounds (main vocab and per-layer vocab).
+            vocab_size=config.vocab_size,
+            create_model_kwargs={"num_hidden_layers": num_hidden_layers},
+            atol={"fp16": 2e-2, "bf16": 2e-2, "fp32": 1e-3, "int4": 1.5},
+        )
+
+    def common_gemma4_ple_greedy_generation(self, precision, provider):
+        """Greedy-generation check for a Gemma4 model with PLE enabled."""
+        import torch
+        from transformers import AutoModelForCausalLM
+
+        config = self._make_ple_config()
+        num_hidden_layers = config.num_hidden_layers
+
+        torch.manual_seed(42)
+        model = AutoModelForCausalLM.from_config(config)
+        model.eval().to(provider)
+        tokenizer = self.make_word_level_tokenizer(bos_token="<bos>", bos_token_id=2, eos_token="</s>", eos_token_id=1)
+        self.run_greedy_generation_test(
+            model=model,
+            tokenizer=tokenizer,
+            model_name=MODEL_NAME,
+            basename=f"test_generation_gemma4_ple_{precision}_{provider}",
+            precision=precision,
+            provider=provider,
+            num_hidden_layers=num_hidden_layers,
+            num_key_value_heads=config.num_key_value_heads,
+            head_size=config.head_dim,
+            # vocab_size == vocab_size_per_layer_input: all generated tokens are
+            # in-range for both embedding tables.
+            vocab_size=config.vocab_size,
+            eos_token_id=config.eos_token_id,
+            create_model_kwargs={"num_hidden_layers": num_hidden_layers},
+        )
+
     def common_fast_gemma4_random_weights(self, precision, provider):
         from transformers import AutoModelForCausalLM
 
@@ -311,6 +410,61 @@ class TestRandomGemma4(ExtTestCase):
 
         prefix = "test_gemma4_fp32_cpu_genai_generate"
         config = self._make_config(num_hidden_layers=2)
+
+        model_dir = self.get_model_dir(prefix, clean=False)
+        torch.manual_seed(42)
+        model = AutoModelForCausalLM.from_config(config)
+        model.eval()
+        model.save_pretrained(model_dir)
+
+        tokenizer = self.make_word_level_tokenizer(bos_token="<bos>", bos_token_id=2, eos_token="</s>", eos_token_id=1)
+        tokenizer.save_pretrained(model_dir)
+
+        output_dir, cache_dir = self.get_dirs(prefix, clean=False)
+
+        create_model(
+            model_name=MODEL_NAME,
+            input_path=model_dir,
+            output_dir=output_dir,
+            precision="fp32",
+            execution_provider="cpu",
+            cache_dir=cache_dir,
+            num_hidden_layers=config.num_hidden_layers,
+        )
+
+        self.run_genai_generation_test(output_dir, model, config.vocab_size, config.eos_token_id)
+
+    @hide_stdout()
+    def test_fast_discrepancy_gemma4_ple_fp32_cpu(self):
+        """Gemma4 with Per-Layer Embeddings (PLE) – fp32 random-weight discrepancy check."""
+        self.common_fast_gemma4_ple_random_weights("fp32", "cpu")
+
+    @hide_stdout()
+    def test_fast_discrepancy_gemma4_ple_fp16_cpu(self):
+        """Gemma4 with Per-Layer Embeddings (PLE) – fp16 random-weight discrepancy check."""
+        self.common_fast_gemma4_ple_random_weights("fp16", "cpu")
+
+    @hide_stdout()
+    def test_gemma4_ple_fp32_cpu_greedy_generation(self):
+        """Gemma4 with Per-Layer Embeddings (PLE) – fp32 greedy generation check."""
+        self.common_gemma4_ple_greedy_generation("fp32", "cpu")
+
+    @hide_stdout()
+    def test_gemma4_ple_fp16_cpu_greedy_generation(self):
+        """Gemma4 with Per-Layer Embeddings (PLE) – fp16 greedy generation check."""
+        self.common_gemma4_ple_greedy_generation("fp16", "cpu")
+
+    @hide_stdout()
+    @requires_genai()
+    def test_gemma4_ple_fp32_cpu_genai_generate(self):
+        """Gemma4 with Per-Layer Embeddings (PLE) – fp32 ORT-GenAI generation check."""
+        import torch
+        from transformers import AutoModelForCausalLM
+
+        from modelbuilder.builder import create_model
+
+        prefix = "test_gemma4_ple_fp32_cpu_genai_generate"
+        config = self._make_ple_config(num_hidden_layers=2)
 
         model_dir = self.get_model_dir(prefix, clean=False)
         torch.manual_seed(42)
