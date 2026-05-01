@@ -107,12 +107,21 @@ def requires_transformers(version: str = "", msg: str = "") -> Callable:
     return lambda x: x
 
 
-def requires_genai(msg: str = "") -> Callable:
+def requires_genai(version: str = "", msg: str = "") -> Callable:
     """Skips a test if ``onnxruntime_genai`` is not installed."""
     try:
         import onnxruntime_genai  # noqa: F401
     except ImportError:
         return unittest.skip(msg or "onnxruntime-genai is not installed")
+    if not hasattr(onnxruntime_genai, "__version__"):
+        return unittest.skip(msg or "transformers not properly installed")
+
+    if not version:
+        return lambda x: x
+
+    if PvVersion(onnxruntime_genai.__version__) < PvVersion(version):
+        msg = msg or f"onnxruntime_genai version {onnxruntime_genai.__version__} < {version}"
+        return unittest.skip(msg)
     return lambda x: x
 
 

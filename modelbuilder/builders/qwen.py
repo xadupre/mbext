@@ -2820,3 +2820,32 @@ class Qwen35TextModel(Model):
         del self.input_names["past_key_values.value"]
         del self.output_names["present.key"]
         del self.output_names["present.value"]
+
+
+class Qwen35CausalLMModel(Qwen35TextModel):
+    """Qwen3.5 pure-text (CausalLM) decoder builder.
+
+    Handles ``Qwen3_5ForCausalLM`` – the text-only variant of Qwen3.5
+    (e.g. Qwen/Qwen3.5-4B) whose HF config is a flat ``Qwen3_5TextConfig``
+    with no ``text_config`` sub-config.
+
+    Unlike the multimodal :class:`Qwen35TextModel`, this class includes the
+    embedding layer in the ONNX graph so the model accepts ``input_ids``
+    directly.  This is required for ORT-GenAI to be able to run generation
+    without a separate embedding model artifact.
+    """
+
+    def __init__(self, config, io_dtype, onnx_dtype, ep, cache_dir, extra_options):
+        # Text-only model: include the embedding layer so the ONNX graph
+        # takes input_ids (not inputs_embeds).  This prevents the VL default
+        # of exclude_embeds=True set by Qwen35TextModel.__init__.
+        extra_options.setdefault("exclude_embeds", False)
+        super().__init__(config, io_dtype, onnx_dtype, ep, cache_dir, extra_options)
+
+    def load_weights(self, input_path):
+        from transformers import Qwen3_5ForCausalLM
+
+        print("Loading Qwen3_5ForCausalLM model...")
+        return Qwen3_5ForCausalLM.from_pretrained(
+            self.model_name_or_path, cache_dir=self.cache_dir, token=self.hf_token, trust_remote_code=self.hf_remote
+        )
