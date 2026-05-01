@@ -489,6 +489,83 @@ class TestRandomGemma4(ExtTestCase):
 
         self.run_genai_generation_test(output_dir, model, config.vocab_size, config.eos_token_id)
 
+    @hide_stdout()
+    def test_gemma4_genai_config_head_size_global_head_dim(self):
+        """genai_config.json head_size must use global_head_dim when it differs from head_dim.
+
+        Regression test for the bug where ``head_size`` in genai_config.json
+        reflected the sliding-attention ``head_dim`` instead of ``global_head_dim``
+        when ``global_head_dim != head_dim``.
+        """
+        import json
+        import os
+
+        import torch
+        from transformers import AutoModelForCausalLM, Gemma4TextConfig
+
+        from modelbuilder.builder import create_model
+
+        global_head_dim = 128
+        local_head_dim = 64
+        assert global_head_dim != local_head_dim
+
+        layer_types = ["sliding_attention", "full_attention"]
+        config = Gemma4TextConfig(
+            architectures=["Gemma4ForCausalLM"],
+            bos_token_id=2,
+            eos_token_id=1,
+            head_dim=local_head_dim,
+            global_head_dim=global_head_dim,
+            hidden_activation="gelu_pytorch_tanh",
+            hidden_size=512,
+            intermediate_size=1376,
+            layer_types=layer_types,
+            max_position_embeddings=2048,
+            num_attention_heads=8,
+            num_hidden_layers=2,
+            num_key_value_heads=4,
+            rms_norm_eps=1e-6,
+            sliding_window=512,
+            vocab_size=32000,
+            hidden_size_per_layer_input=0,
+            num_kv_shared_layers=0,
+            enable_moe_block=False,
+        )
+
+        prefix = "test_gemma4_genai_config_head_size_global_head_dim"
+        model_dir = self.get_model_dir(prefix, clean=False)
+        torch.manual_seed(42)
+        model = AutoModelForCausalLM.from_config(config)
+        model.eval()
+        model.save_pretrained(model_dir)
+
+        tokenizer = self.make_word_level_tokenizer(bos_token="<bos>", bos_token_id=2, eos_token="</s>", eos_token_id=1)
+        tokenizer.save_pretrained(model_dir)
+
+        output_dir, cache_dir = self.get_dirs(prefix, clean=False)
+
+        create_model(
+            model_name=MODEL_NAME,
+            input_path=model_dir,
+            output_dir=output_dir,
+            precision="fp32",
+            execution_provider="cpu",
+            cache_dir=cache_dir,
+            num_hidden_layers=config.num_hidden_layers,
+        )
+
+        genai_config_path = os.path.join(output_dir, "genai_config.json")
+        self.assertExists(genai_config_path)
+        with open(genai_config_path) as f:
+            genai_config = json.load(f)
+
+        actual_head_size = genai_config["model"]["decoder"]["head_size"]
+        self.assertEqual(
+            actual_head_size,
+            global_head_dim,
+            f"genai_config.json head_size should be global_head_dim ({global_head_dim}), got {actual_head_size}",
+        )
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
