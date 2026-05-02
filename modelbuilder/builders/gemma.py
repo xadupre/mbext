@@ -780,11 +780,13 @@ class Gemma4Model(Gemma3Model):
         genai_config["model"]["type"] = "gemma2"
 
         # When global_head_dim != head_dim the base class writes the sliding-attention
-        # head_size (self.head_size) into genai_config.json.  In Gemma4, full-attention
-        # layers use global_head_dim for their KV-cache tensors, so ORT-GenAI needs
-        # global_head_dim here to correctly size those buffers.
-        if self._global_head_size != self.head_size:
-            genai_config["model"]["decoder"]["head_size"] = self._global_head_size
+        # head_size into genai_config.json.  In Gemma4, full-attention layers use
+        # global_head_dim for their KV-cache tensors, so ORT-GenAI needs global_head_dim
+        # here to correctly size those buffers.
+        sliding_head_size = self.head_size
+        global_head_size = self._global_head_size
+        if global_head_size != sliding_head_size:
+            genai_config["model"]["decoder"]["head_size"] = global_head_size
 
         with open(config_path, "w") as f:
             json.dump(genai_config, f, indent=4)
