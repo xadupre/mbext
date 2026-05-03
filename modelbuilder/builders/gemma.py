@@ -226,8 +226,8 @@ class Gemma4Model(Gemma3Model):
 
         if self._global_head_size != self.head_size:
             print(
-                f"WARNING: Gemma4 global_head_dim ({self._global_head_size}) differs from head_dim ({self.head_size}). "
-                "Full-attention layers will use global_head_dim; genai_config.json head_size reflects the sliding-attention value."
+                f"INFO: Gemma4 global_head_dim ({self._global_head_size}) differs from head_dim ({self.head_size}). "
+                "Full-attention layers will use global_head_dim; genai_config.json head_size will be set to global_head_dim."
             )
 
         # Build shared-KV metadata: the last `num_kv_shared_layers` layers reuse K/V
@@ -778,6 +778,15 @@ class Gemma4Model(Gemma3Model):
             genai_config = json.load(f)
 
         genai_config["model"]["type"] = "gemma2"
+
+        # When global_head_dim != head_dim the base class writes the sliding-attention
+        # head_size into genai_config.json.  In Gemma4, full-attention layers use
+        # global_head_dim for their KV-cache tensors, so ORT-GenAI needs global_head_dim
+        # here to correctly size those buffers.
+        sliding_head_size = self.head_size
+        global_head_size = self._global_head_size
+        if global_head_size != sliding_head_size:
+            genai_config["model"]["decoder"]["head_size"] = global_head_size
 
         with open(config_path, "w") as f:
             json.dump(genai_config, f, indent=4)

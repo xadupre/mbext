@@ -489,6 +489,227 @@ class TestRandomGemma4(ExtTestCase):
 
         self.run_genai_generation_test(output_dir, model, config.vocab_size, config.eos_token_id)
 
+    @staticmethod
+    def _make_global_head_dim_config():
+        """Return a Gemma4TextConfig where ``global_head_dim != head_dim``.
+
+        Uses ``head_dim=64`` (sliding-attention) and ``global_head_dim=128``
+        (full-attention) with a minimal 2-layer architecture so that the
+        KV-cache shape mismatch between layer types is exercised.
+        """
+        from transformers import Gemma4TextConfig
+
+        return Gemma4TextConfig(
+            architectures=["Gemma4ForCausalLM"],
+            bos_token_id=2,
+            eos_token_id=1,
+            head_dim=64,
+            global_head_dim=128,
+            hidden_activation="gelu_pytorch_tanh",
+            hidden_size=512,
+            intermediate_size=1376,
+            layer_types=["sliding_attention", "full_attention"],
+            max_position_embeddings=2048,
+            num_attention_heads=8,
+            num_hidden_layers=2,
+            num_key_value_heads=4,
+            rms_norm_eps=1e-6,
+            sliding_window=512,
+            vocab_size=32000,
+            hidden_size_per_layer_input=0,
+            num_kv_shared_layers=0,
+            enable_moe_block=False,
+        )
+
+    @hide_stdout()
+    def test_gemma4_genai_config_head_size_global_head_dim(self):
+        """genai_config.json head_size must use global_head_dim when it differs from head_dim.
+
+        Regression test for the bug where ``head_size`` in genai_config.json
+        reflected the sliding-attention ``head_dim`` instead of ``global_head_dim``
+        when ``global_head_dim != head_dim``.
+
+        Also runs a prefill/decode discrepancy check (ONNX vs PyTorch) using the
+        correct per-layer KV-cache head sizes (``global_head_dim`` for
+        ``full_attention`` layers, ``head_dim`` for ``sliding_attention`` layers).
+        """
+        import json
+        import os
+
+        import numpy as np
+        import torch
+        from transformers import AutoModelForCausalLM
+
+        from modelbuilder.builder import create_model
+
+        config = self._make_global_head_dim_config()
+        sliding_head_size = config.head_dim  # 64
+        global_head_size = config.global_head_dim  # 128
+        assert global_head_size != sliding_head_size
+        layer_types = config.layer_types
+
+        prefix = "test_gemma4_genai_config_head_size_global_head_dim"
+        model_dir = self.get_model_dir(prefix, clean=False)
+        torch.manual_seed(42)
+        model = AutoModelForCausalLM.from_config(config)
+        model.eval()
+        model.save_pretrained(model_dir)
+
+        tokenizer = self.make_word_level_tokenizer(bos_token="<bos>", bos_token_id=2, eos_token="</s>", eos_token_id=1)
+        tokenizer.save_pretrained(model_dir)
+
+        output_dir, cache_dir = self.get_dirs(prefix, clean=False)
+
+        create_model(
+            model_name=MODEL_NAME,
+            input_path=model_dir,
+            output_dir=output_dir,
+            precision="fp32",
+            execution_provider="cpu",
+            cache_dir=cache_dir,
+            num_hidden_layers=config.num_hidden_layers,
+        )
+
+        # --- genai_config.json head_size check ---
+        genai_config_path = os.path.join(output_dir, "genai_config.json")
+        self.assertExists(genai_config_path)
+        with open(genai_config_path) as f:
+            genai_config = json.load(f)
+
+        actual_head_size = genai_config["model"]["decoder"]["head_size"]
+        self.assertEqual(
+            actual_head_size,
+            global_head_size,
+            f"genai_config.json head_size should be global_head_size ({global_head_size}), got {actual_head_size}",
+        )
+
+        # --- Discrepancy check: ONNX vs PyTorch (prefill + decode) ---
+        # The model has layers with different KV-cache head sizes:
+        #   sliding_attention → head_size = sliding_head_size (head_dim)
+        #   full_attention    → head_size = global_head_size (global_head_dim)
+        onnx_path = os.path.join(output_dir, "model.onnx")
+        self.assertExists(onnx_path)
+        sess = self.check_ort(onnx_path, provider="cpu")
+        onnx_input_names = {inp.name for inp in sess.get_inputs()}
+        output_names = [o.name for o in sess.get_outputs()]
+
+        # Per-layer head sizes based on layer type
+        layer_head_sizes = [global_head_size if lt == "full_attention" else sliding_head_size for lt in layer_types]
+
+        batch_size, seq_len = 1, 5
+        torch.manual_seed(0)
+        input_ids = torch.randint(0, config.vocab_size, (batch_size, seq_len))
+
+        prefill_feed = {
+            "input_ids": input_ids.numpy().astype(np.int64),
+            "attention_mask": np.ones((batch_size, seq_len), dtype=np.int64),
+            "position_ids": np.arange(seq_len, dtype=np.int64).reshape(batch_size, seq_len),
+        }
+        for layer_idx, head_size in enumerate(layer_head_sizes):
+            prefill_feed[f"past_key_values.{layer_idx}.key"] = np.zeros(
+                (batch_size, config.num_key_value_heads, 0, head_size), dtype=np.float32
+            )
+            prefill_feed[f"past_key_values.{layer_idx}.value"] = np.zeros(
+                (batch_size, config.num_key_value_heads, 0, head_size), dtype=np.float32
+            )
+        prefill_feed = {k: v for k, v in prefill_feed.items() if k in onnx_input_names}
+
+        prefill_results = dict(zip(output_names, sess.run(None, prefill_feed)))
+        ort_prefill_logits = prefill_results["logits"]
+
+        with torch.no_grad():
+            pt_prefill = model(input_ids)
+        pt_prefill_logits = pt_prefill.logits.detach().cpu().numpy()
+
+        with self.subTest(step="prefill"):
+            np.testing.assert_allclose(pt_prefill_logits, ort_prefill_logits, atol=1e-3, rtol=1e-3)
+
+        # Decode step: reuse present KV tensors from prefill as past KV
+        next_token = int(np.argmax(prefill_results["logits"][0, -1, :]))
+        decode_feed = {
+            "input_ids": np.array([[next_token]], dtype=np.int64),
+            "attention_mask": np.ones((batch_size, seq_len + 1), dtype=np.int64),
+            "position_ids": np.array([[seq_len]], dtype=np.int64),
+        }
+        for layer_idx in range(len(layer_head_sizes)):
+            decode_feed[f"past_key_values.{layer_idx}.key"] = prefill_results[f"present.{layer_idx}.key"]
+            decode_feed[f"past_key_values.{layer_idx}.value"] = prefill_results[f"present.{layer_idx}.value"]
+        decode_feed = {k: v for k, v in decode_feed.items() if k in onnx_input_names}
+
+        decode_results = dict(zip(output_names, sess.run(None, decode_feed)))
+        ort_decode_logits = decode_results["logits"]
+
+        with torch.no_grad():
+            pt_decode = model(torch.tensor([[next_token]], dtype=torch.long), past_key_values=pt_prefill.past_key_values)
+        pt_decode_logits = pt_decode.logits.detach().cpu().numpy()
+
+        with self.subTest(step="decode"):
+            np.testing.assert_allclose(pt_decode_logits, ort_decode_logits, atol=1e-3, rtol=1e-3)
+
+    @hide_stdout()
+    @requires_genai()
+    def test_gemma4_genai_config_head_size_global_head_dim_genai(self):
+        """ORT-GenAI generation for Gemma4 with a non-default ``global_head_dim``.
+
+        Uses ``head_dim == global_head_dim = 128`` so that ORT-GenAI can allocate
+        uniform KV-cache buffers (ORT-GenAI uses a single ``head_size`` value
+        from genai_config.json for all layers and does not support per-layer
+        head sizes).  The companion discrepancy test covers the
+        ``head_dim != global_head_dim`` scenario for the ONNX model.
+        """
+        import torch
+        from transformers import AutoModelForCausalLM, Gemma4TextConfig
+
+        from modelbuilder.builder import create_model
+
+        # Use head_dim == global_head_dim = 128 so ORT-GenAI (which allocates
+        # a uniform KV cache of shape [..., head_size]) works for all layers.
+        config = Gemma4TextConfig(
+            architectures=["Gemma4ForCausalLM"],
+            bos_token_id=2,
+            eos_token_id=1,
+            head_dim=128,
+            global_head_dim=128,
+            hidden_activation="gelu_pytorch_tanh",
+            hidden_size=512,
+            intermediate_size=1376,
+            layer_types=["sliding_attention", "full_attention"],
+            max_position_embeddings=2048,
+            num_attention_heads=4,
+            num_hidden_layers=2,
+            num_key_value_heads=2,
+            rms_norm_eps=1e-6,
+            sliding_window=512,
+            vocab_size=32000,
+            hidden_size_per_layer_input=0,
+            num_kv_shared_layers=0,
+            enable_moe_block=False,
+        )
+
+        prefix = "test_gemma4_genai_config_head_size_global_head_dim_genai"
+        model_dir = self.get_model_dir(prefix, clean=False)
+        torch.manual_seed(42)
+        model = AutoModelForCausalLM.from_config(config)
+        model.eval()
+        model.save_pretrained(model_dir)
+
+        tokenizer = self.make_word_level_tokenizer(bos_token="<bos>", bos_token_id=2, eos_token="</s>", eos_token_id=1)
+        tokenizer.save_pretrained(model_dir)
+
+        output_dir, cache_dir = self.get_dirs(prefix, clean=False)
+
+        create_model(
+            model_name=MODEL_NAME,
+            input_path=model_dir,
+            output_dir=output_dir,
+            precision="fp32",
+            execution_provider="cpu",
+            cache_dir=cache_dir,
+            num_hidden_layers=config.num_hidden_layers,
+        )
+
+        self.run_genai_generation_test(output_dir, model, config.vocab_size, config.eos_token_id)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
