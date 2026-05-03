@@ -895,6 +895,13 @@ class Model(LocalFunctionsMixin):
             past_val = self.values.get(inputs[3]) if len(inputs) >= 4 else None
             if past_val is not None and past_val.shape is not None and len(past_val.shape) >= 1:
                 self._register_causal_conv_local_function(int(past_val.shape[-1]) + 1)
+        if domain == "com.microsoft" and op_type == "LinearAttention":
+            # inputs[3] is past_recurrent_state with shape [B, nkv, hk, hv].
+            past_val = self.values.get(inputs[3]) if len(inputs) >= 4 else None
+            if past_val is not None and past_val.shape is not None and len(past_val.shape) >= 4:
+                self.register_linear_attention_local_function(
+                    int(kwargs.get("q_num_heads", 1)), int(kwargs.get("kv_num_heads", 1)), int(past_val.shape[2]), int(past_val.shape[3])
+                )
 
     def make_value(self, name, dtype: ir.DataType | int | None = None, shape: Sequence[int | str] | ir.Shape | None = None) -> ir.Value:
         """Obtain or create an IR value by value name.
