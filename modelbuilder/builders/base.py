@@ -1436,7 +1436,7 @@ class Model(LocalFunctionsMixin):
                     raise ValueError("All MatMuls must have the same group size for packed MatMul.")
                 self.qweight = torch.cat([q_matmul.qweight, k_matmul.qweight, v_matmul.qweight], dim=0)
                 self.scales = torch.cat([q_matmul.scales, k_matmul.scales, v_matmul.scales], dim=0)
-                self.qzeros = torch.cat([q_matmul.qzeros, k_matmul.qzeros, v_matmul.qzeros], dim=0)
+                self.qzeros = torch.cat([q_matmul.qzeros, k_matmul.qzeros, v_matmul.qzeros], dim=0) if q_matmul.qzeros is not None else None
                 self.g_idx = q_matmul.g_idx
 
                 self.in_features = q_matmul.in_features

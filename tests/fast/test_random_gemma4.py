@@ -8,6 +8,7 @@ import unittest
 from modelbuilder.ext_test_case import ExtTestCase, hide_stdout, requires_cuda, requires_genai, requires_transformers
 
 MODEL_NAME = "google/gemma-4-E4B-it"
+INTEL_AUTOROUND_MODEL_NAME = "Intel/gemma-4-31B-it-int4-AutoRound"
 
 
 @requires_transformers("5.6")
@@ -433,6 +434,128 @@ class TestRandomGemma4(ExtTestCase):
         )
 
         self.run_genai_generation_test(output_dir, model, config.vocab_size, config.eos_token_id)
+
+    @hide_stdout()
+    def test_gemma4_autoround(self):
+        """Gemma4 model with AutoRound quantization config should export correctly.
+
+        This test simulates a Gemma4 model (Intel/gemma-4-31B-it-int4-AutoRound) by
+        saving a random float32 Gemma4ForCausalLM checkpoint and then patching its
+        config.json to add ``quantization_config.quant_method = "autoround"``.
+
+        The builder must route such models through the AutoRound loading path
+        (``Gemma4Model.load_weights`` → ``AutoModelForCausalLM.from_pretrained``)
+        rather than the default ``QuantModel.from_pretrained`` path, which does
+        not understand the AutoRound quant_method.  Transformers treats
+        ``"autoround"`` as an unrecognised quantization type and simply loads
+        the float32 safetensors, allowing the builder to export a valid ONNX
+        model.
+        """
+        import json
+        import os
+
+        import torch
+        from transformers import AutoModelForCausalLM
+
+        from modelbuilder.builder import create_model
+
+        config = self._make_config()
+        prefix = "test_gemma4_autoround"
+        model_dir = self.get_model_dir(prefix, clean=True)
+
+        torch.manual_seed(42)
+        model = AutoModelForCausalLM.from_config(config)
+        model.eval()
+        model.save_pretrained(model_dir)
+
+        # Inject a fake AutoRound quantization_config into the saved config.json.
+        # The quant_method value "autoround" is not recognised by transformers, so
+        # it falls back to loading plain float32 weights – which is exactly what the
+        # test model contains.  In production the model directory would contain
+        # GPTQ-packed int4 weights and the auto-round library would handle
+        # dequantisation transparently.
+        cfg_path = os.path.join(model_dir, "config.json")
+        with open(cfg_path) as f:
+            cfg_data = json.load(f)
+        cfg_data["quantization_config"] = {"quant_method": "autoround", "bits": 4, "group_size": 128, "sym": True, "desc_act": False}
+        with open(cfg_path, "w") as f:
+            json.dump(cfg_data, f, indent=4)
+
+        tokenizer = self.make_word_level_tokenizer(bos_token="<bos>", bos_token_id=2, eos_token="</s>", eos_token_id=1)
+        tokenizer.save_pretrained(model_dir)
+
+        output_dir, cache_dir = self.get_dirs(prefix, clean=True)
+
+        create_model(
+            model_name=INTEL_AUTOROUND_MODEL_NAME,
+            input_path=model_dir,
+            output_dir=output_dir,
+            precision="fp32",
+            execution_provider="cpu",
+            cache_dir=cache_dir,
+            num_hidden_layers=config.num_hidden_layers,
+        )
+
+        onnx_path = os.path.join(output_dir, "model.onnx")
+        self.assertExists(onnx_path)
+
+    @hide_stdout()
+    def test_gemma4_autoround_int4(self):
+        """AutoRound-tagged Gemma4 can be exported with precision=int4.
+
+        This test re-uses the same ``"autoround"`` (unrecognised by transformers)
+        trick as :meth:`test_gemma4_autoround` so that the model loads as plain
+        float32.  The builder then quantises the float MatMul nodes to
+        ``MatMulNBits`` via :class:`onnxruntime.quantization.MatMulNBitsQuantizer`
+        in the usual way.
+
+        The test verifies two things:
+        1. The ``quant_type in _AUTOROUND_QUANT_ALIASES`` routing in
+           :meth:`Gemma4Model.load_weights` does not break the ``precision=int4``
+           export path.
+        2. An ``int4`` ONNX model is correctly produced.
+        """
+        import json
+        import os
+
+        import torch
+        from transformers import AutoModelForCausalLM
+
+        from modelbuilder.builder import create_model
+
+        config = self._make_config()
+        prefix = "test_gemma4_autoround_int4"
+        model_dir = self.get_model_dir(prefix, clean=True)
+
+        torch.manual_seed(42)
+        model = AutoModelForCausalLM.from_config(config)
+        model.eval()
+        model.save_pretrained(model_dir)
+
+        cfg_path = os.path.join(model_dir, "config.json")
+        with open(cfg_path) as f:
+            cfg_data = json.load(f)
+        cfg_data["quantization_config"] = {"quant_method": "autoround", "bits": 4, "group_size": 128, "sym": True, "desc_act": False}
+        with open(cfg_path, "w") as f:
+            json.dump(cfg_data, f, indent=4)
+
+        tokenizer = self.make_word_level_tokenizer(bos_token="<bos>", bos_token_id=2, eos_token="</s>", eos_token_id=1)
+        tokenizer.save_pretrained(model_dir)
+
+        output_dir, cache_dir = self.get_dirs(prefix, clean=True)
+
+        create_model(
+            model_name=INTEL_AUTOROUND_MODEL_NAME,
+            input_path=model_dir,
+            output_dir=output_dir,
+            precision="int4",
+            execution_provider="cpu",
+            cache_dir=cache_dir,
+            num_hidden_layers=config.num_hidden_layers,
+        )
+
+        onnx_path = os.path.join(output_dir, "model.onnx")
+        self.assertExists(onnx_path)
 
     @hide_stdout()
     def test_fast_discrepancy_gemma4_ple_fp32_cpu(self):
