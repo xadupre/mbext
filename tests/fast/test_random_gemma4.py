@@ -8,6 +8,7 @@ import unittest
 from modelbuilder.ext_test_case import ExtTestCase, hide_stdout, requires_cuda, requires_genai, requires_transformers
 
 MODEL_NAME = "google/gemma-4-E4B-it"
+INTEL_AUTOROUND_MODEL_NAME = "Intel/gemma-4-31B-it-int4-AutoRound"
 
 
 @requires_transformers("5.6")
@@ -450,6 +451,9 @@ class TestRandomGemma4(ExtTestCase):
         the float32 safetensors, allowing the builder to export a valid ONNX
         model.
         """
+        import json
+        import os
+
         import torch
         from transformers import AutoModelForCausalLM
 
@@ -473,13 +477,7 @@ class TestRandomGemma4(ExtTestCase):
         cfg_path = os.path.join(model_dir, "config.json")
         with open(cfg_path) as f:
             cfg_data = json.load(f)
-        cfg_data["quantization_config"] = {
-            "quant_method": "autoround",
-            "bits": 4,
-            "group_size": 128,
-            "sym": True,
-            "desc_act": False,
-        }
+        cfg_data["quantization_config"] = {"quant_method": "autoround", "bits": 4, "group_size": 128, "sym": True, "desc_act": False}
         with open(cfg_path, "w") as f:
             json.dump(cfg_data, f, indent=4)
 
@@ -517,6 +515,9 @@ class TestRandomGemma4(ExtTestCase):
            export path.
         2. An ``int4`` ONNX model is correctly produced.
         """
+        import json
+        import os
+
         import torch
         from transformers import AutoModelForCausalLM
 
@@ -534,13 +535,7 @@ class TestRandomGemma4(ExtTestCase):
         cfg_path = os.path.join(model_dir, "config.json")
         with open(cfg_path) as f:
             cfg_data = json.load(f)
-        cfg_data["quantization_config"] = {
-            "quant_method": "autoround",
-            "bits": 4,
-            "group_size": 128,
-            "sym": True,
-            "desc_act": False,
-        }
+        cfg_data["quantization_config"] = {"quant_method": "autoround", "bits": 4, "group_size": 128, "sym": True, "desc_act": False}
         with open(cfg_path, "w") as f:
             json.dump(cfg_data, f, indent=4)
 
