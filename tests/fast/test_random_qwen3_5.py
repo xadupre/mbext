@@ -245,6 +245,12 @@ class TestRandomQwen3_5(ExtTestCase):
         self.assertIn("CausalConvWithState", op_types)
         self.assertIn("LinearAttention", op_types)
 
+        # The linear-attention Q/K L2 normalize must use a single
+        # ``LpNormalization`` op (one per Q/K per linear-attention layer)
+        # instead of the legacy 5-node Square+ReduceSum+Add+Rsqrt+Mul
+        # subgraph (see onnxruntime-genai PR #2127 / 88af38b).
+        self.assertIn("LpNormalization", op_types)
+
         # Run a prefill step to confirm the local-function fallbacks work.
         outputs = self._run_text_decoder(model, output_dir, config, "fp32", config.text_config.layer_types)
         self.assertIsNotNone(outputs[0])

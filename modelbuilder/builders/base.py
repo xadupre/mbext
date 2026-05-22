@@ -521,6 +521,14 @@ class Model(LocalFunctionsMixin):
                 "truncate": config.rope_scaling.get("truncate", True),
             }
 
+        elif config.rope_scaling.get("rope_type", config.rope_scaling.get("type")) == "linear" and "factor" in config.rope_scaling:
+            # Hugging Face: modeling_rope_utils._compute_linear_scaling_rope_parameters — inv_freq /= factor
+            # Equivalent to inv_freq = 1 / (factor * theta ** (i / dim)) in make_rotary_embedding_caches_from_scratch.
+            factor = float(config.rope_scaling["factor"])
+            if factor <= 0:
+                raise ValueError(f"rope_scaling.factor must be positive for linear RoPE scaling, got {factor}")
+            self.rope_attrs["rescale_factors"] = factor
+
         elif "mrope_section" in config.rope_scaling:
             # For models that use MRoPE (e.g. Qwen 2.5 VL, Qwen 3 VL)
             self.rope_attrs["mrope"] = {"sections": config.rope_scaling["mrope_section"]}  # Sections for MRoPE
@@ -566,6 +574,9 @@ class Model(LocalFunctionsMixin):
         return (self.ep, self.io_dtype) in valid_packed_attn_configurations
 
     def make_attention_init(self):
+        self.q_size = self.num_attn_heads * self.head_size
+        self.kv_size = self.num_kv_heads * self.head_size
+
         if self.is_gqa_supported():
             # Change model settings for GroupQueryAttention
             self.attention_attrs["op_type"] = "GroupQueryAttention"
@@ -576,11 +587,7 @@ class Model(LocalFunctionsMixin):
             # use_packed_matmul can be overrided by upstream quantization choice
             # (e.g., when q_proj, k_proj, v_proj have different quantization settings)
             self.attention_attrs["use_packed_matmul"] = (
-                self.ep not in ["dml"]
-                and not self.matmul_attrs["use_lora"]
-                and not self.attention_attrs["q_norm"]
-                and not self.attention_attrs["k_norm"]
-                and not self.extra_options.get("disable_qkv_fusion", False)
+                self.ep not in ["dml"] and not self.matmul_attrs["use_lora"] and not self.extra_options.get("disable_qkv_fusion", False)
             )
 
             # Some EPs don't support fusing rotary embeddings inside GQA yet
@@ -1151,6 +1158,11 @@ class Model(LocalFunctionsMixin):
         self.make_value(output, dtype, shape=shape)
         return output
 
+    def make_split(self, name, inputs, outputs, dtypes, shapes, axis=-1):
+        self.make_node("Split", inputs=inputs, outputs=outputs, name=name, axis=axis)
+        for out, dt, shape in zip(outputs, dtypes, shapes):
+            self.make_value(out, dt, shape=shape)
+
     def make_neg(self, name, root_input, dtype, shape):
         output = f"{name}/output_0"
         self.make_node("Neg", inputs=[root_input], outputs=[output], name=name)
@@ -1162,6 +1174,11 @@ class Model(LocalFunctionsMixin):
         self.make_node("Transpose", inputs=[root_input], outputs=[output], name=name, perm=perm)
         self.make_value(output, dtype, shape=shape)
         return output
+
+    def make_lp_normalization(self, name, root_input, dtype, shape, axis=-1, p=2):
+        output = f"{name}/output_0"
+        self.make_node("LpNormalization", inputs=[root_input], outputs=[output], name=name, axis=axis, p=p)
+        self.make_value(output, dtype, shape=shape)
 
     def make_div(self, name, inputs, dtype, shape):
         output = f"{name}/output_0"
@@ -2996,6 +3013,39 @@ class Model(LocalFunctionsMixin):
                     v_add_name = f"/model/layers.{layer_id}/attn/v_proj/Add"
                     self.make_add_bias(attention.v_proj.bias, v_add_name, root_input=self.attention_attrs["v_path"])
                     self.attention_attrs["v_path"] = f"{v_add_name}/output_0"
+
+        # When q_norm/k_norm are present, the packed-QKV path inside GQA cannot be used
+        # (norm runs per-head before attention). Split here so downstream sees Q/K/V separately.
+        # Placed after the (optional) packed Add so packed bias fusion is preserved.
+        if (
+            self.attention_attrs["use_packed_matmul"]
+            and qkv_dtype_equal
+            and self.attention_attrs["q_norm"]
+            and self.attention_attrs["k_norm"]
+        ):
+            # Compute sizes from the current layer's head_size to support models
+            # whose attention head_size varies per layer (e.g. Gemma4 full vs
+            # sliding-attention layers swap head_size on self before calling
+            # this method).
+            q_size = self.num_attn_heads * self.head_size
+            kv_size = self.num_kv_heads * self.head_size
+            split_name = f"/model/layers.{layer_id}/attn/qkv_proj/Split"
+            split_outputs = [f"{split_name}/output_{i}" for i in range(3)]
+            self.make_split(
+                split_name,
+                inputs=[self.attention_attrs["q_path"], f"/model/constants/INT64/[{q_size}, {kv_size}, {kv_size}]"],
+                outputs=split_outputs,
+                dtypes=[self.io_dtype] * 3,
+                shapes=[
+                    ["batch_size", "sequence_length", q_size],
+                    ["batch_size", "sequence_length", kv_size],
+                    ["batch_size", "sequence_length", kv_size],
+                ],
+                axis=-1,
+            )
+            self.attention_attrs["q_path"] = split_outputs[0]
+            self.attention_attrs["k_path"] = split_outputs[1]
+            self.attention_attrs["v_path"] = split_outputs[2]
 
     def make_attention_qk_subgraph(self, layer_id, attention, root_input, **kwargs):
         # Make Q/K/V SimplifiedLayerNorm nodes
