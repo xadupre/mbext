@@ -281,12 +281,20 @@ class TestRandomQwen3_5(ExtTestCase):
         ``Qwen3_5TextModel`` previously forced ``use_fp32`` on every RMSNorm,
         which inserted ~216 Cast nodes (to-fp32 + to-fp16) around the LayerNorm
         ops in a 24-layer build and measurably hurt generation throughput.  See
-        microsoft/onnxruntime-genai#2101.  Keep the LayerNorm IO in the model's
-        native dtype: no Cast-to-fp32 should appear on the inputs of the
-        ``SkipSimplifiedLayerNormalization`` ops, and no Cast-from-fp32 should
-        appear on their outputs.
+        microsoft/onnxruntime-genai#2101.  When the runtime is ORT >= 1.26 the
+        builder keeps LayerNorm IO in the model's native dtype: no Cast-to-fp32
+        should appear on the inputs of the ``SkipSimplifiedLayerNormalization``
+        ops, and no Cast-from-fp32 should appear on their outputs.  On older
+        ORT releases the fp32 cast wrapping is still emitted (the native fp16
+        kernel loses precision across the 36+ Qwen3.5 layers), so this test is
+        skipped there.
         """
         import onnx
+        import onnxruntime as ort
+
+        ort_ver = tuple(int(x) for x in ort.__version__.split(".")[:2])
+        if ort_ver < (1, 26):
+            self.skipTest(f"requires onnxruntime >= 1.26, got {ort.__version__}")
 
         config = _make_qwen3_5_config(["full_attention", "full_attention"])
         _, output_dir = self._build_and_save_model(config, "fp16", "cpu")

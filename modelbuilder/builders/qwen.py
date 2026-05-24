@@ -1911,6 +1911,24 @@ class Qwen35TextModel(Model):
         # measurably hurts generation throughput on GPU/iGPU backends, while
         # output quality remains coherent and structurally identical without
         # the casts.  See microsoft/onnxruntime-genai#2101.
+        #
+        # This relies on the fp16 ``SkipSimplifiedLayerNormalization`` kernel
+        # that landed in ORT 1.26.  On older ORT releases the native kernel
+        # accumulates in fp16 and loses precision across the 36+ Qwen3.5
+        # layers, so we keep the explicit fp32 cast wrapping in that case.
+        try:
+            import onnxruntime as _ort
+
+            _ort_ver = tuple(int(x) for x in _ort.__version__.split(".")[:2])
+        except (ImportError, ValueError):
+            # Unknown/dev builds are assumed to be recent enough.
+            _ort_ver = (99, 99)
+        if _ort_ver < (1, 26):
+            self.layernorm_attrs["cast"]["use_fp32"] = True
+            self.layernorm_attrs["cast"]["root_input"] = True
+            self.layernorm_attrs["cast"]["skip_input"] = True
+            self.layernorm_attrs["cast"]["output_0"] = True
+            self.layernorm_attrs["cast"]["output_3"] = True
 
         # 3D position_ids for mRoPE: [3, batch_size, sequence_length]
         self.input_shapes["position_ids"] = [3, "batch_size", "sequence_length"]
