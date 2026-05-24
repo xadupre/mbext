@@ -14,6 +14,8 @@ architecture (256 routed experts + 1 shared expert with SwiGLU).
 import os
 import unittest
 
+import numpy as np
+
 from modelbuilder.ext_test_case import ExtTestCase, hide_stdout, requires_transformers
 
 QWEN3_5_MOE_MODEL_NAME = "Qwen/Qwen3.5-MoE"
@@ -135,6 +137,134 @@ class TestRandomQwen3_5Moe(ExtTestCase):
         with open(genai_config_path, encoding="utf-8") as f:
             genai_config = json.load(f)
         self.assertEqual(genai_config["model"]["type"], "qwen3_5_moe")
+
+    # ------------------------------------------------------------------ #
+    # Discrepancy: HF PyTorch vs ONNX Runtime CPU                         #
+    # ------------------------------------------------------------------ #
+
+    def _prefill_feed(self, model, config, precision, batch_size=1, seq_len=5):
+        """Return ``(inputs_embeds_pt, position_ids_3d, onnx_feed)`` for a
+        Qwen3.5-MoE prefill step with all-``full_attention`` layers.
+        """
+        import torch
+
+        text_cfg = config.text_config
+        np_dtype = self.get_input_np_dtype(precision)
+
+        torch.manual_seed(0)
+        input_ids = torch.randint(3, text_cfg.vocab_size, (batch_size, seq_len))
+        with torch.no_grad():
+            inputs_embeds_pt = model.model.language_model.embed_tokens(input_ids)
+
+        pos = np.arange(seq_len, dtype=np.int64)
+        position_ids_3d = np.stack([pos] * 3, axis=0)[:, None, :]  # [3, 1, S]
+        position_ids_3d = np.broadcast_to(position_ids_3d, (3, batch_size, seq_len)).copy()
+
+        feed = {
+            "inputs_embeds": inputs_embeds_pt.numpy().astype(np_dtype),
+            "attention_mask": np.ones((batch_size, seq_len), dtype=np.int64),
+            "position_ids": position_ids_3d,
+        }
+        for i, lt in enumerate(text_cfg.layer_types):
+            if lt == "full_attention":
+                feed[f"past_key_values.{i}.key"] = np.zeros(
+                    (batch_size, text_cfg.num_key_value_heads, 0, text_cfg.head_dim), dtype=np_dtype
+                )
+                feed[f"past_key_values.{i}.value"] = np.zeros(
+                    (batch_size, text_cfg.num_key_value_heads, 0, text_cfg.head_dim), dtype=np_dtype
+                )
+        return inputs_embeds_pt, position_ids_3d, feed
+
+    @requires_transformers("5")
+    @hide_stdout()
+    def test_qwen3_5_moe_fp32_cpu_discrepancy_full_attention(self):
+        """Compare ONNX Runtime prefill logits with HF PyTorch forward.
+
+        Builds a tiny random-weight ``Qwen3_5MoeForConditionalGeneration``
+        decoder, runs both ``onnxruntime`` CPU and the HF model's
+        ``language_model`` forward (with ``inputs_embeds`` and the 3-D
+        mRoPE ``position_ids``), and asserts:
+
+        - The per-element maximum absolute difference of the logits is
+          below ``1e-3`` (fp32, dominated by the ``com.microsoft:MoE``
+          kernel and ``GroupQueryAttention``).
+        - The greedy first-token prediction (``argmax`` of the last-row
+          logits) agrees between PyTorch and ONNX Runtime — this is the
+          "first token difference" that ORT-GenAI greedy generation
+          relies on.
+        """
+        import torch
+        from transformers import AutoModelForImageTextToText
+
+        from modelbuilder.builder import create_model
+
+        precision, provider = "fp32", "cpu"
+        config = _make_qwen3_5_moe_config(["full_attention", "full_attention"])
+
+        basename = f"test_qwen3_5_moe_disc_{precision}_{provider}"
+        model_dir_full = self.get_model_dir(basename)
+        output_dir, cache_dir = self.get_dirs(basename)
+
+        torch.manual_seed(42)
+        model = AutoModelForImageTextToText.from_config(config)
+        model.eval()
+        model.save_pretrained(model_dir_full)
+        tokenizer = self.make_word_level_tokenizer()
+        tokenizer.save_pretrained(model_dir_full)
+
+        create_model(
+            model_name=QWEN3_5_MOE_MODEL_NAME,
+            input_path=model_dir_full,
+            output_dir=output_dir,
+            precision=precision,
+            execution_provider=provider,
+            cache_dir=cache_dir,
+        )
+
+        onnx_path = os.path.join(output_dir, "model.onnx")
+        self.assertExists(onnx_path)
+
+        sess = self._check_with_ort(onnx_path, cpu=True)
+        onnx_input_names = {i.name for i in sess.get_inputs()}
+
+        inputs_embeds_pt, position_ids_3d, feed = self._prefill_feed(model, config, precision)
+        feed = {k: v for k, v in feed.items() if k in onnx_input_names}
+        ort_outputs = sess.run(None, feed)
+        ort_logits = ort_outputs[0]
+        self.assertEqual(ort_logits.shape, (1, 5, config.text_config.vocab_size))
+
+        # HF forward using the same inputs_embeds + 3-D position_ids.
+        with torch.no_grad():
+            pt_out = model.model.language_model(
+                inputs_embeds=inputs_embeds_pt,
+                position_ids=torch.from_numpy(position_ids_3d),
+                attention_mask=torch.ones(1, inputs_embeds_pt.shape[1], dtype=torch.long),
+                use_cache=False,
+            )
+            pt_logits = model.lm_head(pt_out.last_hidden_state).numpy()
+
+        # Discrepancy (uses the same helper as other random-weight tests).
+        disc = self.get_numpy_discrepancy(pt_logits, ort_logits)
+        self.log_results(
+            {
+                "step": "prefill",
+                "precision": precision,
+                "model_id": QWEN3_5_MOE_MODEL_NAME,
+                "experiment": "forward",
+                "provider": provider,
+                "test": basename,
+                "input_type": "text",
+                "kind": "fast",
+                **disc,
+            }
+        )
+        np.testing.assert_allclose(pt_logits, ort_logits, atol=1e-3, rtol=1e-3)
+
+        # First-token agreement: the greedy next token (argmax of the last
+        # row of logits) is what ORT-GenAI's greedy generation step consumes.
+        pt_first = int(np.argmax(pt_logits[0, -1, :]))
+        ort_first = int(np.argmax(ort_logits[0, -1, :]))
+        self.assertEqual(pt_first, ort_first)
 
 
 if __name__ == "__main__":
