@@ -144,7 +144,14 @@ class TestLFM2(ExtTestCase):
     @requires_genai()
     def test_lfm2_fp32_cpu_genai_generate(self):
         import torch
+        import transformers
+        from packaging.version import Version as PvVersion
         from transformers import Lfm2ForCausalLM
+
+        if PvVersion(transformers.__version__) >= PvVersion("4.57"):
+            raise unittest.SkipTest(
+                f"transformers {transformers.__version__} >= 4.57 is not supported by this test"
+            )
 
         from modelbuilder.builder import create_model
 
