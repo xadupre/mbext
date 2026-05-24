@@ -149,9 +149,7 @@ class TestLFM2(ExtTestCase):
         from transformers import Lfm2ForCausalLM
 
         if PvVersion(transformers.__version__) >= PvVersion("4.57"):
-            raise unittest.SkipTest(
-                f"transformers {transformers.__version__} >= 4.57 is not supported by this test"
-            )
+            raise unittest.SkipTest(f"transformers {transformers.__version__} >= 4.57 is not supported by this test")
 
         from modelbuilder.builder import create_model
 
