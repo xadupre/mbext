@@ -209,6 +209,7 @@ def create_model(model_name, input_path, output_dir, precision, execution_provid
         from .builders.gemma import Gemma3Model
 
         onnx_model = Gemma3Model(config, io_dtype, onnx_dtype, execution_provider, cache_dir, extra_options)
+        onnx_model.model_type = "gemma3"
     elif config.architectures[0] == "Gemma4ForCausalLM":
         print(
             "WARNING: This model loses accuracy with float16 precision. It is recommended to set `--precision bf16` or `--precision int4 --extra_options use_cuda_bf16=true` by default."
