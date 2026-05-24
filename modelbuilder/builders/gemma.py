@@ -594,9 +594,13 @@ class Gemma4Model(Gemma3Model):
         # already encodes the proportional structure via zero inv_freq padding.
         original_head_size = self.head_size
         original_num_kv_heads = self.num_kv_heads
+        original_q_size = self.q_size
+        original_kv_size = self.kv_size
         if not self.is_local(layer_id):
             self.head_size = self._global_head_size
             self.num_kv_heads = self._global_num_kv_heads
+            self.q_size = self.num_attn_heads * self.head_size
+            self.kv_size = self.num_kv_heads * self.head_size
 
         if self.is_shared_kv_layer(layer_id):
             # Shared-KV layers have no k_proj/v_proj/k_norm/v_norm weights.
@@ -614,6 +618,8 @@ class Gemma4Model(Gemma3Model):
 
         self.head_size = original_head_size
         self.num_kv_heads = original_num_kv_heads
+        self.q_size = original_q_size
+        self.kv_size = original_kv_size
 
     def _make_q_norm_only(self, layer_id, attention):
         """Apply Q RMSNorm (SimplifiedLayerNormalization) without touching K or V.
