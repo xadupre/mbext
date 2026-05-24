@@ -8,7 +8,7 @@ import unittest
 
 import numpy as np
 
-from modelbuilder.ext_test_case import ExtTestCase, hide_stdout, requires_cuda, requires_transformers
+from modelbuilder.ext_test_case import ExtTestCase, hide_stdout, requires_cuda, requires_genai, requires_transformers
 
 MODEL_NAME = "Lfm2ForCausalLM"
 
@@ -139,6 +139,55 @@ class TestLFM2(ExtTestCase):
     @requires_cuda()
     def test_fast_discrepancy_lfm2_bf16_cuda(self):
         self.common_fast_lfm2_random_weights("bf16", "cuda")
+
+    @hide_stdout()
+    @requires_genai()
+    def test_lfm2_fp32_cpu_genai_generate(self):
+        import torch
+        from transformers import Lfm2ForCausalLM
+
+        from modelbuilder.builder import create_model
+
+        prefix = "test_lfm2_fp32_cpu_genai_generate"
+        config = self._make_config(num_hidden_layers=4)
+
+        model_dir = self.get_model_dir(prefix, clean=False)
+        torch.manual_seed(0)
+        model = Lfm2ForCausalLM(config)
+        model.eval()
+        model.save_pretrained(model_dir)
+
+        tokenizer = self.make_word_level_tokenizer()
+        tokenizer.save_pretrained(model_dir)
+
+        output_dir, cache_dir = self.get_dirs(prefix, clean=False)
+
+        create_model(
+            model_name=MODEL_NAME,
+            input_path=model_dir,
+            output_dir=output_dir,
+            precision="fp32",
+            execution_provider="cpu",
+            cache_dir=cache_dir,
+        )
+
+        # LFM2 requires onnxruntime-genai runtime support (see
+        # microsoft/onnxruntime-genai#1979).  When the installed genai release
+        # predates that PR it raises while parsing the LFM2-specific entries
+        # in genai_config.json ("past_conv_names" / "present_conv_names" /
+        # "layer_types" / "conv_cache_size"); skip in that case so the test
+        # passes once a supporting release is installed.
+        import onnxruntime_genai as og
+
+        try:
+            og.Model(output_dir)
+        except RuntimeError as e:
+            msg = str(e)
+            if any(k in msg for k in ("past_conv_names", "present_conv_names", "layer_types", "conv_cache_size", "lfm2")):
+                raise unittest.SkipTest(f"onnxruntime-genai {og.__version__} does not yet support LFM2: {msg}")
+            raise
+
+        self.run_genai_generation_test(output_dir, model, config.vocab_size, config.eos_token_id)
 
 
 if __name__ == "__main__":
