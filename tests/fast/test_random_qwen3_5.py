@@ -375,10 +375,7 @@ class TestRandomQwen3_5(ExtTestCase):
             if "l2norm" not in node.name:
                 continue
             for suffix in ("/Square/Mul", "/SumSq/ReduceSum", "/AddEps/Add", "/Rsqrt", "/Normalize/Mul"):
-                self.assertFalse(
-                    node.name.endswith(suffix),
-                    f"qk_l2norm path still emits legacy subgraph node {node.name}",
-                )
+                self.assertFalse(node.name.endswith(suffix), f"qk_l2norm path still emits legacy subgraph node {node.name}")
 
 
 if __name__ == "__main__":
