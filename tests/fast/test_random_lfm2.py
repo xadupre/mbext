@@ -171,22 +171,6 @@ class TestLFM2(ExtTestCase):
             cache_dir=cache_dir,
         )
 
-        # LFM2 requires onnxruntime-genai runtime support (see
-        # microsoft/onnxruntime-genai#1979).  When the installed genai release
-        # predates that PR it raises while parsing the LFM2-specific entries
-        # in genai_config.json ("past_conv_names" / "present_conv_names" /
-        # "layer_types" / "conv_cache_size"); skip in that case so the test
-        # passes once a supporting release is installed.
-        import onnxruntime_genai as og
-
-        try:
-            og.Model(output_dir)
-        except RuntimeError as e:
-            msg = str(e)
-            if any(k in msg for k in ("past_conv_names", "present_conv_names", "layer_types", "conv_cache_size", "lfm2")):
-                raise unittest.SkipTest(f"onnxruntime-genai {og.__version__} does not yet support LFM2: {msg}")
-            raise
-
         self.run_genai_generation_test(output_dir, model, config.vocab_size, config.eos_token_id)
 
 
