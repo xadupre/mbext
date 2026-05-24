@@ -273,6 +273,65 @@ class TestRandomQwen3_5(ExtTestCase):
         self.assertIsNotNone(outputs[0])
         self.assertEqual(outputs[0].shape, (1, 5, 32000))
 
+    @requires_transformers("5")
+    @hide_stdout()
+    def test_qwen3_5_fp16_no_layernorm_fp32_casts(self):
+        """Verify that the fp16 build does not wrap LayerNorm IO with fp32 Casts.
+
+        ``Qwen3_5TextModel`` previously forced ``use_fp32`` on every RMSNorm,
+        which inserted ~216 Cast nodes (to-fp32 + to-fp16) around the LayerNorm
+        ops in a 24-layer build and measurably hurt generation throughput.  See
+        microsoft/onnxruntime-genai#2101.  When the runtime is ORT >= 1.26 the
+        builder keeps LayerNorm IO in the model's native dtype: no Cast-to-fp32
+        should appear on the inputs of the ``SkipSimplifiedLayerNormalization``
+        ops, and no Cast-from-fp32 should appear on their outputs.  On older
+        ORT releases the fp32 cast wrapping is still emitted (the native fp16
+        kernel loses precision across the 36+ Qwen3.5 layers), so this test is
+        skipped there.
+        """
+        import onnx
+        import onnxruntime as ort
+
+        ort_ver = tuple(int(x) for x in ort.__version__.split(".")[:2])
+        if ort_ver < (1, 26):
+            self.skipTest(f"requires onnxruntime >= 1.26, got {ort.__version__}")
+
+        config = _make_qwen3_5_config(["full_attention", "full_attention"])
+        _, output_dir = self._build_and_save_model(config, "fp16", "cpu")
+
+        text_onnx_path = os.path.join(output_dir, "model.onnx")
+        self.assertExists(text_onnx_path)
+
+        onnx_model = onnx.load(text_onnx_path)
+        nodes_by_output = {out: node for node in onnx_model.graph.node for out in node.output}
+
+        FLOAT = onnx.TensorProto.FLOAT
+        offending = []
+        for node in onnx_model.graph.node:
+            if node.op_type != "SkipSimplifiedLayerNormalization":
+                continue
+            # No upstream Cast-to-fp32 feeding the LayerNorm inputs.
+            for inp in node.input:
+                producer = nodes_by_output.get(inp)
+                if producer is None or producer.op_type != "Cast":
+                    continue
+                to_attr = next((a.i for a in producer.attribute if a.name == "to"), None)
+                if to_attr == FLOAT:
+                    offending.append((node.name, "input", producer.name))
+            # No downstream Cast consuming the LayerNorm outputs from fp32.
+            for out in node.output:
+                if not out:
+                    continue
+                for consumer in onnx_model.graph.node:
+                    if consumer.op_type != "Cast" or out not in consumer.input:
+                        continue
+                    # Cast from fp32 means the LayerNorm output was fp32.
+                    val_info = next((v for v in list(onnx_model.graph.value_info) + list(onnx_model.graph.output) if v.name == out), None)
+                    if val_info is not None and val_info.type.tensor_type.elem_type == FLOAT:
+                        offending.append((node.name, "output", consumer.name))
+
+        self.assertEqual(offending, [], f"Unexpected fp32 Cast nodes around LayerNorm: {offending}")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
