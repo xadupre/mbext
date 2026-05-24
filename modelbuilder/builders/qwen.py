@@ -1905,15 +1905,12 @@ class Qwen35TextModel(Model):
         # SkipSimplifiedLayerNormalization can be used directly.
         self.layernorm_attrs["add_offset"] = 1
 
-        # HF Qwen3_5RMSNorm always computes in float32 regardless of model
-        # dtype.  Force the builder to cast inputs to fp32 before LayerNorm
-        # and cast back after, matching HF behaviour and preventing precision
-        # loss that compounds across 36+ layers in fp16/bf16 builds.
-        self.layernorm_attrs["cast"]["use_fp32"] = True
-        self.layernorm_attrs["cast"]["root_input"] = True
-        self.layernorm_attrs["cast"]["skip_input"] = True
-        self.layernorm_attrs["cast"]["output_0"] = True
-        self.layernorm_attrs["cast"]["output_3"] = True
+        # Keep RMSNorm IO in the model's native dtype (fp16/bf16) instead of
+        # casting around every LayerNorm.  Casting inputs/outputs to fp32 adds
+        # ~216 Cast nodes in a 24-layer build (108 to-fp32 + 108 to-fp16) and
+        # measurably hurts generation throughput on GPU/iGPU backends, while
+        # output quality remains coherent and structurally identical without
+        # the casts.  See microsoft/onnxruntime-genai#2101.
 
         # 3D position_ids for mRoPE: [3, batch_size, sequence_length]
         self.input_shapes["position_ids"] = [3, "batch_size", "sequence_length"]
