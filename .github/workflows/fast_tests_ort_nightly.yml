@@ -37,7 +37,7 @@ jobs:
         run: pip install torch==2.11.0+cpu torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
 
       - name: Install dependencies
-        run: pip install -e ".[dev]" "transformers==5.6" tokenizers
+        run: pip install -e ".[dev]" "transformers==5.9" tokenizers
 
       - name: Remove existing onnxruntime before installing nightly
         run: pip uninstall -y onnxruntime onnxruntime-gpu onnxruntime-directml onnxruntime-openvino 2>/dev/null || true
