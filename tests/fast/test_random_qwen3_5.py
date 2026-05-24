@@ -332,6 +332,51 @@ class TestRandomQwen3_5(ExtTestCase):
 
         self.assertEqual(offending, [], f"Unexpected fp32 Cast nodes around LayerNorm: {offending}")
 
+    @requires_transformers("5")
+    @hide_stdout()
+    def test_qwen3_5_qk_l2norm_uses_lp_normalization(self):
+        """Verify the qk_l2norm path emits a single LpNormalization op.
+
+        Ported from microsoft/onnxruntime-genai#2127: the previous
+        5-node Square + ReduceSum + Add(eps) + Rsqrt + Mul subgraph used
+        per Q/K head per layer is replaced with a single
+        ``LpNormalization(p=2, axis=-1)`` op, which is natively supported
+        by all current EPs (CPU, CUDA, WebGPU, ...).  This shaves ~5 ops
+        per Q/K head per linear-attention layer and drops the +eps fallback
+        (q/k come from RMSNorm+Proj so magnitudes far exceed 1e-6).
+        """
+        import onnx
+
+        config = _make_qwen3_5_config(["full_attention", "linear_attention"])
+        _, output_dir = self._build_and_save_model(config, "fp32", "cpu")
+
+        text_onnx_path = os.path.join(output_dir, "model.onnx")
+        self.assertExists(text_onnx_path)
+
+        onnx_model = onnx.load(text_onnx_path)
+        lp_norm_nodes = [n for n in onnx_model.graph.node if n.op_type == "LpNormalization"]
+
+        # Each linear-attention layer L emits two qk_l2norm LpNormalization
+        # nodes (one for Q, one for K). The hybrid config has 1 such layer.
+        self.assertGreaterEqual(len(lp_norm_nodes), 2, "expected at least 2 LpNormalization nodes for qk_l2norm Q/K")
+
+        # All qk_l2norm LpNormalization nodes must have axis=-1 and p=2.
+        for node in lp_norm_nodes:
+            if "l2norm" not in node.name:
+                continue
+            axis = next((a.i for a in node.attribute if a.name == "axis"), None)
+            p = next((a.i for a in node.attribute if a.name == "p"), None)
+            self.assertEqual(axis, -1, f"{node.name}: axis must be -1")
+            self.assertEqual(p, 2, f"{node.name}: p must be 2")
+
+        # The old 5-node subgraph names must no longer appear under any
+        # ``*_l2norm`` basename.
+        for node in onnx_model.graph.node:
+            if "l2norm" not in node.name:
+                continue
+            for suffix in ("/Square/Mul", "/SumSq/ReduceSum", "/AddEps/Add", "/Rsqrt", "/Normalize/Mul"):
+                self.assertFalse(node.name.endswith(suffix), f"qk_l2norm path still emits legacy subgraph node {node.name}")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
