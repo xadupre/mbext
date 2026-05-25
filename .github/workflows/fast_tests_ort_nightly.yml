@@ -23,7 +23,7 @@ jobs:
       matrix:
         os: ["ubuntu-latest"]
         python-version: ["3.13"]
-        torch-version: ["2.11"]
+        torch-version: ["2.12"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -34,7 +34,7 @@ jobs:
 
       - name: Install pytorch ${{ matrix.torch-version }} (Linux/Windows)
         if: matrix.os != 'macos-latest'
-        run: pip install torch==2.11.0+cpu torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
+        run: pip install torch==2.12.0+cpu torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
 
       - name: Install dependencies
         run: pip install -e ".[dev]" "transformers==5.9" tokenizers
