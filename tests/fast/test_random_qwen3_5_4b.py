@@ -117,17 +117,13 @@ class TestRandomQwen3_5_4B(ExtTestCase):
         np.random.seed(0)
         input_ids = np.random.randint(0, config.vocab_size, (batch_size, seq_len), dtype=np.int64)
 
-        # 3D position_ids [3, batch_size, seq_len] for mRoPE.
+        # 2D position_ids [batch_size, seq_len].  In text-only mode the
+        # graph itself expands these to [3, B, S] for mRoPE via Unsqueeze+Tile.
         pos = np.arange(seq_len, dtype=np.int64)
-        position_ids_3d = np.stack([pos, pos, pos], axis=0)  # [3, seq_len]
-        position_ids_3d = np.stack([position_ids_3d] * batch_size, axis=1)  # [3, B, S]
+        position_ids = np.broadcast_to(pos, (batch_size, seq_len)).copy()
 
         np_dtype = self.get_input_np_dtype(precision)
-        onnx_feed = {
-            "input_ids": input_ids,
-            "attention_mask": np.ones((batch_size, seq_len), dtype=np.int64),
-            "position_ids": position_ids_3d,
-        }
+        onnx_feed = {"input_ids": input_ids, "attention_mask": np.ones((batch_size, seq_len), dtype=np.int64), "position_ids": position_ids}
 
         for i, lt in enumerate(layer_types):
             if lt == "full_attention":
@@ -312,6 +308,60 @@ class TestRandomQwen3_5_4B(ExtTestCase):
 
         # Pass model=None: skip PyTorch token comparison (see docstring).
         self.run_genai_generation_test(output_dir, None, config.vocab_size, config.eos_token_id)
+
+    # ------------------------------------------------------------------ #
+    # PR #2157 contract: text-only 2D position_ids + in-graph expansion   #
+    # ------------------------------------------------------------------ #
+
+    @requires_transformers("5")
+    @hide_stdout()
+    def test_qwen3_5_4b_text_only_position_ids_2d(self):
+        """Verify the text-only Qwen3.5 graph contract from onnxruntime-genai#2157.
+
+        In text-only mode (``Qwen3_5ForCausalLM`` → ``Qwen35CausalLMModel``,
+        ``is_text_only=True``) the ONNX graph must:
+
+        * declare ``position_ids`` as 2D ``[batch_size, sequence_length]``
+          (instead of 3D ``[3, B, S]`` used by the VL pipeline), and
+        * embed an ``Unsqueeze`` + ``Tile`` pair that expands the 2D input
+          to ``[3, B, S]`` so the unchanged mRoPE subgraph can consume it.
+
+        The genai-config ``model_type`` must also flip from
+        ``qwen3_5`` (VL) to ``qwen3_5_text`` (LLM), matching the
+        ``qwen3_5_text`` entry added to ``model_type.h`` in upstream
+        onnxruntime-genai#2157.
+        """
+        import json
+
+        import onnx
+
+        config = _make_qwen3_5_4b_config(["full_attention", "full_attention"])
+        output_dir = self._build_and_save_model(config, "fp32", "cpu")
+
+        text_onnx_path = os.path.join(output_dir, "model.onnx")
+        self.assertExists(text_onnx_path)
+
+        onnx_model = onnx.load(text_onnx_path)
+
+        # 1. position_ids graph input is 2D [batch_size, sequence_length].
+        pos_input = next(i for i in onnx_model.graph.input if i.name == "position_ids")
+        dims = pos_input.type.tensor_type.shape.dim
+        self.assertEqual(len(dims), 2)
+        self.assertEqual(dims[0].dim_param, "batch_size")
+        self.assertEqual(dims[1].dim_param, "sequence_length")
+
+        # 2. The Unsqueeze + Tile expansion nodes added by
+        #    ``make_position_ids_reformatting`` are present in the graph.
+        node_names = {node.name for node in onnx_model.graph.node}
+        self.assertIn("/model/position_ids_expand/Unsqueeze", node_names)
+        self.assertIn("/model/position_ids_expand/Tile", node_names)
+
+        # 3. genai-config model type is the text-only variant.
+        genai_cfg_path = os.path.join(output_dir, "genai_config.json")
+        self.assertExists(genai_cfg_path)
+        with open(genai_cfg_path) as f:
+            genai_cfg = json.load(f)
+        self.assertEqual(genai_cfg["model"]["type"], "qwen3_5_text")
 
 
 if __name__ == "__main__":
