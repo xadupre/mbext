@@ -13,7 +13,7 @@ permissions:
 
 jobs:
   tests:
-    name: ci (${{ matrix.os }}, py${{ matrix.python-version }}, torch-${{ matrix.torch-version || 'stable' }}, ort-nightly)
+    name: ci (${{ matrix.os }}, py${{ matrix.python-version }}, torch-${{ matrix.torch.version || 'stable' }}, ort-nightly)
     runs-on: ${{ matrix.os }}
     permissions:
       contents: read
@@ -23,7 +23,8 @@ jobs:
       matrix:
         os: ["ubuntu-latest"]
         python-version: ["3.13"]
-        torch-version: ["2.12"]
+        torch:
+          - version: "2.12.0"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -32,9 +33,9 @@ jobs:
 
       # we install torch first to avoid downloading any CUDA dependency
 
-      - name: Install pytorch ${{ matrix.torch-version }} (Linux/Windows)
+      - name: Install pytorch ${{ matrix.torch.version }} (Linux/Windows)
         if: matrix.os != 'macos-latest'
-        run: pip install torch==2.12.0+cpu torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
+        run: pip install "torch==${{ matrix.torch.version }}+cpu" torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
 
       - name: Install dependencies
         run: pip install -e ".[dev]" "transformers==5.9" tokenizers
@@ -62,6 +63,6 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: stats-${{ matrix.os }}-py${{ matrix.python-version }}-torch${{ matrix.torch-version }}-ort-nightly
+          name: stats-${{ matrix.os }}-py${{ matrix.python-version }}-torch${{ matrix.torch.version }}-ort-nightly
           path: stats/
           if-no-files-found: ignore
