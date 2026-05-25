@@ -537,11 +537,6 @@ class Model(LocalFunctionsMixin):
             # if rope_scaling provides one.
             if "rope_theta" in config.rope_scaling:
                 self.rope_attrs["theta"] = config.rope_scaling["rope_theta"]
-            # Some models (e.g. Qwen3-VL) store rope_theta inside rope_scaling
-            # instead of as a top-level config attribute. Override the default theta
-            # if rope_scaling provides one.
-            if "rope_theta" in config.rope_scaling:
-                self.rope_attrs["theta"] = config.rope_scaling["rope_theta"]
 
     def is_gqa_supported(self) -> bool:
         valid_gqa_configurations = {
@@ -573,6 +568,9 @@ class Model(LocalFunctionsMixin):
         }
         return (self.ep, self.io_dtype) in valid_packed_attn_configurations
 
+    def is_fused_rope_supported(self):
+        return self.ep not in ["dml"]
+
     def make_attention_init(self):
         self.q_size = self.num_attn_heads * self.head_size
         self.kv_size = self.num_kv_heads * self.head_size
@@ -591,7 +589,7 @@ class Model(LocalFunctionsMixin):
             )
 
             # Some EPs don't support fusing rotary embeddings inside GQA yet
-            self.attention_attrs["use_rope_in_attn"] = self.ep not in ["dml"]
+            self.attention_attrs["use_rope_in_attn"] = self.is_fused_rope_supported()
             if self.attention_attrs["use_rope_in_attn"]:
                 # GQA + Rot.Emb. does not require `position_ids` as input
                 del self.input_names["position_ids"]
@@ -1152,16 +1150,16 @@ class Model(LocalFunctionsMixin):
         self.make_value(output, dtype, shape=shape)
         return output
 
+    def make_split(self, name, inputs, outputs, dtypes, shapes, axis=-1):
+        self.make_node("Split", inputs=inputs, outputs=outputs, name=name, axis=axis)
+        for out, dt, shape in zip(outputs, dtypes, shapes):
+            self.make_value(out, dt, shape=shape)
+
     def make_mul(self, name, inputs, dtype, shape):
         output = f"{name}/output_0"
         self.make_node("Mul", inputs=inputs, outputs=[output], name=name)
         self.make_value(output, dtype, shape=shape)
         return output
-
-    def make_split(self, name, inputs, outputs, dtypes, shapes, axis=-1):
-        self.make_node("Split", inputs=inputs, outputs=outputs, name=name, axis=axis)
-        for out, dt, shape in zip(outputs, dtypes, shapes):
-            self.make_value(out, dt, shape=shape)
 
     def make_neg(self, name, root_input, dtype, shape):
         output = f"{name}/output_0"
@@ -2374,13 +2372,8 @@ class Model(LocalFunctionsMixin):
 
         # Reshape Q path after LayerNorm from Bx(SxN)xH to BxSxD
         q_reshape_2_name = f"/model/layers.{layer_id}/attn/q_norm/Reshape_2"
-        q_reshape_2_inputs = [q_layernorm_output, f"/model/constants/INT64/[0, -1, {self.num_attn_heads * self.head_size}]"]
-        self.make_reshape(
-            q_reshape_2_name,
-            q_reshape_2_inputs,
-            dtype=self.io_dtype,
-            shape=["batch_size", "sequence_length", self.num_attn_heads * self.head_size],
-        )
+        q_reshape_2_inputs = [q_layernorm_output, f"/model/constants/INT64/[0, -1, {self.q_size}]"]
+        self.make_reshape(q_reshape_2_name, q_reshape_2_inputs, dtype=self.io_dtype, shape=["batch_size", "sequence_length", self.q_size])
 
         # Reshape K MatMul from BxSxD to Bx(SxN)xH before LayerNorm
         k_reshape_1_name = f"/model/layers.{layer_id}/attn/k_norm/Reshape_1"
@@ -2420,13 +2413,8 @@ class Model(LocalFunctionsMixin):
 
         # Reshape K path after LayerNorm from Bx(SxN)xH to BxSxD
         k_reshape_2_name = f"/model/layers.{layer_id}/attn/k_norm/Reshape_2"
-        k_reshape_2_inputs = [k_layernorm_output, f"/model/constants/INT64/[0, -1, {self.num_kv_heads * self.head_size}]"]
-        self.make_reshape(
-            k_reshape_2_name,
-            k_reshape_2_inputs,
-            dtype=self.io_dtype,
-            shape=["batch_size", "sequence_length", self.num_kv_heads * self.head_size],
-        )
+        k_reshape_2_inputs = [k_layernorm_output, f"/model/constants/INT64/[0, -1, {self.kv_size}]"]
+        self.make_reshape(k_reshape_2_name, k_reshape_2_inputs, dtype=self.io_dtype, shape=["batch_size", "sequence_length", self.kv_size])
 
         # Update q_path and k_path now
         self.attention_attrs["q_path"] = f"{q_reshape_2_name}/output_0"
@@ -2703,13 +2691,8 @@ class Model(LocalFunctionsMixin):
             perm=[0, 2, 1, 3],
         )
         reshape_4_name = f"{basename}/Reshape_4"
-        reshape_4_inputs = [f"{transpose_2_name}/output_0", f"/model/constants/INT64/[0, 0, {self.num_attn_heads * self.head_size}]"]
-        self.make_reshape(
-            reshape_4_name,
-            reshape_4_inputs,
-            dtype=self.io_dtype,
-            shape=["batch_size", "total_sequence_length", self.num_attn_heads * self.head_size],
-        )
+        reshape_4_inputs = [f"{transpose_2_name}/output_0", f"/model/constants/INT64/[0, 0, {self.q_size}]"]
+        self.make_reshape(reshape_4_name, reshape_4_inputs, dtype=self.io_dtype, shape=["batch_size", "total_sequence_length", self.q_size])
 
         input_to_attention = f"{reshape_4_name}/output_0"
         return input_to_attention
@@ -2930,11 +2913,51 @@ class Model(LocalFunctionsMixin):
         #                O_MatMul
         #                    |
         #                  O_Add
+        #
+        # GroupQueryAttention with packed QKV (no Q/K norm) example:
+        #
+        #                  root_input
+        #                       |
+        #                  QKV_MatMul                     seqlens_k  total_seq_len  past_key  past_value
+        #                       |                            |            |           |          |
+        #                  QKV_Add (packed)                  +------------+-----------+----------+
+        #                       |                                          |
+        #                  Q_Rotary / K_Rotary (in-attn or external)       |
+        #                       |                                          |
+        #                  GroupQueryAttention----------------------------+
+        #                       |
+        #                   O_MatMul
+        #                       |
+        #                     O_Add
+        #
+        # GroupQueryAttention with packed QKV + Q/K norm example:
+        #
+        #                  root_input
+        #                       |
+        #                  QKV_MatMul
+        #                       |
+        #                  QKV_Add (packed, only if bias exists)
+        #                       |
+        #                     Split  ->  Q, K, V
+        #                  /     |     \
+        #             Q_Norm   K_Norm   V             seqlens_k  total_seq_len  past_key  past_value
+        #                |       |      |                 |            |           |          |
+        #            Q_Rotary  K_Rotary V                 +------------+-----------+----------+
+        #                  \     |     /                                |
+        #                  GroupQueryAttention----------------------------+
+        #                       |
+        #                   O_MatMul
+        #                       |
+        #                     O_Add
         self.make_attention_input_proj(layer_id, attention, root_input, **kwargs)
         self.make_attention_qk_subgraph(layer_id, attention, root_input, **kwargs)
         self.make_attention_output_proj(layer_id, attention, root_input, **kwargs)
 
     def make_attention_input_proj(self, layer_id, attention, root_input, **kwargs):
+        self.attention_attrs["q_path"] = ""
+        self.attention_attrs["k_path"] = ""
+        self.attention_attrs["v_path"] = ""
+
         # Unpack attention weights if needed
         self.make_attention_unpacked(layer_id, attention, root_input, **kwargs)
 
@@ -3023,23 +3046,17 @@ class Model(LocalFunctionsMixin):
             and self.attention_attrs["q_norm"]
             and self.attention_attrs["k_norm"]
         ):
-            # Compute sizes from the current layer's head_size to support models
-            # whose attention head_size varies per layer (e.g. Gemma4 full vs
-            # sliding-attention layers swap head_size on self before calling
-            # this method).
-            q_size = self.num_attn_heads * self.head_size
-            kv_size = self.num_kv_heads * self.head_size
             split_name = f"/model/layers.{layer_id}/attn/qkv_proj/Split"
             split_outputs = [f"{split_name}/output_{i}" for i in range(3)]
             self.make_split(
                 split_name,
-                inputs=[self.attention_attrs["q_path"], f"/model/constants/INT64/[{q_size}, {kv_size}, {kv_size}]"],
+                inputs=[self.attention_attrs["q_path"], f"/model/constants/INT64/[{self.q_size}, {self.kv_size}, {self.kv_size}]"],
                 outputs=split_outputs,
                 dtypes=[self.io_dtype] * 3,
                 shapes=[
-                    ["batch_size", "sequence_length", q_size],
-                    ["batch_size", "sequence_length", kv_size],
-                    ["batch_size", "sequence_length", kv_size],
+                    ["batch_size", "sequence_length", self.q_size],
+                    ["batch_size", "sequence_length", self.kv_size],
+                    ["batch_size", "sequence_length", self.kv_size],
                 ],
                 axis=-1,
             )
@@ -3047,12 +3064,13 @@ class Model(LocalFunctionsMixin):
             self.attention_attrs["k_path"] = split_outputs[1]
             self.attention_attrs["v_path"] = split_outputs[2]
 
-    def make_attention_qk_subgraph(self, layer_id, attention, root_input, **kwargs):
-        # Make Q/K/V SimplifiedLayerNorm nodes
+    def make_attention_qk_norm(self, layer_id, attention):
+        # Make Q/K SimplifiedLayerNorm nodes
         if self.attention_attrs["q_norm"] and self.attention_attrs["k_norm"]:
             self.make_qk_norm(layer_id, attention)
 
-        # Make RotaryEmbedding nodes
+    def make_attention_qk_rope(self, layer_id, **kwargs):
+        # Make RotaryEmbedding nodes; returns (cos_cache_name, sin_cache_name)
         cos_cache_name, sin_cache_name = "", ""
         if self.attention_attrs["rope"]:
             if self.attention_attrs["use_rope_in_attn"]:
@@ -3072,6 +3090,15 @@ class Model(LocalFunctionsMixin):
                     position_ids=kwargs.get("position_ids", self.input_names["position_ids"]),
                 )
                 self.attention_attrs["k_path"] = f"{k_rotary_name}/output_0"
+        return cos_cache_name, sin_cache_name
+
+    def make_attention_qk_rope_and_norm(self, layer_id, attention, **kwargs):
+        # Base order: norm first, then RoPE
+        self.make_attention_qk_norm(layer_id, attention)
+        return self.make_attention_qk_rope(layer_id, **kwargs)
+
+    def make_attention_qk_subgraph(self, layer_id, attention, root_input, **kwargs):
+        cos_cache_name, sin_cache_name = self.make_attention_qk_rope_and_norm(layer_id, attention, **kwargs)
 
         # Get key-value cache names if they exist
         past_k, past_v, present_k, present_v = self.make_key_value_cache_names(layer_id)
@@ -3149,8 +3176,8 @@ class Model(LocalFunctionsMixin):
     def make_attention_unpacked_lora(self, layer_id, attention, qkv_linear, root_input, **kwargs):
         from peft.tuners.lora.layer import LoraLayer
 
-        q_size = self.num_attn_heads * self.head_size
-        kv_size = self.num_kv_heads * self.head_size
+        q_size = self.q_size
+        kv_size = self.kv_size
 
         # Create Q/K/V base layers
         q_proj = torch.nn.Linear(in_features=q_size, out_features=q_size)
@@ -3199,8 +3226,8 @@ class Model(LocalFunctionsMixin):
         attention.v_proj.scaling = qkv_linear.scaling
 
     def make_attention_unpacked_regular(self, layer_id, attention, qkv_linear, root_input, **kwargs):
-        q_size = self.num_attn_heads * self.head_size
-        kv_size = self.num_kv_heads * self.head_size
+        q_size = self.q_size
+        kv_size = self.kv_size
 
         attention.q_proj = torch.nn.Linear(in_features=q_size, out_features=q_size)
         attention.q_proj.weight = torch.nn.Parameter(qkv_linear.weight[:q_size, :], requires_grad=False)
@@ -4040,6 +4067,7 @@ class Model(LocalFunctionsMixin):
         # hf_final_layernorm:             for Phi-2
         # hf_transformer_final_layernorm: for ChatGLM-3
         # hf_language_model_norm:         for Gemma-3 multimodal (4B, 12B, 27B)
+        # hf_embedding_norm:              for LFM-2
         hf_norm = hasattr(model, "model") and hasattr(model.model, "norm") and module == model.model.norm
         hf_final_layernorm = hasattr(model, "model") and hasattr(model.model, "final_layernorm") and module == model.model.final_layernorm
         hf_transformer_final_layernorm = (
@@ -4054,11 +4082,12 @@ class Model(LocalFunctionsMixin):
             and hasattr(model.model.language_model, "norm")
             and module == model.model.language_model.norm
         )
+        hf_embedding_norm = hasattr(model, "model") and hasattr(model.model, "embedding_norm") and module == model.model.embedding_norm
 
         # GGUF names (all models loaded with GGUFModel.from_pretrained)
         gguf_final_norm = hasattr(model, "final_norm") and module == model.final_norm
 
-        hf_names = [hf_norm, hf_final_layernorm, hf_transformer_final_layernorm, hf_language_model_norm]
+        hf_names = [hf_norm, hf_final_layernorm, hf_transformer_final_layernorm, hf_language_model_norm, hf_embedding_norm]
         gguf_names = [gguf_final_norm]
         return any(hf_names + gguf_names)
 

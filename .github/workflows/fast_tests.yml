@@ -11,7 +11,7 @@ permissions:
 
 jobs:
   tests:
-    name: ci (${{ matrix.os }}, py${{ matrix.python-version }}, torch-${{ matrix.torch-version || 'stable' }}, transformers-${{ matrix.transformers-version || 'latest' }})
+    name: ci (${{ matrix.os }}, py${{ matrix.python-version }}, torch-${{ matrix.torch.version || 'stable' }}, transformers-${{ matrix.transformers-version || 'latest' }})
     runs-on: ${{ matrix.os }}
     permissions:
       contents: read
@@ -21,8 +21,9 @@ jobs:
       matrix:
         os: ["ubuntu-latest"]
         python-version: ["3.13"]
-        transformers-version: ["4.57", "5.6"]
-        torch-version: ["2.11"]
+        transformers-version: ["4.57", "5.6", "5.9"]
+        torch:
+          - version: "2.12.0"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -32,12 +33,12 @@ jobs:
       # we install torch first to avoid downloading any CUDA dependency
 
       - name: Install nightly pytorch
-        if: matrix.torch-version == 'nightly'
+        if: matrix.torch.version == 'nightly'
         run: pip install --pre --upgrade torch torchvision torchaudio --index-url https://download.pytorch.org/whl/nightly/cpu
 
-      - name: Install pytorch 2.11 (Linux/Windows)
-        if: matrix.torch-version == '2.11' && matrix.os != 'macos-latest'
-        run: pip install torch==2.11.0+cpu torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
+      - name: Install pytorch ${{ matrix.torch.version }} (Linux/Windows)
+        if: matrix.torch.version != 'nightly' && matrix.os != 'macos-latest'
+        run: pip install "torch==${{ matrix.torch.version }}+cpu" torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
 
       - name: Install dependencies
         run: pip install -e ".[dev]" torch "transformers==${{ matrix.transformers-version }}" tokenizers
@@ -58,6 +59,6 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: stats-${{ matrix.os }}-py${{ matrix.python-version }}-torch${{ matrix.torch-version }}-transformers${{ matrix.transformers-version }}
+          name: stats-${{ matrix.os }}-py${{ matrix.python-version }}-torch${{ matrix.torch.version }}-transformers${{ matrix.transformers-version }}
           path: stats/
           if-no-files-found: ignore

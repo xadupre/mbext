@@ -209,6 +209,7 @@ def create_model(model_name, input_path, output_dir, precision, execution_provid
         from .builders.gemma import Gemma3Model
 
         onnx_model = Gemma3Model(config, io_dtype, onnx_dtype, execution_provider, cache_dir, extra_options)
+        onnx_model.model_type = "gemma3"
     elif config.architectures[0] == "Gemma4ForCausalLM":
         print(
             "WARNING: This model loses accuracy with float16 precision. It is recommended to set `--precision bf16` or `--precision int4 --extra_options use_cuda_bf16=true` by default."
@@ -240,10 +241,18 @@ def create_model(model_name, input_path, output_dir, precision, execution_provid
         from .builders.granite import GraniteModel
 
         onnx_model = GraniteModel(config, io_dtype, onnx_dtype, execution_provider, cache_dir, extra_options)
+    elif config.architectures[0] == "HunYuanDenseV1ForCausalLM":
+        from .builders.hunyuan import HunyuanDenseV1Model
+
+        onnx_model = HunyuanDenseV1Model(config, io_dtype, onnx_dtype, execution_provider, cache_dir, extra_options)
     elif config.architectures[0] == "InternLM2ForCausalLM":
         from .builders.internlm import InternLM2Model
 
         onnx_model = InternLM2Model(config, io_dtype, onnx_dtype, execution_provider, cache_dir, extra_options)
+    elif config.architectures[0] == "Lfm2ForCausalLM":
+        from .builders.lfm2 import LFM2Model
+
+        onnx_model = LFM2Model(config, io_dtype, onnx_dtype, execution_provider, cache_dir, extra_options)
     elif config.architectures[0] == "LlamaForCausalLM":
         from .builders.llama import LlamaModel
 
@@ -356,6 +365,12 @@ def create_model(model_name, input_path, output_dir, precision, execution_provid
         from .builders.qwen import QwenModel
 
         onnx_model = QwenModel(config, io_dtype, onnx_dtype, execution_provider, cache_dir, extra_options)
+    elif config.architectures[0] == "VideoChatFlashQwenForCausalLM":
+        print("WARNING: This is only generating the text component of the model. Setting `--extra_options exclude_embeds=true` by default.")
+        extra_options["exclude_embeds"] = True
+        from .builders.qwen import VideoChatFlashQwenModel
+
+        onnx_model = VideoChatFlashQwenModel(config, io_dtype, onnx_dtype, execution_provider, cache_dir, extra_options)
     elif config.architectures[0] in ("Qwen2_5OmniForConditionalGeneration", "Qwen2_5OmniThinkerForConditionalGeneration"):
         if extra_options.get("multimodal", False):
             from .builders.qwen import Qwen25OmniConditionalGenerationModel
@@ -389,6 +404,10 @@ def create_model(model_name, input_path, output_dir, precision, execution_provid
         from .builders.qwen import Qwen35CausalLMModel
 
         onnx_model = Qwen35CausalLMModel(config, io_dtype, onnx_dtype, execution_provider, cache_dir, extra_options)
+    elif config.architectures[0] == "Qwen3_5MoeForConditionalGeneration":
+        from .builders.qwen import Qwen35MoeTextModel
+
+        onnx_model = Qwen35MoeTextModel(config, io_dtype, onnx_dtype, execution_provider, cache_dir, extra_options)
     elif config.architectures[0] == "Qwen3VLForConditionalGeneration":
         text_config = config.text_config
         for key in text_config:
