@@ -574,9 +574,7 @@ class Model(LocalFunctionsMixin):
             # use_packed_matmul can be overrided by upstream quantization choice
             # (e.g., when q_proj, k_proj, v_proj have different quantization settings)
             self.attention_attrs["use_packed_matmul"] = (
-                self.ep not in ["dml"]
-                and not self.matmul_attrs["use_lora"]
-                and not self.extra_options.get("disable_qkv_fusion", False)
+                self.ep not in ["dml"] and not self.matmul_attrs["use_lora"] and not self.extra_options.get("disable_qkv_fusion", False)
             )
 
             # Some EPs don't support fusing rotary embeddings inside GQA yet
@@ -2364,12 +2362,7 @@ class Model(LocalFunctionsMixin):
         # Reshape Q path after LayerNorm from Bx(SxN)xH to BxSxD
         q_reshape_2_name = f"/model/layers.{layer_id}/attn/q_norm/Reshape_2"
         q_reshape_2_inputs = [q_layernorm_output, f"/model/constants/INT64/[0, -1, {self.q_size}]"]
-        self.make_reshape(
-            q_reshape_2_name,
-            q_reshape_2_inputs,
-            dtype=self.io_dtype,
-            shape=["batch_size", "sequence_length", self.q_size],
-        )
+        self.make_reshape(q_reshape_2_name, q_reshape_2_inputs, dtype=self.io_dtype, shape=["batch_size", "sequence_length", self.q_size])
 
         # Reshape K MatMul from BxSxD to Bx(SxN)xH before LayerNorm
         k_reshape_1_name = f"/model/layers.{layer_id}/attn/k_norm/Reshape_1"
@@ -2410,12 +2403,7 @@ class Model(LocalFunctionsMixin):
         # Reshape K path after LayerNorm from Bx(SxN)xH to BxSxD
         k_reshape_2_name = f"/model/layers.{layer_id}/attn/k_norm/Reshape_2"
         k_reshape_2_inputs = [k_layernorm_output, f"/model/constants/INT64/[0, -1, {self.kv_size}]"]
-        self.make_reshape(
-            k_reshape_2_name,
-            k_reshape_2_inputs,
-            dtype=self.io_dtype,
-            shape=["batch_size", "sequence_length", self.kv_size],
-        )
+        self.make_reshape(k_reshape_2_name, k_reshape_2_inputs, dtype=self.io_dtype, shape=["batch_size", "sequence_length", self.kv_size])
 
         # Update q_path and k_path now
         self.attention_attrs["q_path"] = f"{q_reshape_2_name}/output_0"
@@ -2693,12 +2681,7 @@ class Model(LocalFunctionsMixin):
         )
         reshape_4_name = f"{basename}/Reshape_4"
         reshape_4_inputs = [f"{transpose_2_name}/output_0", f"/model/constants/INT64/[0, 0, {self.q_size}]"]
-        self.make_reshape(
-            reshape_4_name,
-            reshape_4_inputs,
-            dtype=self.io_dtype,
-            shape=["batch_size", "total_sequence_length", self.q_size],
-        )
+        self.make_reshape(reshape_4_name, reshape_4_inputs, dtype=self.io_dtype, shape=["batch_size", "total_sequence_length", self.q_size])
 
         input_to_attention = f"{reshape_4_name}/output_0"
         return input_to_attention
@@ -3056,10 +3039,7 @@ class Model(LocalFunctionsMixin):
             split_outputs = [f"{split_name}/output_{i}" for i in range(3)]
             self.make_split(
                 split_name,
-                inputs=[
-                    self.attention_attrs["q_path"],
-                    f"/model/constants/INT64/[{self.q_size}, {self.kv_size}, {self.kv_size}]",
-                ],
+                inputs=[self.attention_attrs["q_path"], f"/model/constants/INT64/[{self.q_size}, {self.kv_size}, {self.kv_size}]"],
                 outputs=split_outputs,
                 dtypes=[self.io_dtype] * 3,
                 shapes=[
