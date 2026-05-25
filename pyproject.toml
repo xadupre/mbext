@@ -30,6 +30,7 @@ dev = [
     "py-cpuinfo",
     "pytest-cov",
     "pytest-subtests",
+    "pytest-timeout",
     "ruff",
     "tabulate",
     "transformers",

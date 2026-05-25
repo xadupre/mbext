@@ -15,6 +15,9 @@ jobs:
   tests:
     name: ci (${{ matrix.os }}, py${{ matrix.python-version }}, torch-${{ matrix.torch.version || 'stable' }}, ort-nightly)
     runs-on: ${{ matrix.os }}
+    # Hard ceiling so a hung test/ORT-nightly regression aborts cleanly with logs
+    # instead of leaving the job in a silent "in_progress" state for hours.
+    timeout-minutes: 30
     permissions:
       contents: read
       id-token: write
@@ -51,7 +54,11 @@ jobs:
 
       - name: Run fast tests
         continue-on-error: true
-        run: DOCLEAN=1&&pytest tests/fast -v --cov=modelbuilder --cov-report=xml --cov-report=term-missing
+        # --timeout=180 aborts any single test that hangs (e.g. on an
+        # onnxruntime-nightly regression) and prints a Python traceback so the
+        # offending test is identifiable instead of the whole job running out
+        # of time silently.
+        run: DOCLEAN=1&&pytest tests/fast -v --timeout=180 --cov=modelbuilder --cov-report=xml --cov-report=term-missing
 
       - name: Upload coverage reports to Codecov
         uses: codecov/codecov-action@v5
