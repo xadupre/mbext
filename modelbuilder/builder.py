@@ -241,6 +241,10 @@ def create_model(model_name, input_path, output_dir, precision, execution_provid
         from .builders.granite import GraniteModel
 
         onnx_model = GraniteModel(config, io_dtype, onnx_dtype, execution_provider, cache_dir, extra_options)
+    elif config.architectures[0] == "HunYuanDenseV1ForCausalLM":
+        from .builders.hunyuan import HunyuanDenseV1Model
+
+        onnx_model = HunyuanDenseV1Model(config, io_dtype, onnx_dtype, execution_provider, cache_dir, extra_options)
     elif config.architectures[0] == "InternLM2ForCausalLM":
         from .builders.internlm import InternLM2Model
 
