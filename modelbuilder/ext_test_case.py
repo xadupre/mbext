@@ -522,6 +522,7 @@ class ExtTestCase(unittest.TestCase):
         rtol=None,
         seq_len=5,
         batch_size=1,
+        onnx_position_ids_2d=False,
     ):
         """Run prefill and decode discrepancy checks for VL models.
 
@@ -536,8 +537,12 @@ class ExtTestCase(unittest.TestCase):
         * ``"inputs_embeds"`` – PyTorch is called with ``inputs_embeds``,
           ``position_ids``, and ``attention_mask`` (used by Qwen2.5-VL).
 
-        The ONNX model always receives ``inputs_embeds`` and a 3-D
-        ``position_ids`` tensor of shape ``[3, batch_size, seq_len]``.
+        The ONNX model always receives ``inputs_embeds``. ``position_ids`` is a
+        3-D tensor of shape ``[3, batch_size, seq_len]`` unless
+        *onnx_position_ids_2d* is ``True`` (Qwen2.5-Omni / phi3v pipeline), in
+        which case the ONNX model receives standard 2-D ``position_ids`` of
+        shape ``[batch_size, seq_len]`` and expands them to 3-D internally.
+        PyTorch always receives the 3-D ``position_ids``.
         """
         import torch
 
@@ -557,6 +562,8 @@ class ExtTestCase(unittest.TestCase):
 
         # 3D position_ids for mRoPE: [3, batch_size, seq_len]
         position_ids_3d = np.tile(np.arange(seq_len, dtype=np.int64), (3, batch_size, 1))
+        # The ONNX phi3v pipeline (Qwen2.5-Omni) consumes 2D position_ids.
+        onnx_position_ids = np.tile(np.arange(seq_len, dtype=np.int64), (batch_size, 1)) if onnx_position_ids_2d else position_ids_3d
 
         prefill_results = None
         pt_prefill = None
@@ -565,7 +572,7 @@ class ExtTestCase(unittest.TestCase):
             prefill_feed = {
                 "inputs_embeds": inputs_embeds.cpu().numpy().astype(np_dtype),
                 "attention_mask": np.ones((batch_size, seq_len), dtype=np.int64),
-                "position_ids": position_ids_3d,
+                "position_ids": onnx_position_ids,
             }
             for i in range(num_hidden_layers):
                 prefill_feed[f"past_key_values.{i}.key"] = np.zeros((batch_size, num_key_value_heads, 0, head_size), dtype=np_dtype)
@@ -609,11 +616,12 @@ class ExtTestCase(unittest.TestCase):
 
             # 3D position_ids for decode step: [3, batch_size, 1] with value = seq_len
             decode_position_ids_3d = np.full((3, batch_size, 1), seq_len, dtype=np.int64)
+            onnx_decode_position_ids = np.full((batch_size, 1), seq_len, dtype=np.int64) if onnx_position_ids_2d else decode_position_ids_3d
 
             decode_feed = {
                 "inputs_embeds": decode_embeds.cpu().numpy().astype(np_dtype),
                 "attention_mask": np.ones((batch_size, seq_len + 1), dtype=np.int64),
-                "position_ids": decode_position_ids_3d,
+                "position_ids": onnx_decode_position_ids,
             }
             for i in range(num_hidden_layers):
                 decode_feed[f"past_key_values.{i}.key"] = prefill_results[f"present.{i}.key"]
@@ -945,6 +953,7 @@ class ExtTestCase(unittest.TestCase):
         atol: Optional[Dict] = None,
         rtol: Optional[Dict] = None,
         pt_mode: str = "input_ids",
+        onnx_position_ids_2d: bool = False,
     ):
         """Build and export a random-weight VL model to ONNX and compare PyTorch vs ONNX.
 
@@ -1007,6 +1016,7 @@ class ExtTestCase(unittest.TestCase):
             pt_mode=pt_mode,
             atol=atol,
             rtol=rtol,
+            onnx_position_ids_2d=onnx_position_ids_2d,
         )
 
     def run_greedy_generation_test(

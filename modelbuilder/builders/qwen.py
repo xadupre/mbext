@@ -78,6 +78,13 @@ class Qwen25VLTextModel(Model):
 
         self.input_names["position_ids"] = "position_ids"
 
+        # When True, the graph input is 2D position_ids [B, S] (as fed by the
+        # ORT-GenAI ``phi3v`` loader) which is expanded to 3D [3, B, S] inside
+        # the graph so mRoPE works unchanged. When False (default) the pipeline
+        # provides 3D position_ids directly.
+        self.expand_position_ids = False
+        self.position_ids_reformatted = self.input_names["position_ids"]
+
         self.mrope_sections = self.rope_attrs.get("mrope", {}).get("sections", [])
         if not self.mrope_sections:
             raise ValueError("MRoPE sections not found in config.text_config.rope_scaling.mrope_section")
@@ -118,11 +125,33 @@ class Qwen25VLTextModel(Model):
         print("Created and saved 'model.inv_freq' initializer.")
 
     def make_inputs_and_outputs(self):
-        # Qwen2.5-VL uses 3D position_ids
-        self.input_shapes["position_ids"] = [3, "batch_size", "sequence_length"]
+        # Qwen2.5-VL uses 3D position_ids. When driven by the ORT-GenAI phi3v
+        # loader (Qwen2.5-Omni) the runtime provides standard 2D position_ids
+        # which are expanded to 3D inside the graph.
+        if self.expand_position_ids:
+            self.input_shapes["position_ids"] = ["batch_size", "sequence_length"]
+        else:
+            self.input_shapes["position_ids"] = [3, "batch_size", "sequence_length"]
 
         # Call the base Model's make_inputs_and_outputs (skipping MistralModel's)
         super().make_inputs_and_outputs()
+
+    def make_preprocessing_nodes(self):
+        super().make_preprocessing_nodes()
+        if self.expand_position_ids:
+            # The graph input is 2D position_ids [B, S]. Expand to 3D [3, B, S]
+            # for mRoPE by stacking 3 copies.
+            pos_2d = self.input_names["position_ids"]
+            unsq_name = "/model/position_ids_expand/Unsqueeze"
+            unsq_output = f"{unsq_name}/output_0"
+            self.make_unsqueeze(unsq_name, [pos_2d, "/model/constants/INT64/[0]"], ir.DataType.INT64, [1, "batch_size", "sequence_length"])
+            tile_name = "/model/position_ids_expand/Tile"
+            self.make_tile(
+                tile_name, [unsq_output, "/model/constants/INT64/[3, 1, 1]"], ir.DataType.INT64, [3, "batch_size", "sequence_length"]
+            )
+            self.position_ids_reformatted = f"{tile_name}/output_0"
+        else:
+            self.position_ids_reformatted = self.input_names["position_ids"]
 
     def make_dynamic_rope_caches(self, layer_id, basename):
         # Make nodes for the Dynamic RoPE Cache subgraph
@@ -156,7 +185,7 @@ class Qwen25VLTextModel(Model):
         #                         Mul                         Mul
         #                   (apply scaling)             (apply scaling)
         #
-        pos_ids_name = self.input_names["position_ids"]
+        pos_ids_name = self.position_ids_reformatted
         inv_freq_name = "model.inv_freq"
         head_dim_half = self.head_size // 2
 
@@ -672,6 +701,11 @@ class Qwen25OmniThinkerModel(Qwen25VLTextModel):
         # make_genai_config emits "qwen2_5_vl" – the type string that
         # ORT-GenAI uses for this mRoPE model family.
         self.model_type = "Qwen2_5_VLForConditionalGeneration"
+
+        # The Omni multimodal pipeline is driven by the ORT-GenAI phi3v loader,
+        # which feeds standard 2D position_ids [B, S]. Expand them to 3D inside
+        # the graph so the shared mRoPE implementation works unchanged.
+        self.expand_position_ids = True
 
     def load_weights(self, input_path):
         # For quantized models or GGUF use the base class logic.
