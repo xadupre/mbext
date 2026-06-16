@@ -72,7 +72,7 @@ def _make_qwen3_5_moe_config(layer_types, num_hidden_layers=None):
 
 
 class TestRandomQwen3_5Moe(ExtTestCase):
-    def _build_model(self, config, precision, provider):
+    def _build_model(self, config, precision, provider, **extra_options):
         """Create a random-weight HF MoE model and build its ONNX export.
 
         Returns the output directory containing ``model.onnx``.
@@ -83,6 +83,8 @@ class TestRandomQwen3_5Moe(ExtTestCase):
         from modelbuilder.builder import create_model
 
         basename = f"test_qwen3_5_moe_{precision}_{provider}_" + "_".join(config.text_config.layer_types)
+        if extra_options:
+            basename += "_" + "_".join(f"{k}{v}" for k, v in sorted(extra_options.items()))
         model_dir_full = self.get_model_dir(basename)
         output_dir, cache_dir = self.get_dirs(basename)
 
@@ -101,6 +103,7 @@ class TestRandomQwen3_5Moe(ExtTestCase):
             precision=precision,
             execution_provider=provider,
             cache_dir=cache_dir,
+            **extra_options,
         )
         return output_dir
 
@@ -137,6 +140,29 @@ class TestRandomQwen3_5Moe(ExtTestCase):
         with open(genai_config_path, encoding="utf-8") as f:
             genai_config = json.load(f)
         self.assertEqual(genai_config["model"]["type"], "qwen3_5_moe")
+
+    @requires_transformers("5")
+    @hide_stdout()
+    def test_qwen3_5_moe_fp32_cpu_text_only_model_type(self):
+        """Verify the text-only Qwen3.5-MoE genai-config ``model_type``.
+
+        When built as a standalone LLM (``exclude_embeds=False`` →
+        ``is_text_only=True``) the genai-config ``model.type`` must flip from
+        ``qwen3_5_moe`` to ``qwen3_5_moe_text``, matching the
+        ``qwen3_5_moe_text`` entry added to ``model_type.h`` in upstream
+        `onnxruntime-genai#2186
+        <https://github.com/microsoft/onnxruntime-genai/pull/2186>`_.
+        """
+        import json
+
+        config = _make_qwen3_5_moe_config(["full_attention", "full_attention"])
+        output_dir = self._build_model(config, "fp32", "cpu", exclude_embeds=False)
+
+        genai_config_path = os.path.join(output_dir, "genai_config.json")
+        self.assertExists(genai_config_path)
+        with open(genai_config_path, encoding="utf-8") as f:
+            genai_config = json.load(f)
+        self.assertEqual(genai_config["model"]["type"], "qwen3_5_moe_text")
 
     # ------------------------------------------------------------------ #
     # Discrepancy: HF PyTorch vs ONNX Runtime CPU                         #
