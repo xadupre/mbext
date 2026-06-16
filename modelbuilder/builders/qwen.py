@@ -78,6 +78,13 @@ class Qwen25VLTextModel(Model):
 
         self.input_names["position_ids"] = "position_ids"
 
+        # ORT-GenAI feeds genuine Qwen2.5-VL / Qwen3-VL pipelines 3D position_ids
+        # [3, B, S] directly.  Subclasses exported as a standalone text decoder
+        # (e.g. the Qwen2.5-Omni thinker) are driven by ORT-GenAI with 2D
+        # [B, S] position_ids; they set this flag so the graph declares a 2D
+        # input and expands it to 3D internally for the mRoPE subgraph.
+        self.expand_position_ids = False
+
         self.mrope_sections = self.rope_attrs.get("mrope", {}).get("sections", [])
         if not self.mrope_sections:
             raise ValueError("MRoPE sections not found in config.text_config.rope_scaling.mrope_section")
@@ -118,11 +125,43 @@ class Qwen25VLTextModel(Model):
         print("Created and saved 'model.inv_freq' initializer.")
 
     def make_inputs_and_outputs(self):
-        # Qwen2.5-VL uses 3D position_ids
-        self.input_shapes["position_ids"] = [3, "batch_size", "sequence_length"]
+        # Qwen2.5-VL uses 3D position_ids; subclasses that are driven by
+        # ORT-GenAI with 2D position_ids (expand_position_ids=True) declare a
+        # 2D input and expand it to 3D inside the graph (see
+        # ``make_mrope_position_ids``).
+        if self.expand_position_ids:
+            self.input_shapes["position_ids"] = ["batch_size", "sequence_length"]
+        else:
+            self.input_shapes["position_ids"] = [3, "batch_size", "sequence_length"]
 
         # Call the base Model's make_inputs_and_outputs (skipping MistralModel's)
         super().make_inputs_and_outputs()
+
+    def make_mrope_position_ids(self):
+        """Return the name of the 3D ``[3, B, S]`` position_ids for mRoPE.
+
+        When ``expand_position_ids`` is set the graph input is 2D ``[B, S]``;
+        expand it to ``[3, B, S]`` once (stacking 3 copies) and reuse the
+        result for every layer.  Otherwise the 3D input is used directly.
+        """
+        pos_ids_name = self.input_names["position_ids"]
+        if not self.expand_position_ids:
+            return pos_ids_name
+        if getattr(self, "_mrope_position_ids_3d", None) is not None:
+            return self._mrope_position_ids_3d
+
+        unsq_name = "/model/position_ids_expand/Unsqueeze"
+        unsq_output = f"{unsq_name}/output_0"
+        self.make_unsqueeze(
+            unsq_name, [pos_ids_name, "/model/constants/INT64/[0]"], ir.DataType.INT64, [1, "batch_size", "sequence_length"]
+        )
+        tile_name = "/model/position_ids_expand/Tile"
+        tile_output = f"{tile_name}/output_0"
+        self.make_tile(
+            tile_name, [unsq_output, "/model/constants/INT64/[3, 1, 1]"], ir.DataType.INT64, [3, "batch_size", "sequence_length"]
+        )
+        self._mrope_position_ids_3d = tile_output
+        return tile_output
 
     def make_dynamic_rope_caches(self, layer_id, basename):
         # Make nodes for the Dynamic RoPE Cache subgraph
@@ -156,7 +195,7 @@ class Qwen25VLTextModel(Model):
         #                         Mul                         Mul
         #                   (apply scaling)             (apply scaling)
         #
-        pos_ids_name = self.input_names["position_ids"]
+        pos_ids_name = self.make_mrope_position_ids()
         inv_freq_name = "model.inv_freq"
         head_dim_half = self.head_size // 2
 
@@ -672,6 +711,11 @@ class Qwen25OmniThinkerModel(Qwen25VLTextModel):
         # make_genai_config emits "qwen2_5_vl" – the type string that
         # ORT-GenAI uses for this mRoPE model family.
         self.model_type = "Qwen2_5_VLForConditionalGeneration"
+
+        # The thinker is exported as a standalone text decoder and driven by
+        # ORT-GenAI, which feeds 2D [B, S] position_ids.  Declare a 2D input
+        # and expand it to 3D inside the graph for the mRoPE subgraph.
+        self.expand_position_ids = True
 
     def load_weights(self, input_path):
         # For quantized models or GGUF use the base class logic.

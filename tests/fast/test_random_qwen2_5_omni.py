@@ -90,6 +90,7 @@ class TestRandomQwen25Omni(ExtTestCase):
             vocab_size=config.text_config.vocab_size,
             create_model_kwargs={"num_hidden_layers": num_hidden_layers},
             pt_mode="inputs_embeds",
+            onnx_position_ids_2d=True,
         )
 
     @hide_stdout()
@@ -364,11 +365,13 @@ class TestRandomQwen25OmniVision(ExtTestCase):
         num_kv_heads = config.text_config.num_key_value_heads
         head_size_text = config.text_config.hidden_size // config.text_config.num_attention_heads
 
-        position_ids_3d = np.tile(np.arange(seq_len, dtype=np.int64), (3, batch_size, 1))
+        # The Qwen2.5-Omni thinker declares 2D position_ids [B, S] and expands
+        # them to 3D inside the graph for the mRoPE subgraph.
+        position_ids_2d = np.arange(seq_len, dtype=np.int64).reshape(batch_size, seq_len)
         onnx_feed = {
             "inputs_embeds": inputs_embeds,
             "attention_mask": np.ones((batch_size, seq_len), dtype=np.int64),
-            "position_ids": position_ids_3d,
+            "position_ids": position_ids_2d,
         }
         for i in range(num_hidden_layers):
             onnx_feed[f"past_key_values.{i}.key"] = np.zeros((batch_size, num_kv_heads, 0, head_size_text), dtype=np_dtype)
