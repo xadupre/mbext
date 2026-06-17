@@ -71,6 +71,49 @@ def _make_qwen3_5_moe_config(layer_types, num_hidden_layers=None):
     return config
 
 
+def _make_qwen3_5_moe_text_config(layer_types, num_hidden_layers=None):
+    """Return a minimal flat ``Qwen3_5MoeTextConfig`` for offline unit tests.
+
+    This is the text-only ``Qwen3_5MoeForCausalLM`` config (no ``text_config``
+    sub-config), analogous to the dense ``Qwen3_5ForCausalLM`` flat config used
+    by Qwen3.5-4B.
+    """
+    from transformers.models.qwen3_5_moe.configuration_qwen3_5_moe import Qwen3_5MoeTextConfig
+
+    if num_hidden_layers is None:
+        num_hidden_layers = len(layer_types)
+
+    rope_cfg = {"type": "mrope", "rope_type": "default", "mrope_section": [2, 3, 3], "rope_theta": 10000.0, "partial_rotary_factor": 0.25}
+
+    config = Qwen3_5MoeTextConfig(
+        hidden_size=128,
+        num_hidden_layers=num_hidden_layers,
+        num_attention_heads=4,
+        num_key_value_heads=2,
+        head_dim=64,
+        max_position_embeddings=256,
+        vocab_size=32000,
+        rms_norm_eps=1e-6,
+        layer_types=layer_types,
+        linear_num_key_heads=2,
+        linear_num_value_heads=2,
+        linear_key_head_dim=16,
+        linear_value_head_dim=16,
+        linear_conv_kernel_dim=4,
+        # MoE-specific settings (kept small for CI).
+        num_experts=4,
+        num_experts_per_tok=2,
+        moe_intermediate_size=64,
+        shared_expert_intermediate_size=64,
+        bos_token_id=1,
+        eos_token_id=2,
+    )
+    config.rope_scaling = rope_cfg
+    config.rope_parameters = rope_cfg
+    config.architectures = ["Qwen3_5MoeForCausalLM"]
+    return config
+
+
 class TestRandomQwen3_5Moe(ExtTestCase):
     def _build_model(self, config, precision, provider, **extra_options):
         """Create a random-weight HF MoE model and build its ONNX export.
@@ -90,6 +133,41 @@ class TestRandomQwen3_5Moe(ExtTestCase):
 
         torch.manual_seed(42)
         model = AutoModelForImageTextToText.from_config(config)
+        model.eval()
+        model.save_pretrained(model_dir_full)
+
+        tokenizer = self.make_word_level_tokenizer()
+        tokenizer.save_pretrained(model_dir_full)
+
+        create_model(
+            model_name=QWEN3_5_MOE_MODEL_NAME,
+            input_path=model_dir_full,
+            output_dir=output_dir,
+            precision=precision,
+            execution_provider=provider,
+            cache_dir=cache_dir,
+            **extra_options,
+        )
+        return output_dir
+
+    def _build_text_model(self, config, precision, provider, **extra_options):
+        """Create a random-weight flat ``Qwen3_5MoeForCausalLM`` and build it.
+
+        Returns the output directory containing ``model.onnx``.
+        """
+        import torch
+        from transformers import AutoModelForCausalLM
+
+        from modelbuilder.builder import create_model
+
+        basename = f"test_qwen3_5_moe_text_{precision}_{provider}_" + "_".join(config.layer_types)
+        if extra_options:
+            basename += "_" + "_".join(f"{k}{v}" for k, v in sorted(extra_options.items()))
+        model_dir_full = self.get_model_dir(basename)
+        output_dir, cache_dir = self.get_dirs(basename)
+
+        torch.manual_seed(42)
+        model = AutoModelForCausalLM.from_config(config)
         model.eval()
         model.save_pretrained(model_dir_full)
 
@@ -157,6 +235,44 @@ class TestRandomQwen3_5Moe(ExtTestCase):
 
         config = _make_qwen3_5_moe_config(["full_attention", "full_attention"])
         output_dir = self._build_model(config, "fp32", "cpu", exclude_embeds=False)
+
+        genai_config_path = os.path.join(output_dir, "genai_config.json")
+        self.assertExists(genai_config_path)
+        with open(genai_config_path, encoding="utf-8") as f:
+            genai_config = json.load(f)
+        self.assertEqual(genai_config["model"]["type"], "qwen3_5_moe_text")
+
+    @requires_transformers("5")
+    @hide_stdout()
+    def test_qwen3_5_moe_causallm_fp32_cpu_full_attention_build(self):
+        """Build a flat ``Qwen3_5MoeForCausalLM`` text-only MoE decoder.
+
+        ``Qwen35MoeCausalLMModel`` handles the flat ``Qwen3_5MoeTextConfig``
+        (no ``text_config`` sub-config), mirroring how ``Qwen35CausalLMModel``
+        handles the dense ``Qwen3_5ForCausalLM``.  The ONNX graph must include
+        the embedding layer (``input_ids`` input), emit an MoE/QMoE op, and
+        expose the ``qwen3_5_moe_text`` genai-config ``model_type``.
+        """
+        import json
+
+        import onnx
+
+        config = _make_qwen3_5_moe_text_config(["full_attention", "full_attention"])
+        output_dir = self._build_text_model(config, "fp32", "cpu")
+
+        text_onnx_path = os.path.join(output_dir, "model.onnx")
+        self.assertExists(text_onnx_path)
+
+        onnx_model = onnx.load(text_onnx_path)
+        self.assertIsNotNone(onnx_model)
+
+        # The text-only CausalLM graph includes the embedding, so it takes
+        # input_ids directly rather than inputs_embeds.
+        input_names = {inp.name for inp in onnx_model.graph.input}
+        self.assertIn("input_ids", input_names)
+
+        op_types = {node.op_type for node in onnx_model.graph.node}
+        self.assertTrue(("MoE" in op_types) or ("QMoE" in op_types), f"Expected an MoE/QMoE op in the graph, found: {sorted(op_types)}")
 
         genai_config_path = os.path.join(output_dir, "genai_config.json")
         self.assertExists(genai_config_path)

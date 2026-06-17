@@ -3041,14 +3041,16 @@ class Qwen35MoeTextModel(Qwen35TextModel):
 
     def __init__(self, config, io_dtype, onnx_dtype, ep, cache_dir, extra_options):
         # Map Qwen3.5-MoE config attributes to what the base class expects.
-        if hasattr(config, "text_config"):
-            tc = config.text_config
-            # Base class reads ``num_local_experts``; MoE config uses ``num_experts``.
-            if hasattr(tc, "num_experts") and not hasattr(tc, "num_local_experts"):
-                tc.num_local_experts = tc.num_experts
-            # Base class reads ``intermediate_size``; MoE has ``moe_intermediate_size``.
-            if not hasattr(tc, "intermediate_size") and hasattr(tc, "moe_intermediate_size"):
-                tc.intermediate_size = tc.moe_intermediate_size
+        # For the multimodal ``Qwen3_5MoeForConditionalGeneration`` config these
+        # attributes live under ``text_config``; for the flat
+        # ``Qwen3_5MoeForCausalLM`` config they live on ``config`` directly.
+        tc = config.text_config if hasattr(config, "text_config") else config
+        # Base class reads ``num_local_experts``; MoE config uses ``num_experts``.
+        if hasattr(tc, "num_experts") and not hasattr(tc, "num_local_experts"):
+            tc.num_local_experts = tc.num_experts
+        # Base class reads ``intermediate_size``; MoE has ``moe_intermediate_size``.
+        if not hasattr(tc, "intermediate_size") and hasattr(tc, "moe_intermediate_size"):
+            tc.intermediate_size = tc.moe_intermediate_size
 
         super().__init__(config, io_dtype, onnx_dtype, ep, cache_dir, extra_options)
 
@@ -3226,3 +3228,35 @@ class Qwen35MoeTextModel(Qwen35TextModel):
             shape=["batch_size", "sequence_length", self.hidden_size],
         )
         return f"{gated_mul_name}/output_0"
+
+
+class Qwen35MoeCausalLMModel(Qwen35MoeTextModel):
+    """Qwen3.5-MoE pure-text (CausalLM) decoder builder.
+
+    Handles ``Qwen3_5MoeForCausalLM`` – the text-only variant of Qwen3.5-MoE
+    whose HF config is a flat ``Qwen3_5MoeTextConfig`` with no ``text_config``
+    sub-config.
+
+    Like :class:`Qwen35CausalLMModel` (the dense counterpart), this class
+    keeps the embedding layer in the ONNX graph so the model accepts
+    ``input_ids`` directly.  This is required for ORT-GenAI to run generation
+    without a separate embedding model artifact.
+
+    Imported from `microsoft/onnxruntime-genai PR #2146
+    <https://github.com/microsoft/onnxruntime-genai/pull/2146>`_.
+    """
+
+    def __init__(self, config, io_dtype, onnx_dtype, ep, cache_dir, extra_options):
+        # Text-only model: include the embedding layer so the ONNX graph
+        # takes input_ids (not inputs_embeds).  This prevents the VL default
+        # of exclude_embeds=True set by Qwen35TextModel.__init__.
+        extra_options.setdefault("exclude_embeds", False)
+        super().__init__(config, io_dtype, onnx_dtype, ep, cache_dir, extra_options)
+
+    def load_weights(self, input_path):
+        from transformers import Qwen3_5MoeForCausalLM
+
+        print("Loading Qwen3_5MoeForCausalLM model...")
+        return Qwen3_5MoeForCausalLM.from_pretrained(
+            self.model_name_or_path, cache_dir=self.cache_dir, token=self.hf_token, trust_remote_code=self.hf_remote
+        )
