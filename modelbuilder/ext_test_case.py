@@ -537,12 +537,11 @@ class ExtTestCase(unittest.TestCase):
         * ``"inputs_embeds"`` – PyTorch is called with ``inputs_embeds``,
           ``position_ids``, and ``attention_mask`` (used by Qwen2.5-VL).
 
-        The ONNX model always receives ``inputs_embeds``. ``position_ids`` is a
-        3-D tensor of shape ``[3, batch_size, seq_len]`` unless
-        *onnx_position_ids_2d* is ``True`` (Qwen2.5-Omni / phi3v pipeline), in
-        which case the ONNX model receives standard 2-D ``position_ids`` of
-        shape ``[batch_size, seq_len]`` and expands them to 3-D internally.
-        PyTorch always receives the 3-D ``position_ids``.
+        PyTorch always receives a 3-D ``position_ids`` tensor of shape
+        ``[3, batch_size, seq_len]``.  The ONNX model receives the same 3-D
+        tensor unless *onnx_position_ids_2d* is set, in which case it receives
+        a 2-D ``[batch_size, seq_len]`` tensor (e.g. the Qwen2.5-Omni thinker,
+        which expands 2-D position_ids to 3-D inside the graph).
         """
         import torch
 
@@ -562,8 +561,10 @@ class ExtTestCase(unittest.TestCase):
 
         # 3D position_ids for mRoPE: [3, batch_size, seq_len]
         position_ids_3d = np.tile(np.arange(seq_len, dtype=np.int64), (3, batch_size, 1))
-        # The ONNX phi3v pipeline (Qwen2.5-Omni) consumes 2D position_ids.
-        onnx_position_ids = np.tile(np.arange(seq_len, dtype=np.int64), (batch_size, 1)) if onnx_position_ids_2d else position_ids_3d
+        # 2D position_ids [batch_size, seq_len] for models that expand to 3D
+        # inside the ONNX graph (onnx_position_ids_2d=True).
+        position_ids_2d = np.arange(seq_len, dtype=np.int64).reshape(batch_size, seq_len)
+        onnx_prefill_position_ids = position_ids_2d if onnx_position_ids_2d else position_ids_3d
 
         prefill_results = None
         pt_prefill = None
@@ -572,7 +573,7 @@ class ExtTestCase(unittest.TestCase):
             prefill_feed = {
                 "inputs_embeds": inputs_embeds.cpu().numpy().astype(np_dtype),
                 "attention_mask": np.ones((batch_size, seq_len), dtype=np.int64),
-                "position_ids": onnx_position_ids,
+                "position_ids": onnx_prefill_position_ids,
             }
             for i in range(num_hidden_layers):
                 prefill_feed[f"past_key_values.{i}.key"] = np.zeros((batch_size, num_key_value_heads, 0, head_size), dtype=np_dtype)
@@ -616,7 +617,8 @@ class ExtTestCase(unittest.TestCase):
 
             # 3D position_ids for decode step: [3, batch_size, 1] with value = seq_len
             decode_position_ids_3d = np.full((3, batch_size, 1), seq_len, dtype=np.int64)
-            onnx_decode_position_ids = np.full((batch_size, 1), seq_len, dtype=np.int64) if onnx_position_ids_2d else decode_position_ids_3d
+            decode_position_ids_2d = np.full((batch_size, 1), seq_len, dtype=np.int64)
+            onnx_decode_position_ids = decode_position_ids_2d if onnx_position_ids_2d else decode_position_ids_3d
 
             decode_feed = {
                 "inputs_embeds": decode_embeds.cpu().numpy().astype(np_dtype),

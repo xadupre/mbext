@@ -365,10 +365,9 @@ class TestRandomQwen25OmniVision(ExtTestCase):
         num_kv_heads = config.text_config.num_key_value_heads
         head_size_text = config.text_config.hidden_size // config.text_config.num_attention_heads
 
-        # The Omni text decoder accepts standard 2D position_ids [B, S]
-        # (as fed by the ORT-GenAI phi3v loader) and expands them to the 3D
-        # mRoPE layout internally.
-        position_ids_2d = np.tile(np.arange(seq_len, dtype=np.int64), (batch_size, 1))
+        # The Qwen2.5-Omni thinker declares 2D position_ids [B, S] and expands
+        # them to 3D inside the graph for the mRoPE subgraph.
+        position_ids_2d = np.arange(seq_len, dtype=np.int64).reshape(batch_size, seq_len)
         onnx_feed = {
             "inputs_embeds": inputs_embeds,
             "attention_mask": np.ones((batch_size, seq_len), dtype=np.int64),
