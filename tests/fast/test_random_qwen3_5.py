@@ -3,6 +3,7 @@
 # Licensed under the MIT License.  See License.txt in the project root for
 # license information.
 # --------------------------------------------------------------------------
+import json
 import os
 import unittest
 
@@ -250,6 +251,13 @@ class TestRandomQwen3_5(ExtTestCase):
         # instead of the legacy 5-node Square+ReduceSum+Add+Rsqrt+Mul
         # subgraph (see onnxruntime-genai PR #2127 / 88af38b).
         self.assertIn("LpNormalization", op_types)
+
+        # The Qwen3.5 hybrid recurrent state requires a shared past/present
+        # buffer at runtime, so genai_config.json must enable it (see
+        # onnxruntime-genai PR #2139).
+        with open(os.path.join(output_dir, "genai_config.json")) as f:
+            genai_config = json.load(f)
+        self.assertTrue(genai_config["search"]["past_present_share_buffer"])
 
         # Run a prefill step to confirm the local-function fallbacks work.
         outputs = self._run_text_decoder(model, output_dir, config, "fp32", config.text_config.layer_types)
