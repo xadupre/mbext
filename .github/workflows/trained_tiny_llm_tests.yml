@@ -11,7 +11,7 @@ permissions:
 
 jobs:
   tests:
-    name: ci (${{ matrix.os }}, py${{ matrix.python-version }}, torch-${{ matrix.torch.version || 'stable' }}, transformers-${{ matrix.transformers-version || 'latest' }})
+    name: ci-trained (${{ matrix.os }}, py${{ matrix.python-version }}, torch-${{ matrix.torch.version || 'stable' }}, transformers-${{ matrix.transformers-version || 'latest' }})
     runs-on: ${{ matrix.os }}
     permissions:
       contents: read
