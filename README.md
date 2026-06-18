@@ -36,6 +36,30 @@ With a better machine:
 LONGTEST=1 pytest tests/trained
 ```
 
+## Llama.cpp tests
+
+`tests/fast_llama_cpp` compares `llama.cpp` and `onnxruntime-genai` on the same
+model. The conversion script `convert_hf_to_gguf.py` comes from the
+[llama.cpp](https://github.com/ggml-org/llama.cpp) repository and its
+requirements pin a specific `torch` version (for example `torch==2.11.0`).
+Installing them downgrades `torch` from the version installed for the rest of
+the test suite.
+
+`torchaudio` (and `torchvision`) compiled against the previous `torch` build is
+then incompatible with the downgraded `torch`. Because `transformers` imports
+`torchaudio` lazily, the mismatch surfaces while loading the model as:
+
+```
+ModuleNotFoundError: Could not import module 'LlamaForCausalLM'.
+```
+
+Uninstalling `torchaudio` (and `torchvision`) removes the mismatch, since these
+tests only need `torch` itself:
+
+```bash
+pip uninstall -y torchaudio torchvision
+```
+
 You can see the results in ``stats/end2end_results.json``. Example:
 
 ```
