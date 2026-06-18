@@ -54,7 +54,7 @@ jobs:
         env:
           HUGGING_FACE_HUB_TOKEN: ${{ secrets.HUGGING_FACE_HUB_TOKEN }}
           LLAMA_CPP_DIR: ${{ github.workspace }}/llama.cpp
-        run: LONGTEST=1 pytest tests/llama_cpp -v --cov=modelbuilder --cov-report=xml --cov-report=term-missing
+        run: LONGTEST=1 pytest tests/fast_llama_cpp -v --cov=modelbuilder --cov-report=xml --cov-report=term-missing
 
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v5
