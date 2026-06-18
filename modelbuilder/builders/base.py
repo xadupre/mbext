@@ -852,6 +852,22 @@ class Model(LocalFunctionsMixin):
         if os.path.exists(self.cache_dir) and not os.listdir(self.cache_dir):
             os.rmdir(self.cache_dir)
 
+    def save_vscode_settings(self, out_dir):
+        # The output folder holds large ONNX artifacts (*.onnx / *.onnx.data) that
+        # exhaust the OS file watcher (inotify) limit, which makes VS Code repeatedly
+        # ask to reload the window when this folder is opened as a workspace. Drop a
+        # .vscode/settings.json next to the model so the editor excludes them.
+        settings = {
+            "files.watcherExclude": {"**/*.onnx": True, "**/*.onnx.data": True, "**/*.onnx_data": True},
+            "search.exclude": {"**/*.onnx": True, "**/*.onnx.data": True, "**/*.onnx_data": True},
+        }
+        vscode_dir = os.path.join(out_dir, ".vscode")
+        os.makedirs(vscode_dir, exist_ok=True)
+        settings_path = os.path.join(vscode_dir, "settings.json")
+        print(f"Saving VS Code settings in {settings_path}")
+        with open(settings_path, "w") as f:
+            json.dump(settings, f, indent=4)
+
     def make_initializer(self, tensor: torch.Tensor | np.ndarray | ir.TensorProtocol, /, name: str, to: ir.DataType | None = None):
         if to is not None:
             # Cast the tensor lazily if `to` is provided
