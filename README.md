@@ -6,6 +6,29 @@ The code base comes from https://github.com/microsoft/onnxruntime-genai/tree/mai
 It adds fast unit tests checking discrepancies, end to end test with the trained model.
 It supports more architectures.
 
+## Convert a model
+
+Example converting ``Qwen/Qwen3-8B`` to ONNX for CPU with int4 precision:
+
+```bash
+python -m modelbuilder.builder \
+    -m Qwen/Qwen3-8B \
+    -o qwen3-8b-cpu-int4 \
+    -p int4 \
+    -e cpu \
+    -c cache_dir
+```
+
+The arguments are:
+
+- ``-m/--model_name``: model name on Hugging Face (use ``-i/--input`` instead for a
+  local folder).
+- ``-o/--output``: folder where the ONNX model and additional files are written.
+- ``-p/--precision``: precision of the model (``int4``, ``bf16``, ``fp16`` or ``fp32``).
+- ``-e/--execution_provider``: execution provider to target (``cpu`` here).
+- ``-c/--cache_dir``: cache directory for Hugging Face files and temporary ONNX
+  external data files.
+
 ## Style
 
 ```bash
