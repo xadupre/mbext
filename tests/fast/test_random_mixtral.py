@@ -20,7 +20,14 @@ import unittest
 
 import numpy as np
 
-from modelbuilder.ext_test_case import ExtTestCase, hide_stdout, requires_cuda, requires_genai, run_session_or_io_binding
+from modelbuilder.ext_test_case import (
+    ExtTestCase,
+    hide_stdout,
+    requires_cuda,
+    requires_genai,
+    requires_transformers,
+    run_session_or_io_binding,
+)
 
 _MODEL_NAME = "mistralai/Mixtral-8x7B-v0.1"
 
@@ -108,6 +115,7 @@ class TestRandomMixtral(ExtTestCase):
         return config
 
     @hide_stdout()
+    @requires_transformers("5")
     def test_mixtral_onnx_build_cpu(self):
         """Build the Mixtral ONNX model with synthetic random weights (CPU safe).
 
@@ -153,6 +161,7 @@ class TestRandomMixtral(ExtTestCase):
 
     @hide_stdout()
     @requires_cuda()
+    @requires_transformers("5")
     def test_mixtral_int4_cuda_build_and_run(self):
         """Build the Mixtral ONNX model and run prefill + decode on CUDA.
 
@@ -230,6 +239,7 @@ class TestRandomMixtral(ExtTestCase):
     @hide_stdout()
     @requires_cuda()
     @requires_genai()
+    @requires_transformers("5")
     def test_mixtral_int4_cuda_genai_generate(self):
         """Generate tokens with ``onnxruntime-genai`` end to end on CUDA.
 
