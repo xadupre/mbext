@@ -18,6 +18,12 @@ black . && ruff check .
 pip install -e .[dev]
 ```
 
+Converting a model downloads a full Hugging Face model into `./cache_dir` (the
+default `--cache_dir`) and writes large ONNX artifacts (`*.onnx` / `*.onnx.data`).
+These directories are git-ignored, and `.vscode/settings.json` excludes them from
+the VS Code file watcher so the editor does not run out of file watches and
+repeatedly prompt to reload the window.
+
 ## Fast Unit tests
 
 ```bash
