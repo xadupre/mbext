@@ -71,61 +71,12 @@ class MixtralModel(MistralModel):
             self.layernorm_attrs["last_layernorm"] = True
 
     def make_moe(self, layer_id, mlp, root_input):
-        """Build the block-sparse MoE subgraph for one decoder layer."""
-        basename = f"/model/layers.{layer_id}/moe"
-        op_type = self.moe_attrs["op_type"]
-        moe_weight_type = f"{'q' if op_type == 'QMoE' else ''}weight"
+        """Build the block-sparse MoE subgraph for one decoder layer.
 
-        # --- Router (bias-free gate) ---
-        router_matmul_name = self.make_matmul(mlp.gate, f"{basename}/router/MatMul", root_input)
-        router_reshape_name = f"{basename}/router/Reshape"
-        self.make_reshape(
-            router_reshape_name,
-            [f"{router_matmul_name}/output_0", f"/model/constants/INT64/{[-1, self.moe_attrs['num_experts']]}"],
-            dtype=self.io_dtype,
-            shape=["batch_size * sequence_length", self.moe_attrs["num_experts"]],
-        )
-
-        # --- Routed expert weights ---
-        gate_up_proj_weight = f"model.layers.{layer_id}.moe.experts.gate_up_proj.{moe_weight_type}"
-        gate_up_proj_scales = f"model.layers.{layer_id}.moe.experts.gate_up_proj.scales"
-        down_proj_weight = f"model.layers.{layer_id}.moe.experts.down_proj.{moe_weight_type}"
-        down_proj_scales = f"model.layers.{layer_id}.moe.experts.down_proj.scales"
-
-        # Repack HF concatenated [gate|up] to ORT interleaved [g0,u0,g1,u1,...] for swiglu_fusion=1.
-        raw_gate_up = mlp.experts.gate_up_proj
-        half = raw_gate_up.shape[1] // 2
-        interleaved = torch.stack([raw_gate_up[:, :half, :], raw_gate_up[:, half:, :]], dim=2).reshape_as(raw_gate_up)
-
-        if op_type == "MoE":
-            self.make_initializer(interleaved, gate_up_proj_weight, to=self.io_dtype)
-            self.make_initializer(mlp.experts.down_proj, down_proj_weight, to=self.io_dtype)
-        else:
-            gate_up_qw_list, gate_up_sc_list = [], []
-            down_qw_list, down_sc_list = [], []
-            for i in range(self.moe_attrs["num_experts"]):
-                qw1, sc1 = self.make_qmoe_weights(interleaved[i])
-                gate_up_qw_list.append(qw1)
-                gate_up_sc_list.append(sc1)
-                qw2, sc2 = self.make_qmoe_weights(mlp.experts.down_proj[i])
-                down_qw_list.append(qw2)
-                down_sc_list.append(sc2)
-            self.make_initializer(torch.stack(gate_up_qw_list, dim=0).to(torch.uint8), gate_up_proj_weight)
-            self.make_initializer(torch.stack(down_qw_list, dim=0).to(torch.uint8), down_proj_weight)
-            self.make_initializer(torch.stack(gate_up_sc_list, dim=0), gate_up_proj_scales, to=self.io_dtype)
-            self.make_initializer(torch.stack(down_sc_list, dim=0), down_proj_scales, to=self.io_dtype)
-
-        # --- MoE/QMoE op ---
-        moe_name = f"{basename}/{op_type}"
-        self.make_moe_op(
-            moe_name,
-            root_input=root_input,
-            router_probs=f"{router_reshape_name}/output_0",
-            weight1=gate_up_proj_weight,
-            scales1=gate_up_proj_scales if op_type == "QMoE" else "",
-            weight2=down_proj_weight,
-            scales2=down_proj_scales if op_type == "QMoE" else "",
-        )
+        Mixtral has no shared expert and no expert biases, so this simply
+        delegates to the shared fused-MoE builder.
+        """
+        moe_name = self.make_fused_moe(layer_id, mlp, root_input)
         self.layernorm_attrs["skip_input"] = f"{moe_name}/output_0"
 
 
