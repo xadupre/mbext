@@ -125,6 +125,24 @@ def requires_genai(version: str = "", msg: str = "") -> Callable:
     return lambda x: x
 
 
+def requires_llama_cpp(version: str = "", msg: str = "") -> Callable:
+    """Skips a test if ``llama_cpp`` (llama-cpp-python) is not installed."""
+    try:
+        import llama_cpp  # noqa: F401
+    except ImportError:
+        return unittest.skip(msg or "llama-cpp-python is not installed")
+    if not hasattr(llama_cpp, "__version__"):
+        return unittest.skip(msg or "llama-cpp-python not properly installed")
+
+    if not version:
+        return lambda x: x
+
+    if PvVersion(llama_cpp.__version__) < PvVersion(version):
+        msg = msg or f"llama_cpp version {llama_cpp.__version__} < {version}"
+        return unittest.skip(msg)
+    return lambda x: x
+
+
 def has_cuda() -> bool:
     """Returns ``torch.cuda.device_count() > 0``."""
     if not has_torch():
