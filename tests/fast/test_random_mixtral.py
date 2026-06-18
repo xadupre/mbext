@@ -20,7 +20,7 @@ import unittest
 
 import numpy as np
 
-from modelbuilder.ext_test_case import ExtTestCase, hide_stdout, requires_cuda, run_session_or_io_binding
+from modelbuilder.ext_test_case import ExtTestCase, hide_stdout, requires_cuda, requires_genai, run_session_or_io_binding
 
 _MODEL_NAME = "mistralai/Mixtral-8x7B-v0.1"
 
@@ -226,6 +226,64 @@ class TestRandomMixtral(ExtTestCase):
                 results=prefill_results,
             )
             self.assertEqual(decode_logits.shape, (batch_size, 1, config.vocab_size))
+
+    @hide_stdout()
+    @requires_cuda()
+    @requires_genai()
+    def test_mixtral_int4_cuda_genai_generate(self):
+        """Generate tokens with ``onnxruntime-genai`` end to end on CUDA.
+
+        Mixtral exports as a CUDA-only QMoE (INT4) model, so the genai
+        greedy-generation loop is gated by ``@requires_cuda()`` (the QMoE
+        kernel) and ``@requires_genai()`` (the runtime).  The synthetic
+        random-weight checkpoint and a tiny word-level tokenizer are written
+        to disk so ``create_model`` produces ``model.onnx`` together with the
+        ``genai_config.json`` / tokenizer files that ``og.Model`` needs.
+
+        Because the weights are quantized to INT4 (lossy), the generated
+        tokens are not compared against a PyTorch reference; the test only
+        asserts that genai runs the QMoE graph and emits the requested number
+        of new tokens without error.
+        """
+        import torch
+        from transformers import AutoModelForCausalLM
+
+        from modelbuilder.builder import create_model
+
+        basename = "test_mixtral_int4_cuda_genai"
+        model_dir = self.get_model_dir(basename)
+        output_dir, cache_dir = self.get_dirs(basename)
+
+        config = _make_mixtral_config()
+
+        torch.manual_seed(0)
+        model = AutoModelForCausalLM.from_config(config)
+        model.eval()
+        model.save_pretrained(model_dir)
+
+        tokenizer = self.make_word_level_tokenizer()
+        tokenizer.save_pretrained(model_dir)
+
+        # MixtralForCausalLM forces CUDA + INT4 (QMoE) inside create_model.
+        create_model(
+            model_name=_MODEL_NAME,
+            input_path=model_dir,
+            output_dir=output_dir,
+            precision="int4",
+            execution_provider="cuda",
+            cache_dir=cache_dir,
+        )
+
+        self.assertExists(os.path.join(output_dir, "model.onnx"))
+        self.assertExists(os.path.join(output_dir, "genai_config.json"))
+
+        max_new_tokens = 5
+        prompt_ids = torch.tensor([[config.bos_token_id, 3, 4, 5]], dtype=torch.int64)
+        og_tokens = self.run_genai_generation(output_dir, prompt_ids, max_new_tokens)
+
+        self.assertEqual(og_tokens[: prompt_ids.shape[1]], prompt_ids[0].tolist())
+        self.assertLessEqual(len(og_tokens) - prompt_ids.shape[1], max_new_tokens)
+        self.assertGreater(len(og_tokens), prompt_ids.shape[1])
 
 
 if __name__ == "__main__":
