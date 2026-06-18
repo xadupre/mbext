@@ -17,38 +17,13 @@ is gated behind ``LONGTEST=1`` so it only runs in its dedicated CI job.
 """
 
 import os
-import shutil
 import subprocess
 import sys
 import unittest
 
-from modelbuilder.ext_test_case import ExtTestCase, hide_stdout, long_test, requires_genai, requires_llama_cpp
+from modelbuilder.ext_test_case import ExtTestCase, hide_stdout, requires_genai, requires_llama_cpp
 
 MODEL_NAME = "arnir0/Tiny-LLM"
-
-
-def _find_convert_script():
-    """Locates ``convert_hf_to_gguf.py`` from a ``llama.cpp`` checkout.
-
-    The script is searched, in order, via the ``LLAMA_CPP_CONVERT`` environment
-    variable (full path to the script), the ``LLAMA_CPP_DIR`` environment
-    variable (directory of a ``llama.cpp`` checkout), and finally ``PATH``.
-    Returns ``None`` when the script cannot be found.
-    """
-    candidates = []
-    env_script = os.environ.get("LLAMA_CPP_CONVERT")
-    if env_script:
-        candidates.append(env_script)
-    llama_dir = os.environ.get("LLAMA_CPP_DIR")
-    if llama_dir:
-        candidates.append(os.path.join(llama_dir, "convert_hf_to_gguf.py"))
-    which = shutil.which("convert_hf_to_gguf.py")
-    if which:
-        candidates.append(which)
-    for candidate in candidates:
-        if candidate and os.path.exists(candidate):
-            return candidate
-    return None
 
 
 class TestLlamaCppTinyLLM(ExtTestCase):
@@ -101,16 +76,15 @@ class TestLlamaCppTinyLLM(ExtTestCase):
             tokens.append(int(generator.get_next_tokens()[0]))
         return tokens
 
-    @long_test()
     @requires_genai()
     @requires_llama_cpp()
     @hide_stdout()
     def test_llama_cpp_vs_genai_tiny_llm_fp32_cpu(self):
         from modelbuilder.builder import create_model
 
-        convert_script = _find_convert_script()
+        convert_script = self._find_convert_script()
         if convert_script is None:
-            self.skipTest("convert_hf_to_gguf.py not found; set LLAMA_CPP_CONVERT or LLAMA_CPP_DIR to a llama.cpp checkout.")
+            self.skipTest("convert_hf_to_gguf.py unavailable (lookup/download failed)")
 
         basename = "test_llama_cpp_vs_genai_tiny_llm_fp32_cpu"
         model_dir = self.get_model_dir(basename)
