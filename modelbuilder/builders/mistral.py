@@ -25,6 +25,61 @@ class MistralNeMoModel(MistralModel):
         super().__init__(config, io_dtype, onnx_dtype, ep, cache_dir, extra_options)
 
 
+class MixtralModel(MistralModel):
+    """Mixture-of-Experts model builder for ``MixtralForCausalLM``.
+
+    Mixtral (e.g. ``mistralai/Mixtral-8x7B-v0.1``) shares the Mistral attention
+    stack (RMSNorm + rotary embeddings + GQA) but replaces the dense MLP of each
+    decoder layer with a sparse Mixture-of-Experts layer:
+
+    - ``mlp.gate`` routes tokens to the top-k of ``num_local_experts``.
+    - ``mlp.experts.gate_up_proj`` / ``mlp.experts.down_proj`` store the packed
+      per-expert SwiGLU weights (``gate_up_proj`` concatenates the gate and up
+      projections, ``down_proj`` is the down projection).
+
+    The routing weights are normalized over the selected experts, so
+    ``normalize_routing_weights`` is enabled.  The MoE op is currently only
+    supported on CUDA with INT4 (QMoE) weights, which the builder dispatch
+    enforces.
+    """
+
+    def __init__(self, config, io_dtype, onnx_dtype, ep, cache_dir, extra_options):
+        super().__init__(config, io_dtype, onnx_dtype, ep, cache_dir, extra_options)
+        self.moe_attrs["activation_type"] = "swiglu"
+        self.moe_attrs["swiglu_fusion"] = 1
+        self.moe_attrs["normalize_routing_weights"] = True
+
+    def make_layer(self, layer_id, layer):
+        # Each Mixtral decoder layer is defined as:
+        # input_layernorm --> attention --> post_attention_layernorm --> MoE
+        self.make_layernorm(
+            layer_id,
+            layer.input_layernorm,
+            skip=not self.layernorm_attrs["first_layernorm"],
+            simple=self.layernorm_attrs["simple"],
+            location="input",
+        )
+        self.make_attention(layer_id, layer.self_attn, root_input=self.layernorm_attrs["output_0"])
+        self.make_layernorm(
+            layer_id, layer.post_attention_layernorm, skip=True, simple=self.layernorm_attrs["simple"], location="post_attention"
+        )
+        self.make_moe(layer_id, layer.mlp, root_input=self.layernorm_attrs["output_0"])
+
+        self.layernorm_attrs["first_layernorm"] = False
+        if layer_id == self.num_layers - 1:
+            # Norm after last decoder layer of model (last layer --> norm)
+            self.layernorm_attrs["last_layernorm"] = True
+
+    def make_moe(self, layer_id, mlp, root_input):
+        """Build the block-sparse MoE subgraph for one decoder layer.
+
+        Mixtral has no shared expert and no expert biases, so this simply
+        delegates to the shared fused-MoE builder.
+        """
+        moe_name = self.make_fused_moe(layer_id, mlp, root_input)
+        self.layernorm_attrs["skip_input"] = f"{moe_name}/output_0"
+
+
 class Ministral3TextModel(MistralModel):
     def __init__(self, config, io_dtype, onnx_dtype, ep, cache_dir, extra_options):
         super().__init__(config, io_dtype, onnx_dtype, ep, cache_dir, extra_options)

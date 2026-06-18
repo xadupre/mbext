@@ -285,6 +285,16 @@ def create_model(model_name, input_path, output_dir, precision, execution_provid
         from .builders.mistral import MistralNeMoModel
 
         onnx_model = MistralNeMoModel(config, io_dtype, onnx_dtype, execution_provider, cache_dir, extra_options)
+    elif config.architectures[0] == "MixtralForCausalLM":
+        print(
+            "WARNING: This model only works for CUDA currently because `MoE` is only supported for CUDA in ONNX Runtime. Setting `--execution_provider cuda` by default."
+        )
+        print("WARNING: This model currently only supports the quantized version. Setting `--precision int4` by default.")
+        from .builders.mistral import MixtralModel
+
+        execution_provider = "cuda"
+        onnx_dtype = set_onnx_dtype("int4", extra_options)
+        onnx_model = MixtralModel(config, io_dtype, onnx_dtype, execution_provider, cache_dir, extra_options)
     elif config.architectures[0] == "NemotronForCausalLM":
         from .builders.nemotron import NemotronModel
 
