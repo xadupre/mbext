@@ -279,6 +279,19 @@ class ExtTestCase(unittest.TestCase):
     _do_clean = os.environ.get("DOCLEAN", "") in (1, "1", "True", "true")
     _do_not_clean = os.environ.get("DONTCLEAN", "") in (1, "1", "True", "true")
 
+    @classmethod
+    def get_dump_folder(cls, name: str, folder: Optional[str] = None, clean: bool = False) -> str:
+        if folder is None:
+            folder = "dump_test"
+        if folder and not os.path.exists(folder):
+            os.mkdir(folder)
+        res = os.path.join(folder, name)
+        if clean and os.path.exists(res):
+            shutil.rmtree(res)
+        if not os.path.exists(res):
+            os.mkdir(res)
+        return res
+
     def shortDescription(self):
         # To remove annoying display on the screen every time verbosity is enabled.
         return None

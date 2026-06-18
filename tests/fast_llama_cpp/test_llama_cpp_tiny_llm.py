@@ -22,19 +22,13 @@ import subprocess
 import sys
 import unittest
 
-from modelbuilder.ext_test_case import ExtTestCase, hide_stdout, long_test, requires_genai, requires_llama_cpp
+from modelbuilder.ext_test_case import ExtTestCase, hide_stdout, requires_genai, requires_llama_cpp
 
 MODEL_NAME = "arnir0/Tiny-LLM"
 
 
 def _find_convert_script():
-    """Locates ``convert_hf_to_gguf.py`` from a ``llama.cpp`` checkout.
-
-    The script is searched, in order, via the ``LLAMA_CPP_CONVERT`` environment
-    variable (full path to the script), the ``LLAMA_CPP_DIR`` environment
-    variable (directory of a ``llama.cpp`` checkout), and finally ``PATH``.
-    Returns ``None`` when the script cannot be found.
-    """
+    # it should be downlaoded and cached
     candidates = []
     env_script = os.environ.get("LLAMA_CPP_CONVERT")
     if env_script:
@@ -101,7 +95,6 @@ class TestLlamaCppTinyLLM(ExtTestCase):
             tokens.append(int(generator.get_next_tokens()[0]))
         return tokens
 
-    @long_test()
     @requires_genai()
     @requires_llama_cpp()
     @hide_stdout()
