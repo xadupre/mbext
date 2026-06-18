@@ -1,0 +1,64 @@
+name: Llama.cpp vs onnxruntime-genai Tests
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    name: ci-llama-cpp (${{ matrix.os }}, py${{ matrix.python-version }})
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+      id-token: write
+    strategy:
+      fail-fast: true
+      matrix:
+        os: ["ubuntu-latest"]
+        python-version: ["3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      # we install torch first to avoid downloading any CUDA dependency
+      - name: Install pytorch (cpu)
+        run: pip install "torch==2.12.0+cpu" torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
+
+      - name: Install dependencies
+        run: pip install -e ".[dev]" torch transformers tokenizers
+
+      - name: Install llama-cpp-python
+        run: pip install llama-cpp-python
+
+      # The conversion script (convert_hf_to_gguf.py) lives in the llama.cpp
+      # repository and is required to turn the Hugging Face checkpoint into a
+      # GGUF file consumed by llama.cpp.
+      - name: Checkout llama.cpp
+        uses: actions/checkout@v4
+        with:
+          repository: ggml-org/llama.cpp
+          path: llama.cpp
+
+      - name: Install llama.cpp conversion requirements
+        run: pip install -r llama.cpp/requirements/requirements-convert_hf_to_gguf.txt
+
+      - name: Run llama.cpp vs onnxruntime-genai tests
+        continue-on-error: true
+        env:
+          HUGGING_FACE_HUB_TOKEN: ${{ secrets.HUGGING_FACE_HUB_TOKEN }}
+          LLAMA_CPP_DIR: ${{ github.workspace }}/llama.cpp
+        run: LONGTEST=1 pytest tests/fast_llama_cpp -v --cov=modelbuilder --cov-report=xml --cov-report=term-missing
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          files: coverage.xml
+          flags: llama-cpp-tests
+          fail_ci_if_error: false
