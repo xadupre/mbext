@@ -6,6 +6,7 @@ import os
 import re
 import shutil
 import unittest
+import urllib.request
 import warnings
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
@@ -316,6 +317,38 @@ class ExtTestCase(unittest.TestCase):
         if not self._do_not_clean and (clean or self._do_clean):
             self.addCleanup(self.clean_dir, os.path.join("dump_models", prefix, "checkpoint"))
         return model_dir
+
+    def _find_convert_script(self) -> Optional[str]:
+        candidates = []
+        env_script = os.environ.get("LLAMA_CPP_CONVERT")
+        if env_script:
+            candidates.append(env_script)
+        llama_dir = os.environ.get("LLAMA_CPP_DIR")
+        if llama_dir:
+            candidates.append(os.path.join(llama_dir, "convert_hf_to_gguf.py"))
+        which = shutil.which("convert_hf_to_gguf.py")
+        if which:
+            candidates.append(which)
+
+        cache_dir = os.path.expanduser(os.path.join("~", ".cache", "mbext"))
+        cached_script = os.path.join(cache_dir, "convert_hf_to_gguf.py")
+        candidates.append(cached_script)
+
+        for candidate in candidates:
+            if candidate and os.path.exists(candidate):
+                return candidate
+
+        os.makedirs(cache_dir, exist_ok=True)
+        url = os.environ.get("LLAMA_CPP_CONVERT_URL", "https://raw.githubusercontent.com/ggml-org/llama.cpp/master/convert_hf_to_gguf.py")
+        try:
+            urllib.request.urlretrieve(url, cached_script)
+        except Exception:
+            if os.path.exists(cached_script):
+                os.remove(cached_script)
+            return None
+        if os.path.exists(cached_script):
+            return cached_script
+        return None
 
     def assertExists(self, name):
         if not os.path.exists(name):
