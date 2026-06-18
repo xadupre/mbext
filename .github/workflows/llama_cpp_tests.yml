@@ -29,7 +29,7 @@ jobs:
 
       # we install torch first to avoid downloading any CUDA dependency
       - name: Install pytorch (cpu)
-        run: pip install "torch==2.12.0+cpu" torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
+        run: pip install "torch==2.12.0+cpu" --index-url https://download.pytorch.org/whl/cpu
 
       - name: Install dependencies
         run: pip install -e ".[dev]" torch transformers tokenizers
@@ -50,7 +50,6 @@ jobs:
         run: pip install -r llama.cpp/requirements/requirements-convert_hf_to_gguf.txt
 
       - name: Run llama.cpp vs onnxruntime-genai tests
-        continue-on-error: true
         env:
           HUGGING_FACE_HUB_TOKEN: ${{ secrets.HUGGING_FACE_HUB_TOKEN }}
           LLAMA_CPP_DIR: ${{ github.workspace }}/llama.cpp
