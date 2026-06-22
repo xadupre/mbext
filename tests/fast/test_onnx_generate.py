@@ -10,15 +10,15 @@ Tests for :func:`modelbuilder.helpers.rt_helper.onnx_generate`.
 import unittest
 
 import numpy as np
-import onnx
-import onnx.helper as oh
-import onnx.numpy_helper as onh
-
 from modelbuilder.ext_test_case import ExtTestCase, hide_stdout
 from modelbuilder.helpers.rt_helper import onnx_generate
 
+import onnx
+import onnx.helper as oh
+import onnx.numpy_helper as onh
 TINT64 = onnx.TensorProto.INT64
 TFLOAT = onnx.TensorProto.FLOAT
+
 VOCAB = 8
 
 
