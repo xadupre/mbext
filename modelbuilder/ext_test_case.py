@@ -11,7 +11,11 @@ import warnings
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 import numpy as np
-import onnx
+
+if os.environ.get("USE_ONNX_LIGHT") == "1":
+    import onnx_light.onnx as onnx
+else:
+    import onnx
 
 
 class PvVersion:

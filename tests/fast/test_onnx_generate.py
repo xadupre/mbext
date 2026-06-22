@@ -7,15 +7,22 @@
 Tests for :func:`modelbuilder.helpers.rt_helper.onnx_generate`.
 """
 
+import os
 import unittest
 
 import numpy as np
 from modelbuilder.ext_test_case import ExtTestCase, hide_stdout
 from modelbuilder.helpers.rt_helper import onnx_generate
 
-import onnx
-import onnx.helper as oh
-import onnx.numpy_helper as onh
+if os.environ.get("USE_ONNX_LIGHT") == "1":
+    import onnx_light.onnx as onnx
+    import onnx_light.onnx.helper as oh
+    import onnx_light.onnx.numpy_helper as onh
+else:
+    import onnx
+    import onnx.helper as oh
+    import onnx.numpy_helper as onh
+
 TINT64 = onnx.TensorProto.INT64
 TFLOAT = onnx.TensorProto.FLOAT
 
