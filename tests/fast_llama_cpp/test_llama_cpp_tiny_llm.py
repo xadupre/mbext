@@ -43,8 +43,16 @@ class TestLlamaCppTinyLLM(ExtTestCase):
         return tokenizer, config
 
     def _convert_to_gguf(self, convert_script, model_dir, gguf_path):
-        """Converts a Hugging Face checkpoint to a float32 GGUF file."""
-        subprocess.run([sys.executable, convert_script, model_dir, "--outfile", gguf_path, "--outtype", "f32"], check=True)
+        """Converts a Hugging Face checkpoint to a float32 GGUF file.
+
+        ``convert_hf_to_gguf.py`` pins ``torch``/``transformers``/``numpy`` to
+        versions that conflict with the ones modelbuilder and
+        onnxruntime-genai rely on. ``LLAMA_CPP_CONVERT_PYTHON`` lets the caller
+        run the conversion with a dedicated interpreter (e.g. an isolated
+        virtual environment) so those pins never pollute the test environment.
+        """
+        python = os.environ.get("LLAMA_CPP_CONVERT_PYTHON", sys.executable)
+        subprocess.run([python, convert_script, model_dir, "--outfile", gguf_path, "--outtype", "f32"], check=True)
         self.assertExists(gguf_path)
 
     def _llama_cpp_tokens(self, gguf_path, prompt_ids, max_new_tokens):
