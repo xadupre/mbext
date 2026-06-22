@@ -46,24 +46,27 @@ jobs:
           repository: ggml-org/llama.cpp
           path: llama.cpp
 
-      - name: Install llama.cpp conversion requirements
-        run: pip install -r llama.cpp/requirements/requirements-convert_hf_to_gguf.txt
-
-      # The conversion requirements pin a specific torch version (e.g.
-      # torch==2.11.0), which downgrades the torch installed above. Any
-      # torchaudio/torchvision left over from a previous torch build is then
-      # compiled against the wrong torch and raises at import time. transformers
-      # imports torchaudio lazily, so the mismatch surfaces as
-      # "ModuleNotFoundError: Could not import module 'LlamaForCausalLM'".
-      # Removing them avoids the mismatch (this test only needs torch).
-      - name: Uninstall torchaudio and torchvision to avoid torch mismatch
-        run: pip uninstall -y torchaudio torchvision 2>/dev/null || true
+      # The conversion requirements pin specific torch/transformers/numpy
+      # versions (e.g. torch==2.11.0, transformers==4.57.6, numpy~=1.26.4) that
+      # conflict with the versions modelbuilder and onnxruntime-genai rely on.
+      # Installing them into the main environment downgrades that stack and
+      # breaks AutoModelForCausalLM resolution (the test then fails with
+      # "Could not find LlamaForCausalLM neither in ... nor in ..."). To keep
+      # the two stacks fully decoupled we install the conversion requirements
+      # in a dedicated virtual environment and point the test at it through
+      # LLAMA_CPP_CONVERT_PYTHON.
+      - name: Create isolated environment for the GGUF conversion
+        run: |
+          python -m venv "${{ github.workspace }}/.gguf-venv"
+          "${{ github.workspace }}/.gguf-venv/bin/python" -m pip install --upgrade pip
+          "${{ github.workspace }}/.gguf-venv/bin/python" -m pip install -r llama.cpp/requirements/requirements-convert_hf_to_gguf.txt
 
       - name: Run llama.cpp vs onnxruntime-genai tests
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN || secrets.HUGGING_FACE_HUB_TOKEN }}
           HUGGING_FACE_HUB_TOKEN: ${{ secrets.HUGGING_FACE_HUB_TOKEN || secrets.HF_TOKEN }}
           LLAMA_CPP_DIR: ${{ github.workspace }}/llama.cpp
+          LLAMA_CPP_CONVERT_PYTHON: ${{ github.workspace }}/.gguf-venv/bin/python
         run: LONGTEST=1 pytest tests/fast_llama_cpp -v --cov=modelbuilder --cov-report=xml --cov-report=term-missing
 
       - name: Upload coverage to Codecov
