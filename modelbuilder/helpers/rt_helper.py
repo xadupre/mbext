@@ -10,7 +10,8 @@ Helpers for running ONNX models with :class:`onnxruntime.InferenceSession`.
 from typing import Dict, FrozenSet, List, Optional, Tuple, Union
 
 import numpy as np
-import onnx
+
+from modelbuilder.helpers.onnx_helper import onnx
 
 # ---------------------------------------------------------------------------
 # OnnxRuntime type-string → numpy dtype mapping
