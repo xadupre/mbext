@@ -39,6 +39,18 @@ class TestLlamaCppTinyLLM(ExtTestCase):
         model.save_pretrained(model_dir)
 
         tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
+
+        # ``convert_hf_to_gguf.py`` runs in an isolated environment that may pin
+        # a different ``transformers`` version (see ``_convert_to_gguf``). It
+        # resolves the vocabulary from the original SentencePiece file
+        # (``tokenizer.model``), which the fast tokenizer's ``save_pretrained``
+        # does not emit. Persisting the slow tokenizer first writes
+        # ``tokenizer.model`` so the conversion no longer depends on a
+        # cross-version fast-tokenizer load.
+        try:
+            AutoTokenizer.from_pretrained(MODEL_NAME, use_fast=False).save_pretrained(model_dir)
+        except Exception:
+            pass
         tokenizer.save_pretrained(model_dir)
         return tokenizer, config
 
