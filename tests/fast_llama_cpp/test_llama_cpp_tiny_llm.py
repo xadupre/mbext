@@ -17,6 +17,7 @@ is gated behind ``LONGTEST=1`` so it only runs in its dedicated CI job.
 """
 
 import os
+import shutil
 import subprocess
 import sys
 import unittest
@@ -39,19 +40,20 @@ class TestLlamaCppTinyLLM(ExtTestCase):
         model.save_pretrained(model_dir)
 
         tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
-
-        # ``convert_hf_to_gguf.py`` runs in an isolated environment that may pin
-        # a different ``transformers`` version (see ``_convert_to_gguf``). It
-        # resolves the vocabulary from the original SentencePiece file
-        # (``tokenizer.model``), which the fast tokenizer's ``save_pretrained``
-        # does not emit. Persisting the slow tokenizer first writes
-        # ``tokenizer.model`` so the conversion no longer depends on a
-        # cross-version fast-tokenizer load.
-        try:
-            AutoTokenizer.from_pretrained(MODEL_NAME, use_fast=False).save_pretrained(model_dir)
-        except Exception:
-            pass
         tokenizer.save_pretrained(model_dir)
+
+        # ``convert_hf_to_gguf.py`` runs in an isolated environment that pins a
+        # different ``transformers``/``tokenizers`` version (see
+        # ``_convert_to_gguf``). Its vocabulary resolution relies on the
+        # original SentencePiece file (``tokenizer.model``), but the fast
+        # tokenizer's ``save_pretrained`` only emits ``tokenizer.json``. Fetch
+        # ``tokenizer.model`` straight from the hub so the converter resolves
+        # the vocabulary through the SentencePiece path, independent of any
+        # cross-version fast-tokenizer load.
+        from huggingface_hub import hf_hub_download
+
+        sp_model = hf_hub_download(repo_id=MODEL_NAME, filename="tokenizer.model")
+        shutil.copyfile(sp_model, os.path.join(model_dir, "tokenizer.model"))
         return tokenizer, config
 
     def _convert_to_gguf(self, convert_script, model_dir, gguf_path):
