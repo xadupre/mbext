@@ -17,6 +17,7 @@ is gated behind ``LONGTEST=1`` so it only runs in its dedicated CI job.
 """
 
 import os
+import shutil
 import subprocess
 import sys
 import unittest
@@ -40,11 +41,32 @@ class TestLlamaCppTinyLLM(ExtTestCase):
 
         tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
         tokenizer.save_pretrained(model_dir)
+
+        # ``convert_hf_to_gguf.py`` runs in an isolated environment that pins a
+        # different ``transformers``/``tokenizers`` version (see
+        # ``_convert_to_gguf``). Its vocabulary resolution relies on the
+        # original SentencePiece file (``tokenizer.model``), but the fast
+        # tokenizer's ``save_pretrained`` only emits ``tokenizer.json``. Fetch
+        # ``tokenizer.model`` straight from the hub so the converter resolves
+        # the vocabulary through the SentencePiece path, independent of any
+        # cross-version fast-tokenizer load.
+        from huggingface_hub import hf_hub_download
+
+        sp_model = hf_hub_download(repo_id=MODEL_NAME, filename="tokenizer.model")
+        shutil.copyfile(sp_model, os.path.join(model_dir, "tokenizer.model"))
         return tokenizer, config
 
     def _convert_to_gguf(self, convert_script, model_dir, gguf_path):
-        """Converts a Hugging Face checkpoint to a float32 GGUF file."""
-        subprocess.run([sys.executable, convert_script, model_dir, "--outfile", gguf_path, "--outtype", "f32"], check=True)
+        """Converts a Hugging Face checkpoint to a float32 GGUF file.
+
+        ``convert_hf_to_gguf.py`` pins ``torch``/``transformers``/``numpy`` to
+        versions that conflict with the ones modelbuilder and
+        onnxruntime-genai rely on. ``LLAMA_CPP_CONVERT_PYTHON`` lets the caller
+        run the conversion with a dedicated interpreter (e.g. an isolated
+        virtual environment) so those pins never pollute the test environment.
+        """
+        python = os.environ.get("LLAMA_CPP_CONVERT_PYTHON", sys.executable)
+        subprocess.run([python, convert_script, model_dir, "--outfile", gguf_path, "--outtype", "f32"], check=True)
         self.assertExists(gguf_path)
 
     def _llama_cpp_tokens(self, gguf_path, prompt_ids, max_new_tokens):
