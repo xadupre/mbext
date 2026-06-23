@@ -1,0 +1,73 @@
+name: Fast Tests - onnx-light
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    name: ci (${{ matrix.os }}, py${{ matrix.python-version }}, torch-${{ matrix.torch.version || 'stable' }}, onnx-light-${{ matrix.onnx-light-version }})
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+      id-token: write
+    strategy:
+      fail-fast: false
+      matrix:
+        os: ["ubuntu-latest"]
+        python-version: ["3.13"]
+        onnx-light-version: ["0.1.1"]
+        torch:
+          - version: "2.12.0"
+    env:
+      USE_ONNX_LIGHT: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      # we install torch first to avoid downloading any CUDA dependency
+
+      - name: Install pytorch ${{ matrix.torch.version }}
+        run: pip install "torch==${{ matrix.torch.version }}+cpu" torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
+
+      - name: Install dependencies
+        run: pip install -e ".[dev]" torch "transformers==5.12.1" tokenizers
+
+      - name: Uninstall onnx
+        run: pip uninstall -y onnx 2>/dev/null || true
+
+      - name: Uninstall ir-py
+        run: pip uninstall -y onnx-ir onnx_ir 2>/dev/null || true
+
+      - name: Install ir-py (branch xadupre/ol)
+        run: pip install "git+https://github.com/onnx/ir-py.git@xadupre/ol"
+
+      - name: Install onnx-light ${{ matrix.onnx-light-version }}
+        run: pip install "https://github.com/xadupre/onnx-light/releases/download/${{ matrix.onnx-light-version }}/onnx_light-${{ matrix.onnx-light-version }}-cp313-cp313-manylinux_2_28_x86_64.whl"
+
+      - name: pip freeze
+        run: pip freeze
+
+      - name: Run fast tests
+        run: DOCLEAN=1&&pytest tests/fast -v --cov=modelbuilder --cov-report=xml --cov-report=term-missing
+
+      - name: Upload coverage reports to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          flags: fast-tests-onnx-light
+
+      - name: Upload stats artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: stats-${{ matrix.os }}-py${{ matrix.python-version }}-torch${{ matrix.torch.version }}-onnx-light${{ matrix.onnx-light-version }}
+          path: stats/
+          if-no-files-found: ignore
