@@ -459,6 +459,10 @@ def create_model(model_name, input_path, output_dir, precision, execution_provid
     # Copy Hugging Face processing files to output folder
     onnx_model.save_processing(hf_name, extra_kwargs, output_dir)
 
+    # Drop a VS Code settings file so the large ONNX artifacts in the output folder
+    # do not exhaust the file watcher and trigger reload-window prompts
+    onnx_model.save_vscode_settings(output_dir)
+
 
 def get_args():
     parser = argparse.ArgumentParser(formatter_class=argparse.RawTextHelpFormatter)

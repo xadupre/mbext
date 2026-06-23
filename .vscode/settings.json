@@ -1,0 +1,26 @@
+{
+    // Converting a model downloads a full Hugging Face model into ./cache_dir and
+    // writes large ONNX artifacts (.onnx / .onnx.data). Watching these floods the
+    // OS file watcher (inotify) limit, which makes VS Code repeatedly ask to reload
+    // the window (and reloading does not help). Excluding them keeps the window stable.
+    "files.watcherExclude": {
+        "**/cache_dir/**": true,
+        "**/dump_models/**": true,
+        "**/stats/**": true,
+        "**/*.onnx": true,
+        "**/*.onnx.data": true,
+        "**/*.onnx_data": true
+    },
+    "search.exclude": {
+        "**/cache_dir": true,
+        "**/dump_models": true,
+        "**/stats": true,
+        "**/*.onnx": true,
+        "**/*.onnx.data": true,
+        "**/*.onnx_data": true
+    },
+    "files.exclude": {
+        "**/cache_dir": true,
+        "**/dump_models": true
+    }
+}

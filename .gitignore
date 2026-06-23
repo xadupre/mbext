@@ -198,3 +198,4 @@ cython_debug/
 
 dump_models
 stats
+cache_dir
