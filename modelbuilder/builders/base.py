@@ -17,12 +17,6 @@ import numpy as np
 import onnx_ir as ir
 import torch
 from onnx_ir.tensor_adapters import TorchTensor, to_torch_dtype
-from onnxruntime.quantization.matmul_nbits_quantizer import (
-    KQuantWeightOnlyQuantConfig,
-    MatMulNBitsQuantizer,
-    QuantFormat,
-    RTNWeightOnlyQuantConfig,
-)
 from tqdm import tqdm
 from transformers import AutoConfig, AutoModelForCausalLM, AutoModelForSpeechSeq2Seq, AutoTokenizer, GenerationConfig
 
@@ -765,6 +759,8 @@ class Model(LocalFunctionsMixin):
         tokenizer.save_pretrained(out_dir)
 
     def make_int4_algo_config(self, quant_method: str):
+        from onnxruntime.quantization.matmul_nbits_quantizer import KQuantWeightOnlyQuantConfig, RTNWeightOnlyQuantConfig
+
         customized_weight_config = {}
         int4_algo_config = None
 
@@ -797,6 +793,8 @@ class Model(LocalFunctionsMixin):
         return int4_algo_config
 
     def to_int4(self) -> ir.Model:
+        from onnxruntime.quantization.matmul_nbits_quantizer import MatMulNBitsQuantizer, QuantFormat
+
         quant = MatMulNBitsQuantizer(
             model=ir.to_proto(self.model),
             block_size=self.quant_attrs["int4"]["qdq_block_size"],
