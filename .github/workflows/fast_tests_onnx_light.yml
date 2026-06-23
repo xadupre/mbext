@@ -34,15 +34,17 @@ jobs:
 
       # we install torch first to avoid downloading any CUDA dependency
 
-      - name: Install pytorch ${{ matrix.torch.version }} (Linux/Windows)
-        if: matrix.os != 'macos-latest'
+      - name: Install pytorch ${{ matrix.torch.version }}
         run: pip install "torch==${{ matrix.torch.version }}+cpu" torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
 
       - name: Install dependencies
         run: pip install -e ".[dev]" torch "transformers==5.12.1" tokenizers
 
+      - name: Uninstall onnx
+        run: pip uninstall -y onnx 2>/dev/null || true
+
       - name: Install onnx-light ${{ matrix.onnx-light-version }}
-        run: pip install "onnx-light==${{ matrix.onnx-light-version }}"
+        run: pip install "https://github.com/xadupre/onnx-light/releases/download/${{ matrix.onnx-light-version }}/onnx_light-${{ matrix.onnx-light-version }}-cp313-cp313-manylinux_2_28_x86_64.whl"
 
       - name: pip freeze
         run: pip freeze
