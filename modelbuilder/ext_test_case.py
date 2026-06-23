@@ -12,10 +12,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 import numpy as np
 
-if os.environ.get("USE_ONNX_LIGHT") == "1":
-    import onnx_light.onnx as onnx
-else:
-    import onnx
+from modelbuilder.helpers.onnx_helper import onnx
 
 
 class PvVersion:
@@ -1599,16 +1596,16 @@ def _read_results(json_path: str) -> List[Dict[str, Any]]:
 
 def torch_dtype_to_ort_element_type(dtype):
     """Map a :class:`torch.dtype` to the corresponding ORT TensorProto element type int."""
-    from onnx import TensorProto
+    from modelbuilder.helpers.onnx_helper import onnx
     import torch
 
     return {
-        torch.float32: TensorProto.FLOAT,
-        torch.float16: TensorProto.FLOAT16,
-        torch.bfloat16: TensorProto.BFLOAT16,
-        torch.int64: TensorProto.INT64,
-        torch.int32: TensorProto.INT32,
-        torch.bool: TensorProto.BOOL,
+        torch.float32: onnx.TensorProto.FLOAT,
+        torch.float16: onnx.TensorProto.FLOAT16,
+        torch.bfloat16: onnx.TensorProto.BFLOAT16,
+        torch.int64: onnx.TensorProto.INT64,
+        torch.int32: onnx.TensorProto.INT32,
+        torch.bool: onnx.TensorProto.BOOL,
     }[dtype]
 
 

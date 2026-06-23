@@ -7,15 +7,11 @@
 Helpers for running ONNX models with :class:`onnxruntime.InferenceSession`.
 """
 
-import os
 from typing import Dict, FrozenSet, List, Optional, Tuple, Union
 
 import numpy as np
 
-if os.environ.get("USE_ONNX_LIGHT") == "1":
-    import onnx_light.onnx as onnx
-else:
-    import onnx
+from modelbuilder.helpers.onnx_helper import onnx
 
 # ---------------------------------------------------------------------------
 # OnnxRuntime type-string → numpy dtype mapping
