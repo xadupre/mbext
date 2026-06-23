@@ -7,7 +7,6 @@
 Tests for :func:`modelbuilder.helpers.rt_helper.onnx_generate`.
 """
 
-import os
 import unittest
 
 import numpy as np
