@@ -293,7 +293,7 @@ class ChatGLMForConditionalGeneration(GenerationMixin, PreTrainedModel):
 """
 
 
-def _save_mini_chatglm(model_dir, num_layers=1):
+def _save_mini_chatglm(model_dir, num_layers=1, provider=None):
     """Save a tiny ChatGLM model with random weights to *model_dir*.
 
     Writes the model source file, a compatible config.json (with auto_map),
@@ -345,6 +345,8 @@ def _save_mini_chatglm(model_dir, num_layers=1):
     torch.manual_seed(42)
     model = ChatGLMForConditionalGeneration(config)
     model.eval()
+    if provider:
+        model = model.to(provider)
 
     # ------------------------------------------------------------------
     # 3. Save weights + config.json via save_pretrained
@@ -372,7 +374,6 @@ def _save_mini_chatglm(model_dir, num_layers=1):
         tokenizer_object=Tokenizer(WordLevel(vocab=vocab, unk_token="<unk>")), bos_token="<s>", eos_token="</s>", unk_token="<unk>"
     )
     tokenizer.save_pretrained(model_dir)
-
     return model, config
 
 
@@ -386,7 +387,7 @@ class TestChatGLM(ExtTestCase):
         model_dir = self.get_model_dir(basename)
         output_dir, cache_dir = self.get_dirs(basename)
 
-        model, config = _save_mini_chatglm(model_dir, num_layers=num_hidden_layers)
+        model, config = _save_mini_chatglm(model_dir, num_layers=num_hidden_layers, provider=provider)
         model.eval()
 
         create_model(
@@ -437,7 +438,7 @@ class TestChatGLM(ExtTestCase):
         output_dir, cache_dir = self.get_dirs(basename)
 
         torch.manual_seed(42)
-        model, config = _save_mini_chatglm(model_dir, num_layers=num_hidden_layers)
+        model, config = _save_mini_chatglm(model_dir, num_layers=num_hidden_layers, provider=provider)
         model.eval()
 
         create_model(
