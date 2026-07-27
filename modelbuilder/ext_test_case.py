@@ -279,7 +279,7 @@ def long_test(msg: Optional[Union[Callable[[], str], str]] = None) -> Callable:
 class ExtTestCase(unittest.TestCase):
     _warns = []
     _do_clean = os.environ.get("DOCLEAN", "") in (1, "1", "True", "true")
-    _do_not_clean = os.environ.get("DONTCLEAN", "") in (1, "1", "True", "true")
+    _do_not_clean = os.environ.get("DONTCLEAN", os.environ.get("DONT_CLEAN", "")) in (1, "1", "True", "true")
 
     @classmethod
     def get_dump_folder(cls, name: str, folder: Optional[str] = None, clean: bool = False) -> str:
@@ -407,12 +407,63 @@ class ExtTestCase(unittest.TestCase):
     def _check_with_ort(
         self, proto: Union["onnx.ModelProto", str], cpu: bool = False  # noqa: F821
     ) -> "onnxruntime.InferenceSession":  # noqa: F821
-        from onnxruntime import InferenceSession, get_available_providers
+        from onnxruntime import InferenceSession, SessionOptions, get_available_providers
 
         providers = ["CPUExecutionProvider"]
+        sess_options = SessionOptions()
+        optimized_path = None
         if not cpu and "CUDAExecutionProvider" in get_available_providers():
             providers.insert(0, "CUDAExecutionProvider")
-        return InferenceSession(proto.SerializeToString() if hasattr(proto, "SerializeToString") else proto, providers=providers)
+            # Save the optimized model next to the original so we can inspect
+            # for CPU fallback copies.
+            if isinstance(proto, str):
+                base, ext = os.path.splitext(proto)
+                optimized_path = f"{base}.optimized{ext}"
+            else:
+                optimized_path = os.path.join("dump_models", "optimized_model.onnx")
+                os.makedirs("dump_models", exist_ok=True)
+            sess_options.optimized_model_filepath = optimized_path
+
+        sess = InferenceSession(
+            proto.SerializeToString() if hasattr(proto, "SerializeToString") else proto, sess_options=sess_options, providers=providers
+        )
+
+        if not cpu:
+            active_providers = sess.get_providers()
+            if "CUDAExecutionProvider" not in active_providers:
+                raise RuntimeError(f"CUDA was requested but onnxruntime fell back to CPU. " f"Active providers: {active_providers}")
+            # Check the optimized model for MemcpyFromHost/MemcpyToHost nodes
+            # which indicate ops fell back to CPU and ORT inserted data transfers.
+            self._check_no_cuda_cpu_memcpy(optimized_path)
+
+        return sess
+
+    def _check_no_cuda_cpu_memcpy(self, optimized_model_path: str):
+        """Verify the optimized model has no CUDA<->CPU memory copy nodes.
+
+        ORT inserts ``MemcpyFromHost`` and ``MemcpyToHost`` nodes when an
+        operator is not available on CUDA and falls back to CPU. The presence
+        of these nodes means the model is not fully running on CUDA.
+        """
+        if not os.path.exists(optimized_model_path):
+            return
+
+        optimized = onnx.load(optimized_model_path)
+        memcpy_nodes = [node for node in optimized.graph.node if node.op_type in ("MemcpyFromHost", "MemcpyToHost")]
+        if memcpy_nodes:
+            details = ", ".join(f"{n.op_type}({n.name})" for n in memcpy_nodes[:10])
+            count = len(memcpy_nodes)
+            suffix = f" (showing first 10 of {count})" if count > 10 else ""
+            raise RuntimeError(
+                f"CUDA execution has {count} memory copy node(s) between CUDA and CPU, "
+                f"indicating some operators fell back to CPU: {details}{suffix}"
+            )
+        # Clean up the optimized model unless DONTCLEAN is set.
+        if not self._do_not_clean:
+            try:
+                os.remove(optimized_model_path)
+            except OSError:
+                pass
 
     def get_numpy_discrepancy(self, tensor_a, tensor_b):
         return get_numpy_discrepancy(tensor_a, tensor_b)
