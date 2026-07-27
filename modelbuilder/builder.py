@@ -257,6 +257,13 @@ def create_model(model_name, input_path, output_dir, precision, execution_provid
         from .builders.llama import LlamaModel
 
         onnx_model = LlamaModel(config, io_dtype, onnx_dtype, execution_provider, cache_dir, extra_options)
+    elif config.architectures[0] == "MageFlowForCausalLM":
+        # Mage-Flow (microsoft/Mage-Flow) is a native-resolution text-to-image /
+        # image-editing model whose prompt encoder is a Qwen3-VL text decoder.
+        # Its causal-LM text backbone is Qwen3-style, so a Qwen3 builder handles it.
+        from .builders.mageflow import MageFlowModel
+
+        onnx_model = MageFlowModel(config, io_dtype, onnx_dtype, execution_provider, cache_dir, extra_options)
     elif config.architectures[0] == "MistralForCausalLM":
         from .builders.mistral import MistralModel
 
