@@ -2748,7 +2748,9 @@ class Model(LocalFunctionsMixin):
                 name,
                 block_row_indices=self.mask_attrs["block_row_indices"],
                 block_col_indices=self.mask_attrs["block_col_indices"],
-                key_total_seq_lens=(f"{self.mask_attrs['key_total_seq_lens']}/output_0" if self.mask_attrs["key_total_seq_lens"] != "" else ""),
+                key_total_seq_lens=(
+                    f"{self.mask_attrs['key_total_seq_lens']}/output_0" if self.mask_attrs["key_total_seq_lens"] != "" else ""
+                ),
                 total_seq_len=(f"{self.mask_attrs['total_seq_len']}/output_0" if self.mask_attrs["total_seq_len"] != "" else ""),
                 **kwargs,
             )
