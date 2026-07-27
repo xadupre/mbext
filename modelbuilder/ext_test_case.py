@@ -279,7 +279,7 @@ def long_test(msg: Optional[Union[Callable[[], str], str]] = None) -> Callable:
 class ExtTestCase(unittest.TestCase):
     _warns = []
     _do_clean = os.environ.get("DOCLEAN", "") in (1, "1", "True", "true")
-    _do_not_clean = os.environ.get("DONTCLEAN", "") in (1, "1", "True", "true")
+    _do_not_clean = os.environ.get("DONTCLEAN", os.environ.get("DONT_CLEAN", "")) in (1, "1", "True", "true")
 
     @classmethod
     def get_dump_folder(cls, name: str, folder: Optional[str] = None, clean: bool = False) -> str:
@@ -412,7 +412,15 @@ class ExtTestCase(unittest.TestCase):
         providers = ["CPUExecutionProvider"]
         if not cpu and "CUDAExecutionProvider" in get_available_providers():
             providers.insert(0, "CUDAExecutionProvider")
-        return InferenceSession(proto.SerializeToString() if hasattr(proto, "SerializeToString") else proto, providers=providers)
+        sess = InferenceSession(proto.SerializeToString() if hasattr(proto, "SerializeToString") else proto, providers=providers)
+        if not cpu:
+            active_providers = sess.get_providers()
+            if "CUDAExecutionProvider" not in active_providers:
+                raise RuntimeError(
+                    f"CUDA was requested but onnxruntime fell back to CPU. "
+                    f"Active providers: {active_providers}"
+                )
+        return sess
 
     def get_numpy_discrepancy(self, tensor_a, tensor_b):
         return get_numpy_discrepancy(tensor_a, tensor_b)
