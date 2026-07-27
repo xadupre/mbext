@@ -7,16 +7,21 @@
 Converter file for the ``private_model`` example.
 
 This is the ``convert-file`` of the ``--private`` option. It defines the ONNX
-builder used to convert the tiny private MoE model (see ``modeling.py``) to ONNX.
+builder used to convert the tiny private MoE model to ONNX. That model is
+implemented from scratch in ``modeling.py`` as ``PrivateModelForCausalLM`` (a
+stack of ``PrivateDecoderLayer`` blocks wrapped by ``PrivateModel``).
 
 The example shows how to implement a **custom decoder layer with a
-Mixture-of-Experts (MoE) MLP**. The builder reuses the Mistral attention stack
-(RMSNorm + rotary GQA attention) from :class:`modelbuilder.builders.mistral.MistralModel`
-and replaces the dense MLP of every decoder layer with a sparse MoE layer:
+Mixture-of-Experts (MoE) MLP**. Each :class:`~modeling.PrivateDecoderLayer`
+mirrors the Mistral attention stack (RMSNorm + rotary GQA attention), so the
+builder reuses :class:`modelbuilder.builders.mistral.MistralModel` for the
+attention and overrides the layer/MLP to build a sparse MoE instead of the dense
+MLP. It reads the modules exposed by :class:`~modeling.PrivateDecoderLayer`:
 
-* ``mlp.gate`` routes each token to the top-``num_experts_per_tok`` of
-  ``num_local_experts`` experts, and
-* ``mlp.experts.gate_up_proj`` / ``mlp.experts.down_proj`` hold the packed
+* ``self_attn.{q,k,v,o}_proj`` — the attention projections,
+* ``mlp.gate`` — the router that sends each token to the top-``num_experts_per_tok``
+  of ``num_local_experts`` experts, and
+* ``mlp.experts.gate_up_proj`` / ``mlp.experts.down_proj`` — the packed
   per-expert SwiGLU weights.
 
 The MoE subgraph itself is emitted by the shared
@@ -34,7 +39,7 @@ from modelbuilder.builders.mistral import MistralModel
 
 
 class PrivateMoEModel(MistralModel):
-    """Custom builder: Mistral attention + a Mixture-of-Experts MLP layer."""
+    """Custom builder for ``PrivateModelForCausalLM``: Mistral attention + a MoE MLP."""
 
     def __init__(self, config, io_dtype, onnx_dtype, ep, cache_dir, extra_options):
         super().__init__(config, io_dtype, onnx_dtype, ep, cache_dir, extra_options)
