@@ -10,7 +10,10 @@ Run the model builder to create the desired ONNX model.
 """
 
 import argparse
+import importlib.util
 import os
+import runpy
+import sys
 import textwrap
 from typing import Any
 
@@ -127,6 +130,102 @@ def set_onnx_dtype(precision: str, extra_options: dict[str, Any]) -> ir.DataType
     return to_onnx_dtype[precision]
 
 
+def _load_module_from_path(path):
+    """Import a Python module from a file *path* and return the module object."""
+    path = os.path.abspath(path)
+    if not os.path.isfile(path):
+        raise FileNotFoundError(f"Unable to find the private file {path!r}.")
+    module_name = f"_mbext_private_{abs(hash(path))}"
+    spec = importlib.util.spec_from_file_location(module_name, path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"Unable to load a module from {path!r}.")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def parse_private_option(private):
+    """
+    Parse the ``--private`` option value.
+
+    The value is made of up to three ``;``-separated file paths:
+    ``modeling-file;convert-file;fast-test-file``. Any of them may be left
+    empty. Returns a tuple ``(modeling_file, convert_file, test_file)``.
+    """
+    parts = [p.strip() for p in private.split(";")]
+    parts += [""] * (3 - len(parts))
+    modeling_file, convert_file, test_file = parts[:3]
+    return modeling_file, convert_file, test_file
+
+
+def load_private_model_builder(private):
+    """
+    Load a custom model builder from the ``--private`` option.
+
+    The ``modeling-file`` (if provided) is imported first so that a custom
+    architecture can register itself with ``transformers`` before the
+    Hugging Face config is loaded. The ``convert-file`` must define the ONNX
+    builder used for the conversion. The builder class is selected as follows:
+
+    * the module-level ``MODEL_BUILDER`` attribute, if present, otherwise
+    * the single :class:`~modelbuilder.builders.Model` subclass defined in the
+      module.
+    """
+    modeling_file, convert_file, _ = parse_private_option(private)
+
+    if modeling_file:
+        _load_module_from_path(modeling_file)
+
+    if not convert_file:
+        raise ValueError("The --private option requires a convert file: " "'modeling-file;convert-file;fast-test-file'.")
+
+    module = _load_module_from_path(convert_file)
+
+    builder = getattr(module, "MODEL_BUILDER", None)
+    if builder is not None:
+        return builder
+
+    candidates = [
+        obj
+        for obj in vars(module).values()
+        if isinstance(obj, type) and issubclass(obj, Model) and obj is not Model and obj.__module__ == module.__name__
+    ]
+    if len(candidates) == 1:
+        return candidates[0]
+    if not candidates:
+        raise ValueError(f"The convert file {convert_file!r} does not define any Model subclass " "or a 'MODEL_BUILDER' attribute.")
+    raise ValueError(
+        f"The convert file {convert_file!r} defines several Model subclasses "
+        f"({', '.join(sorted(c.__name__ for c in candidates))}). "
+        "Set a module-level 'MODEL_BUILDER' attribute to select one."
+    )
+
+
+def run_private_tests(private):
+    """
+    Run the ``fast-test-file`` provided through the ``--private`` option.
+
+    This is used when no model id is given on the command line: instead of
+    converting a model, the third path of the ``--private`` option (the
+    ``fast-test-file``) is executed as a script (``python fast-test-file``) to
+    validate the custom builder.
+    """
+    if not private:
+        raise ValueError("No model id was provided and no --private option is set; nothing to do.")
+    _, _, test_file = parse_private_option(private)
+    if not test_file:
+        raise ValueError(
+            "The --private option must provide a fast-test-file "
+            "('modeling-file;convert-file;fast-test-file') to run the tests when no model id is given."
+        )
+    # Reset sys.argv so the test file sees a clean command line (e.g. so a
+    # ``unittest.main()`` call inside it does not try to parse the builder's own
+    # options such as ``--private``).
+    sys.argv = [test_file]
+    runpy.run_path(test_file, run_name="__main__")
+
+
 @torch.no_grad
 def create_model(model_name, input_path, output_dir, precision, execution_provider, cache_dir, **extra_options):
     if execution_provider == "NvTensorRtRtx":
@@ -136,6 +235,12 @@ def create_model(model_name, input_path, output_dir, precision, execution_provid
     # Create cache and output directories
     os.makedirs(output_dir, exist_ok=True)
     os.makedirs(cache_dir, exist_ok=True)
+
+    # Load a custom model builder from a separate file (--private option).
+    # The modeling file (if any) is imported before the config is loaded so a
+    # custom architecture can register itself with transformers.
+    private = extra_options.pop("private", None)
+    private_builder = load_private_model_builder(private) if private else None
 
     # Load model config
     extra_kwargs = {} if os.path.isdir(input_path) else {"cache_dir": cache_dir}
@@ -156,7 +261,9 @@ def create_model(model_name, input_path, output_dir, precision, execution_provid
     config_only = "config_only" in extra_options
 
     # List architecture options in alphabetical order
-    if config.architectures[0] in ("DeepseekV3ForCausalLM", "DeepseekV4ForCausalLM"):
+    if private_builder is not None:
+        onnx_model = private_builder(config, io_dtype, onnx_dtype, execution_provider, cache_dir, extra_options)
+    elif config.architectures[0] in ("DeepseekV3ForCausalLM", "DeepseekV4ForCausalLM"):
         # Both DeepseekV3ForCausalLM (DeepSeek-V3) and DeepseekV4ForCausalLM
         # (DeepSeek-V4-Flash) share the same MLA+MoE architecture and identical
         # HuggingFace config fields, so a single builder handles both.
@@ -497,16 +604,20 @@ def get_args():
     parser.add_argument(
         "-o",
         "--output",
-        required=True,
+        required=False,
+        default=None,
         help="Path to folder to store ONNX model and additional files (e.g. GenAI config, external data files, etc.)",
     )
 
-    parser.add_argument("-p", "--precision", required=True, choices=["int4", "bf16", "fp16", "fp32"], help="Precision of model")
+    parser.add_argument(
+        "-p", "--precision", required=False, default=None, choices=["int4", "bf16", "fp16", "fp32"], help="Precision of model"
+    )
 
     parser.add_argument(
         "-e",
         "--execution_provider",
-        required=True,
+        required=False,
+        default=None,
         choices=["cpu", "cuda", "dml", "webgpu", "NvTensorRtRtx"],
         help="Execution provider to target with precision of model (e.g. FP16 CUDA, INT4 CPU, INT4 WebGPU)",
     )
@@ -518,6 +629,23 @@ def get_args():
         type=str,
         default=os.path.join(".", "cache_dir"),
         help="Cache directory for Hugging Face files and temporary ONNX external data files",
+    )
+
+    parser.add_argument(
+        "--private",
+        required=False,
+        default=None,
+        metavar="modeling-file;convert-file;fast-test-file",
+        help=textwrap.dedent("""\
+            Support a custom model implemented in separate files, given as up to
+            three ';'-separated paths: 'modeling-file;convert-file;fast-test-file'.
+                modeling-file: Python file imported before the config is loaded so a
+                    custom architecture can register itself with transformers. May be empty.
+                convert-file: Python file defining the ONNX builder used for the conversion.
+                    The builder is the module-level 'MODEL_BUILDER' attribute if present,
+                    otherwise the single Model subclass defined in the file.
+                fast-test-file: Optional fast test file used to validate the conversion.
+            """),
     )
 
     parser.add_argument(
@@ -610,5 +738,23 @@ def get_args():
 
 if __name__ == "__main__":
     args = get_args()
-    extra_options = parse_extra_options(args.extra_options, args.execution_provider)
-    create_model(args.model_name, args.input, args.output, args.precision, args.execution_provider, args.cache_dir, **extra_options)
+    if not args.model_name and not args.input:
+        # No model id was provided: run the fast tests supplied through the
+        # --private option instead of converting a model.
+        run_private_tests(args.private)
+    else:
+        missing = [
+            name
+            for name, value in (
+                ("-o/--output", args.output),
+                ("-p/--precision", args.precision),
+                ("-e/--execution_provider", args.execution_provider),
+            )
+            if not value
+        ]
+        if missing:
+            raise ValueError(f"The following arguments are required to convert a model: {', '.join(missing)}.")
+        extra_options = parse_extra_options(args.extra_options, args.execution_provider)
+        if args.private:
+            extra_options["private"] = args.private
+        create_model(args.model_name, args.input, args.output, args.precision, args.execution_provider, args.cache_dir, **extra_options)
