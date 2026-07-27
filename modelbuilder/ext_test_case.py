@@ -453,12 +453,13 @@ class ExtTestCase(unittest.TestCase):
                 f"CUDA execution has {count} memory copy node(s) between CUDA and CPU, "
                 f"indicating some operators fell back to CPU: {details}{suffix}"
             )
-        # Clean up the temporary optimized model.
-        try:
-            os.remove(optimized_model_path)
-            os.rmdir(os.path.dirname(optimized_model_path))
-        except OSError:
-            pass
+        # Clean up the temporary optimized model unless DONTCLEAN is set.
+        if not self._do_not_clean:
+            try:
+                os.remove(optimized_model_path)
+                os.rmdir(os.path.dirname(optimized_model_path))
+            except OSError:
+                pass
 
     def get_numpy_discrepancy(self, tensor_a, tensor_b):
         return get_numpy_discrepancy(tensor_a, tensor_b)
