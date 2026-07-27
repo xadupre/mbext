@@ -416,10 +416,7 @@ class ExtTestCase(unittest.TestCase):
         if not cpu:
             active_providers = sess.get_providers()
             if "CUDAExecutionProvider" not in active_providers:
-                raise RuntimeError(
-                    f"CUDA was requested but onnxruntime fell back to CPU. "
-                    f"Active providers: {active_providers}"
-                )
+                raise RuntimeError(f"CUDA was requested but onnxruntime fell back to CPU. " f"Active providers: {active_providers}")
         return sess
 
     def get_numpy_discrepancy(self, tensor_a, tensor_b):
