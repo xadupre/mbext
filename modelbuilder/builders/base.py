@@ -459,8 +459,10 @@ class Model(LocalFunctionsMixin):
     def make_rope_init(self, config):
         # Some models (e.g. SmolLM3) store rope_theta inside rope_scaling
         # instead of as a top-level config attribute. Override the default theta
-        # if rope_scaling provides one.
-        if "rope_theta" in config.rope_scaling:
+        # if rope_scaling provides one. transformers >= 5.14 stores per-layer-type
+        # RoPE parameters as nested dicts and adds a flat ``rope_theta`` entry that
+        # can be ``None``; guard against that so a valid theta is not overwritten.
+        if config.rope_scaling.get("rope_theta") is not None:
             self.rope_attrs["theta"] = config.rope_scaling["rope_theta"]
 
         if "short_factor" in config.rope_scaling:
@@ -528,8 +530,8 @@ class Model(LocalFunctionsMixin):
             self.rope_attrs["mrope"] = {"sections": config.rope_scaling["mrope_section"]}  # Sections for MRoPE
             # Some models (e.g. Qwen3-VL) store rope_theta inside rope_scaling
             # instead of as a top-level config attribute. Override the default theta
-            # if rope_scaling provides one.
-            if "rope_theta" in config.rope_scaling:
+            # if rope_scaling provides one (ignoring a ``None`` placeholder).
+            if config.rope_scaling.get("rope_theta") is not None:
                 self.rope_attrs["theta"] = config.rope_scaling["rope_theta"]
 
     def is_gqa_supported(self) -> bool:

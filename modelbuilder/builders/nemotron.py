@@ -35,6 +35,7 @@ class NemotronHModel(LlamaModel):
         # KV cache input/output names are re-indexed to only cover attention layers,
         # using the original layer index as the suffix so the names remain stable.
         layers_block_type = getattr(config, "layers_block_type", ["attention"] * config.num_hidden_layers)
+        layers_block_type = [self._canonical_block_type(t) for t in layers_block_type]
         self._attn_layer_ids = [i for i, t in enumerate(layers_block_type) if t == "attention"]
         self._mamba_layer_ids = [i for i, t in enumerate(layers_block_type) if t == "mamba"]
 
@@ -73,6 +74,14 @@ class NemotronHModel(LlamaModel):
                 self.output_types[f"present_state.{layer_id}.ssm"] = self.io_dtype
                 self.output_shapes[f"present_state.{layer_id}.ssm"] = ["batch_size", mamba_num_heads, mamba_head_dim, ssm_state_size]
 
+    @staticmethod
+    def _canonical_block_type(block_type):
+        # transformers >= 5.14 renamed NemotronH block types: "attention" became
+        # "full_attention" and "mamba" became "linear_attention". Normalize both
+        # the old and new names to the canonical values used throughout this
+        # builder so the same code supports every supported transformers version.
+        return {"full_attention": "attention", "linear_attention": "mamba"}.get(block_type, block_type)
+
     def is_layer(self, module):
         return module.__class__.__name__ == "NemotronHBlock"
 
@@ -92,13 +101,14 @@ class NemotronHModel(LlamaModel):
         # Each NemotronH decoder block is defined as:
         # pre_norm --> mixer (attention / mamba / moe) --> residual add
 
-        if layer.block_type == "attention":
+        block_type = self._canonical_block_type(layer.block_type)
+        if block_type == "attention":
             self.make_layernorm(layer_id, layer.norm, skip=not self.layernorm_attrs["first_layernorm"], simple=True, location="input")
             self.make_attention(layer_id, layer.mixer, root_input=self.layernorm_attrs["output_0"])
-        elif layer.block_type == "moe":
+        elif block_type == "moe":
             self.make_layernorm(layer_id, layer.norm, skip=not self.layernorm_attrs["first_layernorm"], simple=True, location="input")
             self.make_nemotronh_moe(layer_id, layer.mixer, root_input=self.layernorm_attrs["output_0"])
-        elif layer.block_type == "mamba":
+        elif block_type == "mamba":
             self.make_layernorm(layer_id, layer.norm, skip=not self.layernorm_attrs["first_layernorm"], simple=True, location="input")
             self.make_nemotronh_mamba(layer_id, layer.mixer, root_input=self.layernorm_attrs["output_0"])
         else:
