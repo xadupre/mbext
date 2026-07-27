@@ -407,16 +407,21 @@ class ExtTestCase(unittest.TestCase):
     def _check_with_ort(
         self, proto: Union["onnx.ModelProto", str], cpu: bool = False  # noqa: F821
     ) -> "onnxruntime.InferenceSession":  # noqa: F821
-        import tempfile
-
         from onnxruntime import InferenceSession, SessionOptions, get_available_providers
 
         providers = ["CPUExecutionProvider"]
         sess_options = SessionOptions()
+        optimized_path = None
         if not cpu and "CUDAExecutionProvider" in get_available_providers():
             providers.insert(0, "CUDAExecutionProvider")
-            # Save the optimized model so we can inspect for CPU fallback copies.
-            optimized_path = os.path.join(tempfile.mkdtemp(), "optimized_model.onnx")
+            # Save the optimized model next to the original so we can inspect
+            # for CPU fallback copies.
+            if isinstance(proto, str):
+                base, ext = os.path.splitext(proto)
+                optimized_path = f"{base}.optimized{ext}"
+            else:
+                optimized_path = os.path.join("dump_models", "optimized_model.onnx")
+                os.makedirs("dump_models", exist_ok=True)
             sess_options.optimized_model_filepath = optimized_path
 
         sess = InferenceSession(
@@ -453,11 +458,10 @@ class ExtTestCase(unittest.TestCase):
                 f"CUDA execution has {count} memory copy node(s) between CUDA and CPU, "
                 f"indicating some operators fell back to CPU: {details}{suffix}"
             )
-        # Clean up the temporary optimized model unless DONTCLEAN is set.
+        # Clean up the optimized model unless DONTCLEAN is set.
         if not self._do_not_clean:
             try:
                 os.remove(optimized_model_path)
-                os.rmdir(os.path.dirname(optimized_model_path))
             except OSError:
                 pass
 
