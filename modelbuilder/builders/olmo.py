@@ -144,6 +144,43 @@ class OLMo3Model(OLMo2Model):
         super().__init__(config, io_dtype, onnx_dtype, ep, cache_dir, extra_options)
         self.layer_types = config.layer_types
 
+        # transformers >= 5.14 gives sliding-window ("sliding_attention") and
+        # full-attention layers their own RoPE theta through a nested
+        # ``rope_parameters`` dict, so a single shared cos/sin cache no longer
+        # matches the reference model. Build separate caches per attention type,
+        # mirroring the Gemma3 local/global RoPE handling. Older transformers
+        # versions expose a single theta and keep the base class' single cache.
+        self._dual_rope = False
+        rope_parameters = getattr(config, "rope_parameters", None)
+        if isinstance(rope_parameters, dict):
+            sliding_params = rope_parameters.get("sliding_attention")
+            full_params = rope_parameters.get("full_attention")
+            if isinstance(sliding_params, dict) and isinstance(full_params, dict):
+                self.rope_attrs["theta"] = full_params.get("rope_theta", self.rope_attrs["theta"])
+                self.rope_local_theta = sliding_params.get("rope_theta", self.rope_attrs["theta"])
+                self._dual_rope = True
+                self.make_rotary_embedding_multi_cache()
+
+    def make_rotary_embedding_multi_cache(self):
+        # Global (full-attention) cache uses the theta already stored in rope_attrs.
+        self.cos_cache_global_name, self.sin_cache_global_name = "cos_cache_global", "sin_cache_global"
+        super().make_rotary_embedding_caches(cos_cache_name=self.cos_cache_global_name, sin_cache_name=self.sin_cache_global_name)
+
+        # Local (sliding-window) cache uses its own theta value.
+        self.rope_attrs["create_caches"] = True
+        self.rope_attrs["theta"] = self.rope_local_theta
+        self.cos_cache_local_name, self.sin_cache_local_name = "cos_cache_local", "sin_cache_local"
+        super().make_rotary_embedding_caches(cos_cache_name=self.cos_cache_local_name, sin_cache_name=self.sin_cache_local_name)
+
+    def make_rotary_embedding_caches(self, **kwargs):
+        if not self._dual_rope:
+            return super().make_rotary_embedding_caches(**kwargs)
+        # make_attention sets window_size to -1 for full-attention layers, so it
+        # selects the global cache; sliding-window layers select the local cache.
+        cos_cache_name = kwargs.get("cos_cache_name", self.cos_cache_global_name if self.window_size == -1 else self.cos_cache_local_name)
+        sin_cache_name = kwargs.get("sin_cache_name", self.sin_cache_global_name if self.window_size == -1 else self.sin_cache_local_name)
+        return super().make_rotary_embedding_caches(cos_cache_name=cos_cache_name, sin_cache_name=sin_cache_name)
+
     def make_attention(self, layer_id, attention, root_input, **kwargs):
         # OLMo3 uses per-layer sliding window attention controlled by layer_types.
         # We temporarily override window_size for full-attention layers, then restore it.
