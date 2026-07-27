@@ -2720,12 +2720,7 @@ class Model(LocalFunctionsMixin):
         )
         reshape_4_name = f"{basename}/Reshape_4"
         reshape_4_inputs = [f"{transpose_2_name}/output_0", f"/model/constants/INT64/[0, 0, {self.q_size}]"]
-        self.make_reshape(
-            reshape_4_name,
-            reshape_4_inputs,
-            dtype=self.io_dtype,
-            shape=["batch_size", "total_sequence_length", self.q_size],
-        )
+        self.make_reshape(reshape_4_name, reshape_4_inputs, dtype=self.io_dtype, shape=["batch_size", "total_sequence_length", self.q_size])
 
         return f"{reshape_4_name}/output_0"
 
@@ -3146,21 +3141,9 @@ class Model(LocalFunctionsMixin):
                 layer_id, root_input=self.attention_attrs["v_path"], past_kv=past_v, present_kv=present_v
             )
             if past_k:
-                past_k = self.make_repeat_kv(
-                    layer_id,
-                    root_input=past_k,
-                    past_kv=past_k,
-                    present_kv=present_k,
-                    to_4d=True,
-                )
+                past_k = self.make_repeat_kv(layer_id, root_input=past_k, past_kv=past_k, present_kv=present_k, to_4d=True)
             if past_v:
-                past_v = self.make_repeat_kv(
-                    layer_id,
-                    root_input=past_v,
-                    past_kv=past_v,
-                    present_kv=present_v,
-                    to_4d=True,
-                )
+                past_v = self.make_repeat_kv(layer_id, root_input=past_v, past_kv=past_v, present_kv=present_v, to_4d=True)
 
         # Make sinks input
         sinks_name = ""
