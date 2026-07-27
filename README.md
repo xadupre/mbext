@@ -66,6 +66,12 @@ The ``--private`` option must then provide a ``fast-test-file`` (the third path)
 otherwise an error is raised. In this test mode ``-o/--output``, ``-p/--precision``
 and ``-e/--execution_provider`` are not required.
 
+A complete, runnable example lives in
+[`examples/private_model`](examples/private_model): it defines the modeling file
+(config + tokenizer), the converter and the fast test (discrepancy + genai), and a
+CI job (`.github/workflows/private_example.yml`) checks that the
+``--private "modeling.py;convert.py;test.py"`` command line works.
+
 
 ## Style
 
