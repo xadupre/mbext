@@ -25,12 +25,12 @@ jobs:
       fail-fast: false
       matrix:
         os: ["ubuntu-latest"]
-        python-version: ["3.13"]
+        python-version: ["3.14"]
         torch:
-          - version: "2.12.0"
+          - version: "2.13.0"
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python-version }}
 
@@ -41,7 +41,7 @@ jobs:
         run: pip install "torch==${{ matrix.torch.version }}+cpu" torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
 
       - name: Install dependencies
-        run: pip install -e ".[dev]" "transformers==5.12.1" tokenizers
+        run: pip install -e ".[dev]" "transformers==5.14.1" tokenizers
 
       - name: Remove existing onnxruntime before installing nightly
         run: pip uninstall -y onnxruntime onnxruntime-gpu onnxruntime-directml onnxruntime-openvino 2>/dev/null || true
@@ -61,14 +61,14 @@ jobs:
         run: DOCLEAN=1&&pytest tests/fast -v --timeout=180 --cov=modelbuilder --cov-report=xml --cov-report=term-missing
 
       - name: Upload coverage reports to Codecov
-        uses: codecov/codecov-action@v5
+        uses: codecov/codecov-action@v7
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           flags: fast-tests-ort-nightly
 
       - name: Upload stats artifact
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: stats-${{ matrix.os }}-py${{ matrix.python-version }}-torch${{ matrix.torch.version }}-ort-nightly
           path: stats/

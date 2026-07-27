@@ -20,16 +20,16 @@ jobs:
       fail-fast: true
       matrix:
         os: ["ubuntu-latest"]
-        python-version: ["3.13"]
+        python-version: ["3.14"]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
-          python-version: "3.13"
+          python-version: "3.14"
 
       # we install torch first to avoid downloading any CUDA dependency
       - name: Install pytorch (cpu)
-        run: pip install "torch==2.12.0+cpu" --index-url https://download.pytorch.org/whl/cpu
+        run: pip install "torch==2.13.0+cpu" --index-url https://download.pytorch.org/whl/cpu
 
       - name: Install dependencies
         run: pip install -e ".[dev]" torch transformers tokenizers
@@ -41,7 +41,7 @@ jobs:
       # repository and is required to turn the Hugging Face checkpoint into a
       # GGUF file consumed by llama.cpp.
       - name: Checkout llama.cpp
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: ggml-org/llama.cpp
           path: llama.cpp
@@ -70,7 +70,7 @@ jobs:
         run: LONGTEST=1 pytest tests/fast_llama_cpp -v --cov=modelbuilder --cov-report=xml --cov-report=term-missing
 
       - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v5
+        uses: codecov/codecov-action@v7
         with:
           files: coverage.xml
           flags: llama-cpp-tests
