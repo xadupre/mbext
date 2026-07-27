@@ -12,6 +12,7 @@ Run the model builder to create the desired ONNX model.
 import argparse
 import importlib.util
 import os
+import runpy
 import sys
 import textwrap
 from typing import Any
@@ -199,6 +200,30 @@ def load_private_model_builder(private):
         f"({', '.join(sorted(c.__name__ for c in candidates))}). "
         "Set a module-level 'MODEL_BUILDER' attribute to select one."
     )
+
+
+def run_private_tests(private):
+    """
+    Run the ``fast-test-file`` provided through the ``--private`` option.
+
+    This is used when no model id is given on the command line: instead of
+    converting a model, the third path of the ``--private`` option (the
+    ``fast-test-file``) is executed as a script (``python fast-test-file``) to
+    validate the custom builder.
+    """
+    if not private:
+        raise ValueError("No model id was provided and no --private option is set; nothing to do.")
+    _, _, test_file = parse_private_option(private)
+    if not test_file:
+        raise ValueError(
+            "The --private option must provide a fast-test-file "
+            "('modeling-file;convert-file;fast-test-file') to run the tests when no model id is given."
+        )
+    # Reset sys.argv so the test file sees a clean command line (e.g. so a
+    # ``unittest.main()`` call inside it does not try to parse the builder's own
+    # options such as ``--private``).
+    sys.argv = [test_file]
+    runpy.run_path(test_file, run_name="__main__")
 
 
 @torch.no_grad
@@ -579,16 +604,20 @@ def get_args():
     parser.add_argument(
         "-o",
         "--output",
-        required=True,
+        required=False,
+        default=None,
         help="Path to folder to store ONNX model and additional files (e.g. GenAI config, external data files, etc.)",
     )
 
-    parser.add_argument("-p", "--precision", required=True, choices=["int4", "bf16", "fp16", "fp32"], help="Precision of model")
+    parser.add_argument(
+        "-p", "--precision", required=False, default=None, choices=["int4", "bf16", "fp16", "fp32"], help="Precision of model"
+    )
 
     parser.add_argument(
         "-e",
         "--execution_provider",
-        required=True,
+        required=False,
+        default=None,
         choices=["cpu", "cuda", "dml", "webgpu", "NvTensorRtRtx"],
         help="Execution provider to target with precision of model (e.g. FP16 CUDA, INT4 CPU, INT4 WebGPU)",
     )
@@ -709,7 +738,23 @@ def get_args():
 
 if __name__ == "__main__":
     args = get_args()
-    extra_options = parse_extra_options(args.extra_options, args.execution_provider)
-    if args.private:
-        extra_options["private"] = args.private
-    create_model(args.model_name, args.input, args.output, args.precision, args.execution_provider, args.cache_dir, **extra_options)
+    if not args.model_name and not args.input:
+        # No model id was provided: run the fast tests supplied through the
+        # --private option instead of converting a model.
+        run_private_tests(args.private)
+    else:
+        missing = [
+            name
+            for name, value in (
+                ("-o/--output", args.output),
+                ("-p/--precision", args.precision),
+                ("-e/--execution_provider", args.execution_provider),
+            )
+            if not value
+        ]
+        if missing:
+            raise ValueError(f"The following arguments are required to convert a model: {', '.join(missing)}.")
+        extra_options = parse_extra_options(args.extra_options, args.execution_provider)
+        if args.private:
+            extra_options["private"] = args.private
+        create_model(args.model_name, args.input, args.output, args.precision, args.execution_provider, args.cache_dir, **extra_options)

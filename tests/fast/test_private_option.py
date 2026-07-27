@@ -117,6 +117,25 @@ class TestParsePrivateOption(ExtTestCase):
             convert = _write(os.path.join(tmp, "convert.py"), "X = 1\n")
             self.assertRaise(lambda: load_private_model_builder(f";{convert};"), ValueError)
 
+    def test_run_private_tests_executes_file(self):
+        from modelbuilder.builder import run_private_tests
+
+        with tempfile.TemporaryDirectory() as tmp:
+            marker = os.path.join(tmp, "ran.txt")
+            test_file = _write(os.path.join(tmp, "test.py"), f"open({marker!r}, 'w', encoding='utf-8').write('ran')\n")
+            run_private_tests(f";c.py;{test_file}")
+            self.assertExists(marker)
+
+    def test_run_private_tests_no_private(self):
+        from modelbuilder.builder import run_private_tests
+
+        self.assertRaise(lambda: run_private_tests(None), ValueError)
+
+    def test_run_private_tests_missing_test_file(self):
+        from modelbuilder.builder import run_private_tests
+
+        self.assertRaise(lambda: run_private_tests(";c.py;"), ValueError)
+
 
 class TestRandomPrivateQwen(ExtTestCase):
     """End-to-end conversion test exercising the --private option."""
