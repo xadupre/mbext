@@ -681,19 +681,33 @@ class Model(LocalFunctionsMixin):
         if "present.value" in self.output_names:
             outputs["present_value_names"] = "present.%d.value"
 
-        bos_token_id = config.bos_token_id if hasattr(config, "bos_token_id") and config.bos_token_id is not None else 1
-        eos_token_id = config.eos_token_id
-        pad_token_id = (
-            config.pad_token_id
-            if hasattr(config, "pad_token_id") and config.pad_token_id is not None
-            else (config.eos_token_id[0] if isinstance(config.eos_token_id, list) else config.eos_token_id)
-        )
+        bos_token_id = getattr(config, "bos_token_id", None)
+        if bos_token_id is None:
+            bos_token_id = 1
+
+        eos_token_id = getattr(config, "eos_token_id", None)
+        if eos_token_id is None:
+            eos_token_id = bos_token_id
+
+        pad_token_id = getattr(config, "pad_token_id", None)
+        if pad_token_id is None:
+            if eos_token_id is not None and isinstance(eos_token_id, list):
+                pad_token_id = eos_token_id[0]
+            else:
+                pad_token_id = eos_token_id
+        session_options = {"log_id": "onnxruntime-genai", "provider_options": []}
+        if self.ep == "cuda":
+            # Surface detailed ORT runtime diagnostics for CUDA so Memcpy and
+            # kernel-placement issues are easier to investigate.
+            session_options["log_severity_level"] = 1
+            session_options["log_verbosity_level"] = 1
+
         genai_config = {
             "model": {
                 "bos_token_id": bos_token_id,
                 "context_length": self.context_length,
                 "decoder": {
-                    "session_options": {"log_id": "onnxruntime-genai", "provider_options": []},
+                    "session_options": session_options,
                     "filename": self.filename,
                     "head_size": self.head_size,
                     "hidden_size": self.hidden_size,
@@ -2723,8 +2737,8 @@ class Model(LocalFunctionsMixin):
         elif op_type == "GroupQueryAttention":
             self.make_group_query_attention(
                 name,
-                seqlens_k=f"{self.mask_attrs['seqlens_k']}/output_0",
-                total_seq_len=f"{self.mask_attrs['total_seq_len']}/output_0",
+                seqlens_k=(f"{self.mask_attrs['seqlens_k']}/output_0" if self.mask_attrs["seqlens_k"] != "" else ""),
+                total_seq_len=(f"{self.mask_attrs['total_seq_len']}/output_0" if self.mask_attrs["total_seq_len"] != "" else ""),
                 **kwargs,
             )
         elif op_type == "SparseAttention":
@@ -2732,8 +2746,8 @@ class Model(LocalFunctionsMixin):
                 name,
                 block_row_indices=self.mask_attrs["block_row_indices"],
                 block_col_indices=self.mask_attrs["block_col_indices"],
-                key_total_seq_lens=f"{self.mask_attrs['key_total_seq_lens']}/output_0",
-                total_seq_len=f"{self.mask_attrs['total_seq_len']}/output_0",
+                key_total_seq_lens=(f"{self.mask_attrs['key_total_seq_lens']}/output_0" if self.mask_attrs["key_total_seq_lens"] != "" else ""),
+                total_seq_len=(f"{self.mask_attrs['total_seq_len']}/output_0" if self.mask_attrs["total_seq_len"] != "" else ""),
                 **kwargs,
             )
         else:
