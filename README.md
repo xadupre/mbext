@@ -29,6 +29,29 @@ The arguments are:
 - ``-c/--cache_dir``: cache directory for Hugging Face files and temporary ONNX
   external data files.
 
+## Custom model in a separate file
+
+The ``--private`` option supports a custom model whose implementation lives outside
+this package. Its value is made of up to three ``;``-separated file paths:
+
+```bash
+python -m modelbuilder.builder \
+    -i my-model \
+    -o my-model-cpu-fp32 \
+    -p fp32 \
+    -e cpu \
+    --private "modeling.py;convert.py;test.py"
+```
+
+- ``modeling-file`` (optional, may be empty): imported before the Hugging Face
+  config is loaded so a custom architecture can register itself with
+  ``transformers``.
+- ``convert-file``: defines the ONNX builder used for the conversion. The builder
+  is the module-level ``MODEL_BUILDER`` attribute if present, otherwise the single
+  :class:`modelbuilder.builders.Model` subclass defined in the file.
+- ``fast-test-file`` (optional): a fast test file used to validate the conversion.
+
+
 ## Style
 
 ```bash
