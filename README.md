@@ -68,8 +68,10 @@ and ``-e/--execution_provider`` are not required.
 
 A complete, runnable example lives in
 [`examples/private_model`](examples/private_model): it defines the modeling file
-(config + tokenizer), the converter and the fast test (discrepancy + genai), and a
-CI job (`.github/workflows/private_example.yml`) checks that the
+(config + tokenizer), a converter that implements a custom decoder layer with a
+Mixture-of-Experts (MoE) MLP, and the fast test (discrepancy + genai) on a
+two-layer dummy model, plus a CI job
+(`.github/workflows/private_example.yml`) that checks the
 ``--private "modeling.py;convert.py;test.py"`` command line works.
 
 

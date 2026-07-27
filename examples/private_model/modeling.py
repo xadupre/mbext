@@ -10,39 +10,44 @@ This is the ``modeling-file`` of the ``--private`` option. It is imported by
 :func:`modelbuilder.builder.create_model` *before* the Hugging Face config is
 loaded so that a custom architecture can register itself with ``transformers``.
 
-The example defines a tiny custom causal language model, ``PrivateTiny``, that
-reuses the Qwen3 backbone but is exposed under a private architecture name
-(``PrivateTinyForCausalLM``) that is **not** part of the built-in dispatch in
-:func:`modelbuilder.builder.create_model`. The conversion therefore has to go
-through the ``--private`` option (see ``convert.py``).
+The example defines a tiny **Mixture-of-Experts** causal language model,
+``PrivateMoE``. It reuses the Mixtral backbone (RMSNorm + rotary GQA attention
+with a sparse MoE MLP) but is exposed under a private architecture name
+(``PrivateMoEForCausalLM``). The conversion is driven through the ``--private``
+option so the custom builder in ``convert.py`` — which implements the MoE decoder
+layer — is used instead of the built-in dispatch.
 
-Besides the architecture name, this file provides the helpers used to build the
-model config, the (word-level) tokenizer and the PyTorch reference model. They
-are shared by the fast test (``test.py``).
+This file also provides the helpers used to build the model config, the
+(word-level) tokenizer and the PyTorch reference model. They are shared by the
+fast test (``test.py``). The dummy model is intentionally tiny and uses **two**
+decoder layers so the MoE routing is exercised across more than one layer while
+staying fast and completely offline.
 """
 
 from tokenizers import Tokenizer
 from tokenizers.models import WordLevel
-from transformers import AutoModelForCausalLM, PreTrainedTokenizerFast, Qwen3Config
+from transformers import AutoModelForCausalLM, PreTrainedTokenizerFast
+from transformers.models.mixtral.configuration_mixtral import MixtralConfig
 
-# Name of the private architecture. It is deliberately different from every
-# architecture handled by the built-in dispatch so the conversion requires the
-# custom builder loaded through ``--private``.
-ARCHITECTURE = "PrivateTinyForCausalLM"
+# Name of the private architecture. ``--private`` forces the custom builder, so
+# the conversion does not depend on this name being in the built-in dispatch.
+ARCHITECTURE = "PrivateMoEForCausalLM"
 
 # Fake model id. It is only used for logging/metadata: the actual weights come
 # from the local checkpoint directory passed with ``-i/--input``.
-MODEL_NAME = "private/PrivateTiny"
+MODEL_NAME = "private/PrivateMoE"
 
 
-def make_config(num_hidden_layers: int = 1) -> Qwen3Config:
-    """Return the configuration of the tiny private model.
+def make_config(num_hidden_layers: int = 2) -> MixtralConfig:
+    """Return the configuration of the tiny private MoE model.
 
     The dimensions are intentionally small so the fast test stays completely
     offline and quick. ``head_dim=64`` matches ``hidden_size // num_attention_heads``
-    (``512 // 8``).
+    (``512 // 8``). The model has ``num_local_experts`` experts and routes each
+    token to ``num_experts_per_tok`` of them. It defaults to **two** decoder
+    layers.
     """
-    return Qwen3Config(
+    return MixtralConfig(
         architectures=[ARCHITECTURE],
         bos_token_id=1,
         eos_token_id=2,
@@ -57,11 +62,14 @@ def make_config(num_hidden_layers: int = 1) -> Qwen3Config:
         rms_norm_eps=1e-6,
         rope_theta=10000.0,
         vocab_size=32000,
-        use_sliding_window=False,
+        sliding_window=None,
+        # MoE-specific settings (kept small for CI).
+        num_local_experts=4,
+        num_experts_per_tok=2,
     )
 
 
-def make_model(config: Qwen3Config = None):
+def make_model(config: MixtralConfig = None):
     """Return a PyTorch reference model with random weights for *config*."""
     if config is None:
         config = make_config()

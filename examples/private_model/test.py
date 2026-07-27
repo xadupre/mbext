@@ -62,11 +62,15 @@ def _load_modeling():
 modeling = _load_modeling()
 
 
-class TestPrivateTinyModel(ExtTestCase):
-    """End-to-end tests exercising the --private option on the example."""
+class TestPrivateMoEModel(ExtTestCase):
+    """End-to-end tests exercising the --private option on the example.
+
+    The dummy model uses two decoder layers so the Mixture-of-Experts routing is
+    exercised across more than a single layer.
+    """
 
     def _common_discrepancy(self, precision, provider):
-        num_hidden_layers = 1
+        num_hidden_layers = 2
         config = modeling.make_config(num_hidden_layers=num_hidden_layers)
         model = modeling.make_model(config)
         model.to(provider)
@@ -76,7 +80,7 @@ class TestPrivateTinyModel(ExtTestCase):
             model=model,
             tokenizer=tokenizer,
             model_name=modeling.MODEL_NAME,
-            basename=f"test_discrepancies_private_tiny_{precision}_{provider}",
+            basename=f"test_discrepancies_private_moe_{precision}_{provider}",
             precision=precision,
             provider=provider,
             num_hidden_layers=num_hidden_layers,
@@ -87,22 +91,22 @@ class TestPrivateTinyModel(ExtTestCase):
         )
 
     @hide_stdout()
-    def test_discrepancy_private_tiny_fp32_cpu(self):
+    def test_discrepancy_private_moe_fp32_cpu(self):
         self._common_discrepancy("fp32", "cpu")
 
     @hide_stdout()
-    def test_discrepancy_private_tiny_fp16_cpu(self):
+    def test_discrepancy_private_moe_fp16_cpu(self):
         self._common_discrepancy("fp16", "cpu")
 
     @hide_stdout()
     @requires_genai()
-    def test_private_tiny_fp32_cpu_genai_generate(self):
+    def test_private_moe_fp32_cpu_genai_generate(self):
         import torch
 
         from modelbuilder.builder import create_model
 
-        prefix = "test_private_tiny_fp32_cpu_genai_generate"
-        num_hidden_layers = 1
+        prefix = "test_private_moe_fp32_cpu_genai_generate"
+        num_hidden_layers = 2
         config = modeling.make_config(num_hidden_layers=num_hidden_layers)
 
         torch.manual_seed(42)

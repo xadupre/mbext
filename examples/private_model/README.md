@@ -3,10 +3,12 @@
 This example shows how to convert a **custom model implemented outside this
 package** with the `--private` option of `modelbuilder.builder`.
 
-The private model, `PrivateTiny`, is a tiny causal language model that reuses the
-Qwen3 backbone but is exposed under a private architecture name
-(`PrivateTinyForCausalLM`) that is **not** part of the built-in dispatch. The
-conversion therefore has to go through the `--private` option.
+The private model, `PrivateMoE`, is a tiny **Mixture-of-Experts (MoE)** causal
+language model. It reuses the Mistral attention stack (RMSNorm + rotary GQA
+attention) but the custom builder replaces each dense MLP with a sparse MoE layer
+that routes every token to the top-k of `num_local_experts` experts. It is
+exposed under a private architecture name (`PrivateMoEForCausalLM`) and the
+conversion goes through the `--private` option so the custom builder is used.
 
 ## Files
 
@@ -16,13 +18,16 @@ The `--private` value is made of up to three `;`-separated file paths
 - [`modeling.py`](modeling.py) — the **modeling-file**. Imported before the
   Hugging Face config is loaded so a custom architecture can register itself with
   `transformers`. Here it also exposes the helpers (`make_config`, `make_model`,
-  `make_tokenizer`) used to build the config, tokenizer and PyTorch reference.
+  `make_tokenizer`) used to build the config (a two-layer MoE `MixtralConfig`),
+  tokenizer and PyTorch reference.
 - [`convert.py`](convert.py) — the **convert-file**. Defines the ONNX builder
-  (`PrivateTinyModel`, selected through the module-level `MODEL_BUILDER`
-  attribute) used for the conversion.
+  (`PrivateMoEModel`, selected through the module-level `MODEL_BUILDER`
+  attribute). It implements a **custom decoder layer with a MoE MLP** by
+  overriding `make_layer` / `make_moe` and emitting a `com.microsoft:MoE` op via
+  the shared `make_fused_moe` helper.
 - [`test.py`](test.py) — the **fast-test-file**. Validates the custom builder
   with a discrepancy test (PyTorch vs ONNX) and a genai generation test (PyTorch
-  vs `onnxruntime-genai`).
+  vs `onnxruntime-genai`). The dummy model uses **two** decoder layers.
 
 ## Convert a model
 
