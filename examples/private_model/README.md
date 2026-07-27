@@ -51,7 +51,7 @@ When no model id is given (both `-m/--model_name` and `-i/--input` are omitted),
 the `fast-test-file` is executed as a script instead of converting a model:
 
 ```bash
-python -m modelbuilder.builder --private "examples/private_model/modeling.py;examples/private_model/convert.py;examples/private_model/test.py"
+DONTCLEAN=1 python -m modelbuilder.builder --private "examples/private_model/modeling.py;examples/private_model/convert.py;examples/private_model/test.py"
 ```
 
 The test file can also be run directly or with `pytest`:
