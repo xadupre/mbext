@@ -504,13 +504,9 @@ class ExtTestCase(unittest.TestCase):
                 )
             prefill_feed = {k: v for k, v in prefill_feed.items() if k in onnx_input_names}
 
+            use_iobinding = precision == "bf16" or (precision == "int4" and provider == "cuda")
             prefill_results, ort_logits_np = run_session_or_io_binding(
-                use_iobinding=precision == "bf16",
-                precision=precision,
-                provider=provider,
-                feed=prefill_feed,
-                sess=sess,
-                vocab_size=vocab_size,
+                use_iobinding=use_iobinding, precision=precision, provider=provider, feed=prefill_feed, sess=sess, vocab_size=vocab_size
             )
 
             with torch.no_grad():
@@ -550,7 +546,7 @@ class ExtTestCase(unittest.TestCase):
             decode_feed = {k: v for k, v in decode_feed.items() if k in onnx_input_names}
 
             prefill_results, onnx_decode_logits = run_session_or_io_binding(
-                use_iobinding=precision == "bf16",
+                use_iobinding=use_iobinding,
                 precision=precision,
                 provider=provider,
                 feed=decode_feed,
@@ -645,13 +641,9 @@ class ExtTestCase(unittest.TestCase):
                 prefill_feed[f"past_key_values.{i}.value"] = np.zeros((batch_size, num_key_value_heads, 0, head_size), dtype=np_dtype)
             prefill_feed = {k: v for k, v in prefill_feed.items() if k in onnx_input_names}
 
+            use_iobinding = precision == "bf16" or (precision == "int4" and provider == "cuda")
             prefill_results, ort_logits_np = run_session_or_io_binding(
-                use_iobinding=precision == "bf16",
-                precision=precision,
-                provider=provider,
-                feed=prefill_feed,
-                sess=sess,
-                vocab_size=vocab_size,
+                use_iobinding=use_iobinding, precision=precision, provider=provider, feed=prefill_feed, sess=sess, vocab_size=vocab_size
             )
 
             if pt_mode == "inputs_embeds":
@@ -696,7 +688,7 @@ class ExtTestCase(unittest.TestCase):
             decode_feed = {k: v for k, v in decode_feed.items() if k in onnx_input_names}
 
             prefill_results, onnx_decode_logits = run_session_or_io_binding(
-                use_iobinding=precision == "bf16",
+                use_iobinding=use_iobinding,
                 precision=precision,
                 provider=provider,
                 feed=decode_feed,

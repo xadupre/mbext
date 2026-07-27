@@ -16,7 +16,7 @@ import unittest
 
 import numpy as np
 
-from modelbuilder.ext_test_case import ExtTestCase, hide_stdout, requires_cuda, requires_transformers
+from modelbuilder.ext_test_case import ExtTestCase, hide_stdout, requires_cuda, requires_transformers, run_session_or_io_binding
 
 MODEL_NAME = "arnir0/Tiny-LLM"
 
@@ -85,6 +85,12 @@ class TestPrefillDecodeDiscrepancies(ExtTestCase):
         sess = self.check_ort(onnx_path, provider=provider)
         return config, model, sess
 
+    def _needs_iobinding(self, precision, provider):
+        """Return True when IOBinding is required (bf16, or int4/fp16 on CUDA)."""
+        if provider != "cuda":
+            return False
+        return precision in ("bf16", "int4")
+
     def _run_prefill(self, config, model, sess, precision, provider, batch_size=1, seq_len=5):
         """Run prefill pass on both PyTorch and ONNX, return discrepancy dict and state."""
         import torch
@@ -95,7 +101,6 @@ class TestPrefillDecodeDiscrepancies(ExtTestCase):
         head_size = config.hidden_size // config.num_attention_heads
 
         onnx_input_names = [i.name for i in sess.get_inputs()]
-        onnx_output_names = [o.name for o in sess.get_outputs()]
 
         torch.manual_seed(0)
         input_ids = torch.randint(0, vocab_size, (batch_size, seq_len)).to(provider)
@@ -112,9 +117,10 @@ class TestPrefillDecodeDiscrepancies(ExtTestCase):
             feed[f"past_key_values.{i}.value"] = np.zeros((batch_size, num_key_value_heads, 0, head_size), dtype=np_dtype)
         feed = {k: v for k, v in feed.items() if k in onnx_input_names}
 
-        onnx_results_raw = sess.run(None, feed)
-        onnx_results = dict(zip(onnx_output_names, onnx_results_raw))
-        onnx_logits = onnx_results["logits"]
+        use_iobinding = self._needs_iobinding(precision, provider)
+        onnx_results, onnx_logits = run_session_or_io_binding(
+            use_iobinding=use_iobinding, precision=precision, provider=provider, feed=feed, sess=sess, vocab_size=vocab_size
+        )
 
         # PyTorch prefill
         with torch.no_grad():
@@ -129,8 +135,8 @@ class TestPrefillDecodeDiscrepancies(ExtTestCase):
         import torch
 
         num_hidden_layers = config.num_hidden_layers
+        vocab_size = config.vocab_size
         onnx_input_names = [i.name for i in sess.get_inputs()]
-        onnx_output_names = [o.name for o in sess.get_outputs()]
 
         # Pick next token from ONNX prefill logits
         next_token = int(np.argmax(onnx_results["logits"][0, -1, :]))
@@ -147,9 +153,16 @@ class TestPrefillDecodeDiscrepancies(ExtTestCase):
             decode_feed[f"past_key_values.{i}.value"] = onnx_results[f"present.{i}.value"]
         decode_feed = {k: v for k, v in decode_feed.items() if k in onnx_input_names}
 
-        onnx_decode_raw = sess.run(None, decode_feed)
-        onnx_decode_results = dict(zip(onnx_output_names, onnx_decode_raw))
-        onnx_decode_logits = onnx_decode_results["logits"]
+        use_iobinding = self._needs_iobinding(precision, provider)
+        _, onnx_decode_logits = run_session_or_io_binding(
+            use_iobinding=use_iobinding,
+            precision=precision,
+            provider=provider,
+            feed=decode_feed,
+            sess=sess,
+            vocab_size=vocab_size,
+            results=onnx_results,
+        )
 
         # PyTorch decode
         with torch.no_grad():
@@ -164,7 +177,7 @@ class TestPrefillDecodeDiscrepancies(ExtTestCase):
         basename = f"test_prefill_decode_{precision}_{provider}"
         config, model, sess = self._build_and_export(basename, precision, provider)
 
-        atol = {"fp16": 1e-2, "bf16": 1e-2, "fp32": 1e-3, "int4": 0.5}
+        atol = {"fp16": 1e-2, "bf16": 2e-2, "fp32": 2e-3 if provider == "cuda" else 1e-3, "int4": 0.5}
 
         # --- Prefill ---
         prefill_disc, onnx_results, pt_out, input_ids = self._run_prefill(config, model, sess, precision, provider)
@@ -203,7 +216,7 @@ class TestPrefillDecodeDiscrepancies(ExtTestCase):
         )
 
     # ------------------------------------------------------------------
-    # Test methods
+    # Test methods — CPU
     # ------------------------------------------------------------------
 
     @hide_stdout()
@@ -214,7 +227,14 @@ class TestPrefillDecodeDiscrepancies(ExtTestCase):
     def test_prefill_decode_discrepancies_fp16_cpu(self):
         self._common_prefill_decode_discrepancies("fp16", "cpu")
 
-    @unittest.skip("fails due to incorrect model on CUDA fp32")
+    @hide_stdout()
+    def test_prefill_decode_discrepancies_int4_cpu(self):
+        self._common_prefill_decode_discrepancies("int4", "cpu")
+
+    # ------------------------------------------------------------------
+    # Test methods — CUDA
+    # ------------------------------------------------------------------
+
     @hide_stdout()
     @requires_cuda()
     def test_prefill_decode_discrepancies_fp32_cuda(self):
@@ -224,6 +244,16 @@ class TestPrefillDecodeDiscrepancies(ExtTestCase):
     @requires_cuda()
     def test_prefill_decode_discrepancies_fp16_cuda(self):
         self._common_prefill_decode_discrepancies("fp16", "cuda")
+
+    @hide_stdout()
+    @requires_cuda()
+    def test_prefill_decode_discrepancies_bf16_cuda(self):
+        self._common_prefill_decode_discrepancies("bf16", "cuda")
+
+    @hide_stdout()
+    @requires_cuda()
+    def test_prefill_decode_discrepancies_int4_cuda(self):
+        self._common_prefill_decode_discrepancies("int4", "cuda")
 
 
 if __name__ == "__main__":

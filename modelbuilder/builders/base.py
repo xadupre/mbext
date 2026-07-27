@@ -538,6 +538,7 @@ class Model(LocalFunctionsMixin):
         valid_gqa_configurations = {
             ("cpu", ir.DataType.FLOAT),
             ("cpu", ir.DataType.FLOAT16),
+            ("cuda", ir.DataType.FLOAT),
             ("cuda", ir.DataType.FLOAT16),
             ("cuda", ir.DataType.BFLOAT16),
             ("dml", ir.DataType.FLOAT16),
