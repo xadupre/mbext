@@ -350,9 +350,9 @@ class Model(LocalFunctionsMixin):
         int4_algo_config = self.make_int4_algo_config(extra_options.get("int4_algo_config", "default"))
         self.int4_block_size = extra_options.get("int4_block_size", 32)
 
-        # CPU, WebGPU, and TRT-RTX support block-wise quantization for QMoE.
+        # CPU, CUDA, WebGPU, and TRT-RTX support block-wise quantization for QMoE.
         # TRT-RTX defaults to 128; others default to 32 for consistency with MatMulNBits.
-        supported_blockwise_eps = ["cpu", "webgpu", "trt-rtx"]
+        supported_blockwise_eps = ["cpu", "cuda", "webgpu", "trt-rtx"]
         default_qmoe_block_size = 128 if self.ep == "trt-rtx" else 32
         self.qmoe_block_size = int(extra_options.get("qmoe_block_size", default_qmoe_block_size))
 
@@ -2724,8 +2724,7 @@ class Model(LocalFunctionsMixin):
         reshape_4_inputs = [f"{transpose_2_name}/output_0", f"/model/constants/INT64/[0, 0, {self.q_size}]"]
         self.make_reshape(reshape_4_name, reshape_4_inputs, dtype=self.io_dtype, shape=["batch_size", "total_sequence_length", self.q_size])
 
-        input_to_attention = f"{reshape_4_name}/output_0"
-        return input_to_attention
+        return f"{reshape_4_name}/output_0"
 
     def make_attention_op(self, name, **kwargs):
         op_type = self.attention_attrs["op_type"]
@@ -3143,7 +3142,10 @@ class Model(LocalFunctionsMixin):
             self.attention_attrs["v_path"] = self.make_repeat_kv(
                 layer_id, root_input=self.attention_attrs["v_path"], past_kv=past_v, present_kv=present_v
             )
-            past_k, past_v, present_k, present_v = "", "", "", ""
+            if past_k:
+                past_k = self.make_repeat_kv(layer_id, root_input=past_k, past_kv=past_k, present_kv=present_k, to_4d=True)
+            if past_v:
+                past_v = self.make_repeat_kv(layer_id, root_input=past_v, past_kv=past_v, present_kv=present_v, to_4d=True)
 
         # Make sinks input
         sinks_name = ""
@@ -3558,7 +3560,7 @@ class Model(LocalFunctionsMixin):
 
         # Use block-wise quantization for supported EPs when qmoe_block_size > 0.
         # TRT-RTX defaults to 128; others default to 32.
-        supported_blockwise_eps = ["cpu", "webgpu", "trt-rtx"]
+        supported_blockwise_eps = ["cpu", "cuda", "webgpu", "trt-rtx"]
         use_blockwise_quant = self.ep in supported_blockwise_eps and self.qmoe_block_size > 0
 
         if use_blockwise_quant:
@@ -4454,7 +4456,7 @@ class Model(LocalFunctionsMixin):
     def make_attention_mask_subgraph(self, basename, unsqueeze_for_concat):
         # Make the additional subgraph to join Expand:
         # attention_mask --> Unsqueeze --> Unsqueeze --> Expand
-        attention_mask_shape = self.input_shapes["attention_mask"]
+        attention_mask_shape = list(self.input_shapes["attention_mask"])
 
         unsqueeze_3_name = f"{basename}/Unsqueeze_3"
         unsqueeze_3_inputs = [self.input_names["attention_mask"], "/model/constants/INT64/[1]"]
