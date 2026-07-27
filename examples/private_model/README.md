@@ -4,11 +4,13 @@ This example shows how to convert a **custom model implemented outside this
 package** with the `--private` option of `modelbuilder.builder`.
 
 The private model, `PrivateMoE`, is a tiny **Mixture-of-Experts (MoE)** causal
-language model. It reuses the Mistral attention stack (RMSNorm + rotary GQA
-attention) but the custom builder replaces each dense MLP with a sparse MoE layer
-that routes every token to the top-k of `num_local_experts` experts. It is
-exposed under a private architecture name (`PrivateMoEForCausalLM`) and the
-conversion goes through the `--private` option so the custom builder is used.
+language model implemented **from scratch** in [`modeling.py`](modeling.py)
+(`PrivateDecoderLayer`, `PrivateModel`, `PrivateModelForCausalLM`). Each decoder
+layer uses a Mistral-style attention stack (RMSNorm + rotary GQA attention) but
+replaces the dense MLP with a sparse MoE layer that routes every token to the
+top-k of `num_local_experts` experts. It is exposed under a private architecture
+name (`PrivateModelForCausalLM`) and the conversion goes through the `--private`
+option so the custom builder is used.
 
 ## Files
 
@@ -16,10 +18,11 @@ The `--private` value is made of up to three `;`-separated file paths
 (`modeling-file;convert-file;fast-test-file`):
 
 - [`modeling.py`](modeling.py) — the **modeling-file**. Imported before the
-  Hugging Face config is loaded so a custom architecture can register itself with
-  `transformers`. Here it also exposes the helpers (`make_config`, `make_model`,
-  `make_tokenizer`) used to build the config (a two-layer MoE `MixtralConfig`),
-  tokenizer and PyTorch reference.
+  Hugging Face config is loaded so the custom architecture can register itself
+  with `transformers`. It implements the model from scratch
+  (`PrivateDecoderLayer`, `PrivateModel`, `PrivateModelForCausalLM`) and exposes
+  the helpers (`make_config`, `make_model`, `make_tokenizer`) used to build the
+  config, tokenizer and PyTorch reference.
 - [`convert.py`](convert.py) — the **convert-file**. Defines the ONNX builder
   (`PrivateMoEModel`, selected through the module-level `MODEL_BUILDER`
   attribute). It implements a **custom decoder layer with a MoE MLP** by
