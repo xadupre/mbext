@@ -66,6 +66,15 @@ The ``--private`` option must then provide a ``fast-test-file`` (the third path)
 otherwise an error is raised. In this test mode ``-o/--output``, ``-p/--precision``
 and ``-e/--execution_provider`` are not required.
 
+A complete, runnable example lives in
+[`examples/private_model`](examples/private_model): it defines the modeling file
+(a Mixture-of-Experts model implemented from scratch as `PrivateDecoderLayer` /
+`PrivateModel` / `PrivateModelForCausalLM`, plus config and tokenizer), a
+converter that builds the custom MoE decoder layer, and the fast test
+(discrepancy + genai) on a two-layer dummy model, plus a CI job
+(`.github/workflows/private_example.yml`) that checks the
+``--private "modeling.py;convert.py;test.py"`` command line works.
+
 
 ## Style
 

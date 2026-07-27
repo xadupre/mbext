@@ -70,7 +70,6 @@ class TestRandomTinyLLM(ExtTestCase):
     def test_fast_discrepancy_tiny_llm_int4_cpu(self):
         self.common_fast_tiny_llm_random_weights("int4", "cpu")
 
-    @unittest.skip("fails due to incorrect model")
     @hide_stdout()
     @requires_cuda()
     def test_fast_discrepancy_tiny_llm_fp32_cuda(self):
@@ -85,6 +84,11 @@ class TestRandomTinyLLM(ExtTestCase):
     @requires_cuda()
     def test_fast_discrepancy_tiny_llm_bf16_cuda(self):
         self.common_fast_tiny_llm_random_weights("bf16", "cuda")
+
+    @hide_stdout()
+    @requires_cuda()
+    def test_fast_discrepancy_tiny_llm_int4_cuda(self):
+        self.common_fast_tiny_llm_random_weights("int4", "cuda")
 
     def common_tiny_llm_greedy_generation(self, precision, provider):
         import torch
@@ -135,7 +139,6 @@ class TestRandomTinyLLM(ExtTestCase):
     def test_tiny_llm_fp16_cpu_greedy_generation(self):
         self.common_tiny_llm_greedy_generation("fp16", "cpu")
 
-    @unittest.skip("fails due to incorrect model")
     @hide_stdout()
     @requires_cuda()
     def test_tiny_llm_fp32_cuda_greedy_generation(self):

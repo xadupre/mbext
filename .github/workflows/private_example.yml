@@ -1,0 +1,39 @@
+name: Private Example
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+
+permissions:
+  contents: read
+
+jobs:
+  private-example:
+    name: private example (--private CLI)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.14"
+
+      # we install torch first to avoid downloading any CUDA dependency
+      - name: Install pytorch (cpu)
+        run: pip install "torch==2.13.0+cpu" torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
+
+      - name: Install dependencies
+        run: pip install -e ".[dev]" torch transformers tokenizers
+
+      - name: pip freeze
+        run: pip freeze
+
+      # No model id is given, so the fast-test-file (third path of --private) is
+      # executed to validate the custom builder (discrepancy + genai).
+      - name: Check --private command line
+        run: >-
+          python -m modelbuilder.builder --private
+          "examples/private_model/modeling.py;examples/private_model/convert.py;examples/private_model/test.py"
