@@ -320,7 +320,9 @@ class TestRandomMixtral(ExtTestCase):
 
         excluded = builder.quant_attrs["int4"]["nodes_to_exclude"]
         router_nodes = [n for n in excluded if "gate" in n.lower() or "router" in n.lower()]
-        self.assertEqual(len(router_nodes), 0, f"Router nodes should NOT be excluded when int4_quantize_moe_router=true, got: {router_nodes}")
+        self.assertEqual(
+            len(router_nodes), 0, f"Router nodes should NOT be excluded when int4_quantize_moe_router=true, got: {router_nodes}"
+        )
 
 
 if __name__ == "__main__":
