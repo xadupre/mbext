@@ -372,6 +372,7 @@ class Model(LocalFunctionsMixin):
                 "op_types_to_quantize": extra_options.get("int4_op_types_to_quantize", ("MatMul",)),
                 "nodes_to_exclude": extra_options.get("int4_nodes_to_exclude", []),
                 "algo_config": int4_algo_config,
+                "quantize_moe_router": extra_options.get("int4_quantize_moe_router", False),
             },
             "use_qdq": extra_options.get("use_qdq", False),
         }
@@ -3699,13 +3700,14 @@ class Model(LocalFunctionsMixin):
         gate_ops_base = f"{moe_name}/gate"
 
         # Make MoE nodes
-        # Exclude the router from int4 quantization: quantising the small
-        # routing matrix corrupts top-k expert selection and produces large
-        # discrepancies with the PyTorch reference.
+        # Exclude the router from int4 quantization by default: quantising the
+        # small routing matrix corrupts top-k expert selection and produces
+        # large discrepancies with the PyTorch reference.
         gate_name = f"{gate_ops_base}/MatMul"
         self.make_matmul(bsm.gate, gate_name, root_input)
-        if gate_name not in self.quant_attrs["int4"]["nodes_to_exclude"]:
-            self.quant_attrs["int4"]["nodes_to_exclude"].append(gate_name)
+        if not self.quant_attrs["int4"]["quantize_moe_router"]:
+            if gate_name not in self.quant_attrs["int4"]["nodes_to_exclude"]:
+                self.quant_attrs["int4"]["nodes_to_exclude"].append(gate_name)
         shape_name = f"{gate_ops_base}/Shape"
         self.make_shape(shape_name, f"{gate_name}/output_0", shape=[3])
         gather_name = f"{gate_ops_base}/Gather"
@@ -3804,12 +3806,13 @@ class Model(LocalFunctionsMixin):
         moe_weight_type = f"{'q' if op_type == 'QMoE' else ''}weight"
 
         # --- Router (bias-free gate) ---
-        # Exclude the router from int4 quantization: quantising the small
-        # routing matrix corrupts top-k expert selection and produces large
-        # discrepancies with the PyTorch reference.
+        # Exclude the router from int4 quantization by default: quantising
+        # the small routing matrix corrupts top-k expert selection and
+        # produces large discrepancies with the PyTorch reference.
         router_matmul_name = self.make_matmul(mlp.gate, f"{basename}/router/MatMul", root_input)
-        if router_matmul_name not in self.quant_attrs["int4"]["nodes_to_exclude"]:
-            self.quant_attrs["int4"]["nodes_to_exclude"].append(router_matmul_name)
+        if not self.quant_attrs["int4"]["quantize_moe_router"]:
+            if router_matmul_name not in self.quant_attrs["int4"]["nodes_to_exclude"]:
+                self.quant_attrs["int4"]["nodes_to_exclude"].append(router_matmul_name)
         router_reshape_name = f"{basename}/router/Reshape"
         self.make_reshape(
             router_reshape_name,
