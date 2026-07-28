@@ -43,6 +43,7 @@ def check_extra_options(kv_pairs, execution_provider):
         "disable_qkv_fusion",
         "prune_lm_head",
         "multimodal",
+        "int4_quantize_moe_router",
     ]
     for key in bools:
         if key in kv_pairs:
@@ -673,6 +674,10 @@ def get_args():
                 int4_nodes_to_exclude = Specify nodes to exclude from int4 quantization.
                     Use this option when you want to exclude certain nodes from being quantized.
                     Separate the node names with a ',' when passing them here (e.g. int4_nodes_to_exclude=/lm_head/MatMul,/model/embed_tokens/Gather)
+                int4_quantize_moe_router = Force int4 quantization of MoE router weights. Default is false.
+                    By default, MoE router MatMul nodes are excluded from int4 quantization because
+                    quantizing the small routing matrix corrupts top-k expert selection.
+                    Set to true to override this and quantize the router weights.
                 int4_algo_config = Method for int4 quantization. Default is 'default'.
                     Currently supported options are: 'default', 'rtn', 'rtn_last', 'k_quant', 'k_quant_mixed', 'k_quant_last'.
                     default = algo_config passed to MatMulNBitsQuantizer is None. Quantizer uses default RTN algorithm. All MatMuls are quantized as int4.(different node naming conventions to `rtn`)

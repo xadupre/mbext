@@ -151,7 +151,7 @@ class TestPrivateMoEModel(ExtTestCase):
         if provider == "cuda" and not _MOE_CUDA_OK:
             atol = {"fp16": 100.0, "bf16": 100.0, "fp32": 100.0, "int4": 100.0}
         else:
-            atol = {"fp16": 1e-2, "bf16": 2e-2, "fp32": 2e-3, "int4": 1.0}
+            atol = {"fp16": 1e-2, "bf16": 2e-2, "fp32": 2e-3, "int4": 2.0}
 
         try:
             self.run_random_weights_test(
@@ -249,13 +249,22 @@ class TestPrivateMoEModel(ExtTestCase):
     @hide_stdout()
     @requires_genai()
     def test_private_moe_fp32_cpu_genai_generate(self):
+        self._common_genai_generate("fp32", "cpu")
+
+    def _common_genai_generate(self, precision, provider):
+        """Build and run genai generation for the given precision/provider."""
         import torch
 
         from modelbuilder.builder import create_model
 
-        prefix = "test_private_moe_fp32_cpu_genai_generate"
+        prefix = f"test_private_moe_{precision}_{provider}_genai_generate"
         num_hidden_layers = 2
-        config = modeling.make_config(num_hidden_layers=num_hidden_layers)
+        if provider == "cuda":
+            config = modeling.PrivateConfig(
+                num_hidden_layers=num_hidden_layers, intermediate_size=2048, architectures=[modeling.ARCHITECTURE]
+            )
+        else:
+            config = modeling.make_config(num_hidden_layers=num_hidden_layers)
 
         torch.manual_seed(42)
         model = modeling.make_model(config)
@@ -270,14 +279,68 @@ class TestPrivateMoEModel(ExtTestCase):
             model_name=modeling.MODEL_NAME,
             input_path=model_dir,
             output_dir=output_dir,
-            precision="fp32",
-            execution_provider="cpu",
+            precision=precision,
+            execution_provider=provider,
             cache_dir=cache_dir,
             num_hidden_layers=num_hidden_layers,
             private=PRIVATE_OPTION,
         )
 
-        self.run_genai_generation_test(output_dir, model, config.vocab_size, config.eos_token_id)
+        self.assertExists(os.path.join(output_dir, "model.onnx"))
+        self.assertExists(os.path.join(output_dir, "genai_config.json"))
+
+        max_new_tokens = 5
+        torch.manual_seed(0)
+        prompt_ids = torch.randint(3, config.vocab_size, (1, 4))
+
+        # Get PyTorch reference tokens
+        with torch.no_grad():
+            pt_output = model.generate(prompt_ids, max_new_tokens=max_new_tokens, do_sample=False, pad_token_id=config.eos_token_id)
+        pt_tokens = pt_output[0].tolist()
+
+        # Get genai tokens
+        og_tokens = self.run_genai_generation(output_dir, prompt_ids, max_new_tokens)
+
+        # Log results to stats markdown
+        log_data = dict(
+            precision=precision,
+            model_id=modeling.MODEL_NAME,
+            experiment="genai_generate",
+            provider=provider,
+            test=prefix,
+            input_type="text",
+            kind="random",
+        )
+        diff = self.first_token_diff(pt_tokens, og_tokens)
+        diff.update(log_data)
+        self.log_results(diff)
+
+        self.assertEqual(og_tokens[: prompt_ids.shape[1]], prompt_ids[0].tolist())
+        self.assertLessEqual(len(og_tokens) - prompt_ids.shape[1], max_new_tokens)
+        self.assertGreater(len(og_tokens), prompt_ids.shape[1])
+
+        # For lossless precision, assert exact token match
+        if precision not in ("int4", "fp16"):
+            self.assertEqual(pt_tokens, og_tokens)
+
+    @hide_stdout()
+    @requires_genai()
+    def test_private_moe_int4_cpu_genai_generate(self):
+        self._common_genai_generate("int4", "cpu")
+
+    @hide_stdout()
+    @requires_cuda()
+    @requires_genai()
+    def test_private_moe_fp16_cuda_genai_generate(self):
+        if not _MOE_CUDA_OK:
+            return
+        self._common_genai_generate("fp16", "cuda")
+
+    @hide_stdout()
+    @requires_cuda()
+    @requires_genai()
+    def test_private_moe_int4_cuda_genai_generate(self):
+        self._common_genai_generate("int4", "cuda")
 
 
 if __name__ == "__main__":

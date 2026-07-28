@@ -128,6 +128,11 @@ class TestOLMo2(ExtTestCase):
 
     @hide_stdout()
     @requires_cuda()
+    def test_fast_discrepancy_olmo2_int4_cuda(self):
+        self.common_fast_olmo2_random_weights("int4", "cuda")
+
+    @hide_stdout()
+    @requires_cuda()
     def test_fast_discrepancy_olmo2_fp16_cuda(self):
         self.common_fast_olmo2_random_weights("fp16", "cuda")
 

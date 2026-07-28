@@ -133,6 +133,11 @@ class TestMistralNeMo(ExtTestCase):
 
     @hide_stdout()
     @requires_cuda()
+    def test_fast_discrepancy_mistral_nemo_int4_cuda(self):
+        self.common_fast_mistral_nemo_random_weights("int4", "cuda")
+
+    @hide_stdout()
+    @requires_cuda()
     def test_fast_discrepancy_mistral_nemo_fp16_cuda(self):
         self.common_fast_mistral_nemo_random_weights("fp16", "cuda")
 

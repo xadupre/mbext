@@ -696,7 +696,12 @@ class NemotronHModel(LlamaModel):
         op_type = self.moe_attrs["op_type"]
 
         # Router: gate.weight MatMul → Sigmoid → Reshape(-1, n_experts)
+        # Exclude the router from int4 quantization by default: quantising
+        # the small routing matrix corrupts top-k expert selection.
         gate_matmul_name = self.make_matmul(moe.gate, f"{basename}/gate/MatMul", root_input)
+        if not self.quant_attrs["int4"]["quantize_moe_router"]:
+            if gate_matmul_name not in self.quant_attrs["int4"]["nodes_to_exclude"]:
+                self.quant_attrs["int4"]["nodes_to_exclude"].append(gate_matmul_name)
 
         gate_sigmoid_name = f"{basename}/gate/Sigmoid"
         self.make_node(
@@ -795,7 +800,12 @@ class NemotronHModel(LlamaModel):
         moe_interm_size = moe.experts.up_proj.shape[1]
 
         # 1. Router: gate MatMul → Sigmoid → TopK
+        # Exclude the router from int4 quantization by default: quantising
+        # the small routing matrix corrupts top-k expert selection.
         gate_matmul_name = self.make_matmul(moe.gate, f"{basename}/gate/MatMul", root_input)
+        if not self.quant_attrs["int4"]["quantize_moe_router"]:
+            if gate_matmul_name not in self.quant_attrs["int4"]["nodes_to_exclude"]:
+                self.quant_attrs["int4"]["nodes_to_exclude"].append(gate_matmul_name)
 
         gate_sigmoid_name = f"{basename}/gate/Sigmoid"
         self.make_node(

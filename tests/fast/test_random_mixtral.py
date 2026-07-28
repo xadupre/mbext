@@ -95,7 +95,7 @@ def _make_mixtral_builder(config, io_dtype, onnx_dtype, ep, cache_dir, extra_opt
 
 
 class TestRandomMixtral(ExtTestCase):
-    def _build_mixtral_onnx(self, output_dir, cache_dir, ep):
+    def _build_mixtral_onnx(self, output_dir, cache_dir, ep, extra_options=None):
         """Build the Mixtral ONNX model with synthetic random weights.
 
         The MoE op is only supported with INT4 (QMoE) weights on CUDA, so
@@ -105,14 +105,15 @@ class TestRandomMixtral(ExtTestCase):
         from modelbuilder.builder import set_io_dtype, set_onnx_dtype
 
         config = _make_mixtral_config()
-        extra_options = {}
+        if extra_options is None:
+            extra_options = {}
         io_dtype = set_io_dtype("int4", ep, extra_options)
         onnx_dtype = set_onnx_dtype("int4", extra_options)
 
         builder = _make_mixtral_builder(config, io_dtype, onnx_dtype, ep, cache_dir, extra_options)
         builder.make_model(cache_dir)
         builder.save_model(output_dir)
-        return config
+        return config, builder
 
     @hide_stdout()
     @requires_transformers("5")
@@ -127,7 +128,7 @@ class TestRandomMixtral(ExtTestCase):
         basename = "test_mixtral_build_cpu"
         output_dir, cache_dir = self.get_dirs(basename)
 
-        config = self._build_mixtral_onnx(output_dir, cache_dir, ep="cpu")
+        config, _ = self._build_mixtral_onnx(output_dir, cache_dir, ep="cpu")
 
         onnx_path = os.path.join(output_dir, "model.onnx")
         self.assertExists(onnx_path)
@@ -175,7 +176,7 @@ class TestRandomMixtral(ExtTestCase):
         basename = "test_mixtral_int4_cuda"
         output_dir, cache_dir = self.get_dirs(basename)
 
-        config = self._build_mixtral_onnx(output_dir, cache_dir, ep="cuda")
+        config, _ = self._build_mixtral_onnx(output_dir, cache_dir, ep="cuda")
 
         onnx_path = os.path.join(output_dir, "model.onnx")
         self.assertExists(onnx_path)
@@ -294,6 +295,34 @@ class TestRandomMixtral(ExtTestCase):
         self.assertEqual(og_tokens[: prompt_ids.shape[1]], prompt_ids[0].tolist())
         self.assertLessEqual(len(og_tokens) - prompt_ids.shape[1], max_new_tokens)
         self.assertGreater(len(og_tokens), prompt_ids.shape[1])
+
+    @hide_stdout()
+    @requires_transformers("5")
+    def test_mixtral_moe_router_excluded_by_default(self):
+        """MoE router MatMul nodes are excluded from int4 quantization by default."""
+        basename = "test_mixtral_router_excluded"
+        output_dir, cache_dir = self.get_dirs(basename)
+
+        _, builder = self._build_mixtral_onnx(output_dir, cache_dir, ep="cpu")
+
+        excluded = builder.quant_attrs["int4"]["nodes_to_exclude"]
+        router_nodes = [n for n in excluded if "gate" in n.lower() or "router" in n.lower()]
+        self.assertGreater(len(router_nodes), 0, f"Expected router nodes in nodes_to_exclude, got: {excluded}")
+
+    @hide_stdout()
+    @requires_transformers("5")
+    def test_mixtral_moe_router_included_when_option_set(self):
+        """Setting int4_quantize_moe_router=true keeps router in int4 quantization."""
+        basename = "test_mixtral_router_included"
+        output_dir, cache_dir = self.get_dirs(basename)
+
+        _, builder = self._build_mixtral_onnx(output_dir, cache_dir, ep="cpu", extra_options={"int4_quantize_moe_router": True})
+
+        excluded = builder.quant_attrs["int4"]["nodes_to_exclude"]
+        router_nodes = [n for n in excluded if "gate" in n.lower() or "router" in n.lower()]
+        self.assertEqual(
+            len(router_nodes), 0, f"Router nodes should NOT be excluded when int4_quantize_moe_router=true, got: {router_nodes}"
+        )
 
 
 if __name__ == "__main__":

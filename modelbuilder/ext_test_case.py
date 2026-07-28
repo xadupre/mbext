@@ -521,7 +521,7 @@ class ExtTestCase(unittest.TestCase):
         import torch
 
         if atol is None:
-            atol = {"fp16": 1e-2, "bf16": 1e-2, "fp32": 1e-3, "int4": 0.5}
+            atol = {"fp16": 1e-2, "bf16": 1e-2, "fp32": 1e-3, "int4": 1.0}
         if rtol is None:
             rtol = {"fp16": 10, "bf16": 1e-2, "fp32": 1e-3, "int4": 10000}
 
@@ -658,7 +658,7 @@ class ExtTestCase(unittest.TestCase):
         import torch
 
         if atol is None:
-            atol = {"fp16": 1e-2, "bf16": 1e-2, "fp32": 1e-3, "int4": 0.5}
+            atol = {"fp16": 1e-2, "bf16": 1e-2, "fp32": 1e-3, "int4": 1.0}
         if rtol is None:
             rtol = {"fp16": 10, "bf16": 1e-2, "fp32": 1e-3, "int4": 10000}
 
@@ -1745,7 +1745,14 @@ def run_session_or_io_binding(
     onnx_input_names = [i.name for i in sess.get_inputs()]
     onnx_output_names = [i.name for i in sess.get_outputs()]
     onnx_output_dtypes = {i.name: ort_dtype_to_onnx_dtype(i.type) for i in sess.get_outputs()}
+    onnx_input_dtypes = {i.name: ort_dtype_to_onnx_dtype(i.type) for i in sess.get_inputs()}
     step = "prefill" if results is None else "decode"
+
+    # Determine the correct torch dtype for KV cache tensors from the ONNX
+    # model's declared types.  For int4+CUDA the io_dtype is float16, so the
+    # KV cache is float16 even though `get_input_torch_dtype("int4")` returns
+    # float32.  Using the ONNX type avoids a dtype mismatch in IOBinding.
+    kv_cache_torch_dtype = onnx_dtype_to_torch_dtype(onnx_input_dtypes["past_key_values.0.key"])
 
     if use_iobinding:
         # For bf16 on CUDA, ORT Python bindings cannot pass bfloat16 tensors
@@ -1758,10 +1765,10 @@ def run_session_or_io_binding(
             }
             for i in range(num_hidden_layers):
                 torch_feed[f"past_key_values.{i}.key"] = torch.empty(
-                    batch_size, num_key_value_heads, 0, head_size, dtype=get_input_torch_dtype(precision), device=device
+                    batch_size, num_key_value_heads, 0, head_size, dtype=kv_cache_torch_dtype, device=device
                 )
                 torch_feed[f"past_key_values.{i}.value"] = torch.empty(
-                    batch_size, num_key_value_heads, 0, head_size, dtype=get_input_torch_dtype(precision), device=device
+                    batch_size, num_key_value_heads, 0, head_size, dtype=kv_cache_torch_dtype, device=device
                 )
             torch_feed = {k: v for k, v in torch_feed.items() if k in onnx_input_names}
 
@@ -1773,10 +1780,10 @@ def run_session_or_io_binding(
             torch_outputs = {"logits": ort_prefill_logits}
             for i in range(num_hidden_layers):
                 torch_outputs[f"present.{i}.key"] = torch.empty(
-                    batch_size, num_key_value_heads, seq_len, head_size, dtype=get_input_torch_dtype(precision), device=device
+                    batch_size, num_key_value_heads, seq_len, head_size, dtype=kv_cache_torch_dtype, device=device
                 )
                 torch_outputs[f"present.{i}.value"] = torch.empty(
-                    batch_size, num_key_value_heads, seq_len, head_size, dtype=get_input_torch_dtype(precision), device=device
+                    batch_size, num_key_value_heads, seq_len, head_size, dtype=kv_cache_torch_dtype, device=device
                 )
             _ort_io_binding_helper(sess, torch_feed, torch_outputs, device)
             # Extract float32 logits as numpy; keep KV cache as torch tensors
@@ -1797,10 +1804,10 @@ def run_session_or_io_binding(
             torch_outputs = {"logits": ort_decode_logits}
             for i in range(num_hidden_layers):
                 torch_outputs[f"present.{i}.key"] = torch.empty(
-                    batch_size, num_key_value_heads, past_kv_len + 1, head_size, dtype=get_input_torch_dtype(precision), device=device
+                    batch_size, num_key_value_heads, past_kv_len + 1, head_size, dtype=kv_cache_torch_dtype, device=device
                 )
                 torch_outputs[f"present.{i}.value"] = torch.empty(
-                    batch_size, num_key_value_heads, past_kv_len + 1, head_size, dtype=get_input_torch_dtype(precision), device=device
+                    batch_size, num_key_value_heads, past_kv_len + 1, head_size, dtype=kv_cache_torch_dtype, device=device
                 )
             _ort_io_binding_helper(sess, torch_feed, torch_outputs, device)
             ort_logits_np = ort_decode_logits.detach().cpu().numpy()

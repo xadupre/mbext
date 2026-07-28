@@ -164,6 +164,11 @@ class TestMinistral3(ExtTestCase):
 
     @hide_stdout()
     @requires_cuda()
+    def test_fast_discrepancy_ministral3_int4_cuda(self):
+        self.common_fast_ministral3_random_weights("int4", "cuda")
+
+    @hide_stdout()
+    @requires_cuda()
     def test_fast_discrepancy_ministral3_fp16_cuda(self):
         self.common_fast_ministral3_random_weights("fp16", "cuda")
 

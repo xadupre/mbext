@@ -574,6 +574,11 @@ class TestPhi3Small(ExtTestCase):
 
     @hide_stdout()
     @requires_cuda()
+    def test_fast_discrepancy_phi3_small_int4_cuda(self):
+        self.common_fast_phi3_small_random_weights("int4", "cuda")
+
+    @hide_stdout()
+    @requires_cuda()
     def test_fast_discrepancy_phi3_small_fp16_cuda(self):
         self.common_fast_phi3_small_random_weights("fp16", "cuda")
 
@@ -783,6 +788,11 @@ class TestPhi3Small(ExtTestCase):
     @hide_stdout()
     def test_fast_discrepancy_phi3_small_longrope_int4_cpu(self):
         self.common_fast_phi3_small_longrope_random_weights("int4", "cpu")
+
+    @hide_stdout()
+    @requires_cuda()
+    def test_fast_discrepancy_phi3_small_longrope_int4_cuda(self):
+        self.common_fast_phi3_small_longrope_random_weights("int4", "cuda")
 
     @hide_stdout()
     @requires_cuda()
