@@ -27,6 +27,7 @@ class TestCheckExtraOptions(ExtTestCase):
         "hf_remote",
         "disable_qkv_fusion",
         "prune_lm_head",
+        "int4_quantize_moe_router",
     ]
 
     def _check(self, kv_pairs, execution_provider="cpu"):
@@ -162,6 +163,28 @@ class TestCheckExtraOptions(ExtTestCase):
         kv = {}
         self._check(kv)
         self.assertEqual(kv, {})
+
+    # ------------------------------------------------------------------
+    # int4_quantize_moe_router
+    # ------------------------------------------------------------------
+
+    def test_int4_quantize_moe_router_defaults_to_false(self):
+        """When not provided, int4_quantize_moe_router is absent (defaults handled by builder)."""
+        kv = {}
+        self._check(kv)
+        self.assertNotIn("int4_quantize_moe_router", kv)
+
+    def test_int4_quantize_moe_router_true(self):
+        """Setting int4_quantize_moe_router=true converts to boolean True."""
+        kv = {"int4_quantize_moe_router": "true"}
+        self._check(kv)
+        self.assertIs(kv["int4_quantize_moe_router"], True)
+
+    def test_int4_quantize_moe_router_false(self):
+        """Setting int4_quantize_moe_router=false converts to boolean False."""
+        kv = {"int4_quantize_moe_router": "false"}
+        self._check(kv)
+        self.assertIs(kv["int4_quantize_moe_router"], False)
 
 
 class TestParseExtraOptions(ExtTestCase):

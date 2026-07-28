@@ -43,6 +43,7 @@ def check_extra_options(kv_pairs, execution_provider):
         "disable_qkv_fusion",
         "prune_lm_head",
         "multimodal",
+        "int4_quantize_moe_router",
     ]
     for key in bools:
         if key in kv_pairs:
