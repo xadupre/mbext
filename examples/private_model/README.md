@@ -61,6 +61,20 @@ python examples/private_model/test.py
 pytest examples/private_model/test.py
 ```
 
+## Run the trained test
+
+While the fast test above uses **random** weights, a separate test checks the
+**whole trained model**: it trains the private MoE model for a few steps (via
+`make_trained_model` in [`modeling.py`](modeling.py)), saves it as a checkpoint,
+converts the whole model with the `--private` option (no layer truncation) and
+compares PyTorch against ONNX (discrepancy) and `onnxruntime-genai`
+(generation). It lives under `tests/trained/` and is gated by `LONGTEST=1`:
+
+```bash
+LONGTEST=1 pytest tests/trained/test_trained_private_moe.py -v
+```
+
+
 ## Current results
 
 |    | model_id           | experiment   | precision   | provider   | input_type   | step    |   max_abs_err |   avg_abs_discrepancy |   dnan | next_token   |   next_token_id_tch |   next_token_id_ort | test                                     | kind   |    %>0.1 |   %>0.01 |

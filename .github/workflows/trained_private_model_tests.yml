@@ -1,0 +1,54 @@
+name: Trained Private Model Tests
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    name: ci-trained-private (${{ matrix.os }}, py${{ matrix.python-version }}, transformers-${{ matrix.transformers-version || 'latest' }})
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+      id-token: write
+    strategy:
+      fail-fast: true
+      matrix:
+        os: ["ubuntu-latest"]
+        python-version: ["3.14"]
+        transformers-version: ["5.6", "5.12.1", "5.14.1"]
+        torch:
+          - version: "2.13.0"
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.14"
+
+      # we install torch first to avoid downloading any CUDA dependency
+      - name: Install pytorch ${{ matrix.torch.version }} (cpu)
+        run: pip install "torch==${{ matrix.torch.version }}+cpu" torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
+
+      - name: Install dependencies
+        run: pip install -e ".[dev]" "transformers==${{ matrix.transformers-version }}" tokenizers onnxruntime-genai
+
+      - name: pip freeze
+        run: pip freeze
+
+      # The whole trained private MoE model is trained, saved, converted through
+      # the --private option and validated (discrepancy + genai generation).
+      - name: Run trained private model tests
+        continue-on-error: true
+        run: LONGTEST=1 pytest tests/trained/test_trained_private_moe.py -v --cov=modelbuilder --cov-report=xml --cov-report=term-missing
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v7
+        with:
+          files: coverage.xml
+          flags: trained-private-model-tests
+          fail_ci_if_error: false

@@ -485,6 +485,42 @@ def make_model(config: PrivateConfig = None) -> PrivateModelForCausalLM:
     return model
 
 
+def make_trained_model(
+    config: PrivateConfig = None, num_steps: int = 40, batch_size: int = 4, seq_len: int = 16, learning_rate: float = 1e-3, seed: int = 0
+) -> PrivateModelForCausalLM:
+    """Return a **trained** private MoE model.
+
+    The fast test (``test.py``) exercises the converter with *random* weights.
+    This helper instead trains the whole model for a handful of steps on a tiny
+    synthetic next-token dataset so the checkpoint carries meaningful (trained)
+    weights. It is used by the trained test (``tests/trained``) which converts
+    and validates the whole trained model end to end.
+
+    The training loop is intentionally small, fully deterministic (seeded) and
+    completely offline. The returned model is set to eval mode.
+    """
+    if config is None:
+        config = make_config()
+
+    torch.manual_seed(seed)
+    model = PrivateModelForCausalLM(config)
+    model.train()
+
+    optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
+    generator = torch.Generator().manual_seed(seed)
+    # Keep token ids away from the reserved special tokens (0/1/2).
+    low = 3
+    for _ in range(num_steps):
+        input_ids = torch.randint(low, config.vocab_size, (batch_size, seq_len), generator=generator)
+        optimizer.zero_grad()
+        loss = model(input_ids=input_ids, labels=input_ids).loss
+        loss.backward()
+        optimizer.step()
+
+    model.eval()
+    return model
+
+
 def make_tokenizer(bos_token_id: int = 1, eos_token_id: int = 2) -> PreTrainedTokenizerFast:
     """Return a minimal word-level tokenizer for the tiny private model.
 
