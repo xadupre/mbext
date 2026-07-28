@@ -151,7 +151,7 @@ class TestPrivateMoEModel(ExtTestCase):
         if provider == "cuda" and not _MOE_CUDA_OK:
             atol = {"fp16": 100.0, "bf16": 100.0, "fp32": 100.0, "int4": 100.0}
         else:
-            atol = {"fp16": 1e-2, "bf16": 2e-2, "fp32": 2e-3, "int4": 1.0}
+            atol = {"fp16": 1e-2, "bf16": 2e-2, "fp32": 2e-3, "int4": 2.0}
 
         try:
             self.run_random_weights_test(

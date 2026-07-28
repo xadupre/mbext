@@ -117,6 +117,11 @@ class TestInternLM2(ExtTestCase):
     def test_fast_discrepancy_internlm2_int4_cpu(self):
         self.common_fast_internlm2_random_weights("int4", "cpu")
 
+    @hide_stdout()
+    @requires_cuda()
+    def test_fast_discrepancy_internlm2_int4_cuda(self):
+        self.common_fast_internlm2_random_weights("int4", "cuda")
+
     @unittest.skip("fails due to incorrect model")
     @hide_stdout()
     @requires_cuda()

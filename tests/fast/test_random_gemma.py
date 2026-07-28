@@ -131,6 +131,11 @@ class TestRandomGemma(ExtTestCase):
 
     @hide_stdout()
     @requires_cuda()
+    def test_fast_discrepancy_gemma_int4_cuda(self):
+        self.common_fast_gemma_random_weights("int4", "cuda")
+
+    @hide_stdout()
+    @requires_cuda()
     def test_fast_discrepancy_gemma_fp16_cuda(self):
         self.common_fast_gemma_random_weights("fp16", "cuda")
 

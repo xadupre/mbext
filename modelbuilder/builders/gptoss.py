@@ -185,8 +185,12 @@ class GPTOSSModel(Model):
         #                                          |
         #                                          +--> Softmax --> Unsqueeze --> Unsqueeze --> Cast
         #
+        # Exclude the router from int4 quantization: quantising the small
+        # routing matrix corrupts top-k expert selection.
         router_basename = f"{basename}/router/MatMul"
         router_matmul_name = self.make_matmul(mlp.router, router_basename, root_input)
+        if router_matmul_name not in self.quant_attrs["int4"]["nodes_to_exclude"]:
+            self.quant_attrs["int4"]["nodes_to_exclude"].append(router_matmul_name)
         router_add_name = f"{basename}/router/Add"
         self.make_add_bias(mlp.router.bias, router_add_name, root_input=f"{router_matmul_name}/output_0")
 
@@ -480,8 +484,12 @@ class GPTOSSModel(Model):
         has_quark_experts = self.has_quark_experts(mlp.experts)
 
         # Make router nodes
+        # Exclude the router from int4 quantization: quantising the small
+        # routing matrix corrupts top-k expert selection.
         router_basename = f"{basename}/router/MatMul"
         router_matmul_name = self.make_matmul(mlp.router, router_basename, root_input)
+        if router_matmul_name not in self.quant_attrs["int4"]["nodes_to_exclude"]:
+            self.quant_attrs["int4"]["nodes_to_exclude"].append(router_matmul_name)
         router_add_name = f"{basename}/router/Add"
         self.make_add_bias(mlp.router.bias, router_add_name, root_input=f"{router_matmul_name}/output_0")
         router_reshape_name = f"{basename}/router/Reshape"

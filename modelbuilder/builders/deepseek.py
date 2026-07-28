@@ -309,8 +309,12 @@ class DeepSeekV3Model(Model):
         basename = f"/model/layers.{layer_id}/moe"
 
         # Router: hidden → logits [B*S, n_routed_experts]
+        # Exclude the router from int4 quantization: quantising the small
+        # routing matrix corrupts top-k expert selection.
         router_matmul_name = f"{basename}/router/MatMul"
         self.make_matmul(mlp.gate, router_matmul_name, root_input)
+        if router_matmul_name not in self.quant_attrs["int4"]["nodes_to_exclude"]:
+            self.quant_attrs["int4"]["nodes_to_exclude"].append(router_matmul_name)
         # Reshape to [B*S, n_experts] for MoE kernel
         router_reshape_name = f"{basename}/router/Reshape"
         router_reshape_inputs = [f"{router_matmul_name}/output_0", f"/model/constants/INT64/{[-1, self.moe_attrs['num_experts']]}"]

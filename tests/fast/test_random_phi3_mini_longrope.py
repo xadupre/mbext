@@ -116,6 +116,11 @@ class TestRandomPhi3MiniLongRoPE(ExtTestCase):
 
     @hide_stdout()
     @requires_cuda()
+    def test_fast_discrepancy_phi3_mini_longrope_int4_cuda(self):
+        self.common_fast_phi3_mini_longrope_random_weights("int4", "cuda")
+
+    @hide_stdout()
+    @requires_cuda()
     def test_fast_discrepancy_phi3_mini_longrope_fp16_cuda(self):
         self.common_fast_phi3_mini_longrope_random_weights("fp16", "cuda")
 

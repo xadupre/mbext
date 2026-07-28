@@ -70,6 +70,11 @@ class TestRandomQwen3VL(ExtTestCase):
     def test_fast_discrepancy_qwen3_vl_int4_cpu(self):
         self.common_fast_qwen3_vl_random_weights("int4", "cpu")
 
+    @hide_stdout()
+    @requires_cuda()
+    def test_fast_discrepancy_qwen3_vl_int4_cuda(self):
+        self.common_fast_qwen3_vl_random_weights("int4", "cuda")
+
     @unittest.skip("fails due to incorrect model")
     @hide_stdout()
     @requires_cuda()
