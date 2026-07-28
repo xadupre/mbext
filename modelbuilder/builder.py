@@ -338,6 +338,21 @@ def create_model(model_name, input_path, output_dir, precision, execution_provid
         from .builders.gemma import Gemma4Model
 
         onnx_model = Gemma4Model(config, io_dtype, onnx_dtype, execution_provider, cache_dir, extra_options)
+    elif config.architectures[0] == "GPT2LMHeadModel":
+        # Normalize GPT-2 config field names so the generic base builder, which
+        # expects the standard HuggingFace attribute names, can consume them.
+        config.intermediate_size = config.n_inner if getattr(config, "n_inner", None) is not None else 4 * config.hidden_size
+        config.hidden_act = config.activation_function
+        config.num_key_value_heads = config.num_attention_heads
+        config.layer_norm_eps = config.layer_norm_epsilon
+        from .builders.gpt2 import GPT2Model
+
+        onnx_model = GPT2Model(config, io_dtype, onnx_dtype, execution_provider, cache_dir, extra_options)
+        # The ONNX graph uses the modern GroupQueryAttention decoder interface
+        # (input_ids/attention_mask/position_ids + per-layer KV caches), so the
+        # generic onnxruntime-genai "decoder" model type is used instead of the
+        # legacy "gpt2" type (which expects a different input signature).
+        onnx_model.model_type = "decoder"
     elif config.architectures[0] == "GptOssForCausalLM":
         print("WARNING: This model only supports symmetric quantization for `QMoE`.")
         if hasattr(config, "quantization_config") and config.quantization_config.get("quant_method") != "quark":
