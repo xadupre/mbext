@@ -32,7 +32,7 @@ def _unflatten_cache(values: List[Any], context: torch.utils._pytree.Context, ou
     assert expected == context, f"Does not seem to be a dynamic cache {expected} != {context}"
     res = transformers.cache_utils.DynamicCache()
     for i in range(len(values) // 2):
-        res.update(values[i * 2], values[i * 2 + i], layer_idx=i)
+        res.update(values[i * 2], values[i * 2 + 1], layer_idx=i)
     assert output_type is None or isinstance(res, output_type), f"Type mismatch between {output_type} (expected) and {type(res)}"
     return res
 
