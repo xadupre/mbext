@@ -106,12 +106,19 @@ def parse_hf_token(hf_token):
     return hf_token
 
 
-def set_io_dtype(precision, execution_provider, extra_options) -> ir.DataType:
-    int4_cpu = precision == "int4" and execution_provider == "cpu"
-    fp32_webgpu = execution_provider == "webgpu" and extra_options.get("use_webgpu_fp32", False)
-    bf16_cuda = precision == "int4" and execution_provider in {"cuda", "trt-rtx"} and extra_options.get("use_cuda_bf16", False)
+# Integer weight-only precisions and the number of bits they map to.
+# They all reuse the INT4 (MatMulNBits) quantization pipeline with a different
+# ``bits`` value.
+INT_PRECISION_BITS = {"int2": 2, "int4": 4, "int8": 8}
 
-    if precision in {"int8", "fp32"} or int4_cpu or fp32_webgpu:
+
+def set_io_dtype(precision, execution_provider, extra_options) -> ir.DataType:
+    int_precision = precision in INT_PRECISION_BITS
+    int_cpu = int_precision and execution_provider == "cpu"
+    fp32_webgpu = execution_provider == "webgpu" and extra_options.get("use_webgpu_fp32", False)
+    bf16_cuda = int_precision and execution_provider in {"cuda", "trt-rtx"} and extra_options.get("use_cuda_bf16", False)
+
+    if precision == "fp32" or int_cpu or fp32_webgpu:
         # FP32 precision
         return ir.DataType.FLOAT
 
@@ -124,7 +131,10 @@ def set_io_dtype(precision, execution_provider, extra_options) -> ir.DataType:
 
 
 def set_onnx_dtype(precision: str, extra_options: dict[str, Any]) -> ir.DataType:
-    if precision == "int4":
+    if precision in INT_PRECISION_BITS:
+        # int2/int4/int8 all use the MatMulNBits quantization pipeline; the
+        # weight container dtype is INT4/UINT4 while the number of bits is
+        # carried separately (see ``int4_bits``).
         return ir.DataType.INT4 if extra_options.get("int4_is_symmetric", True) else ir.DataType.UINT4
 
     to_onnx_dtype = {"fp32": ir.DataType.FLOAT, "fp16": ir.DataType.FLOAT16, "bf16": ir.DataType.BFLOAT16}
@@ -259,6 +269,10 @@ def create_model(model_name, input_path, output_dir, precision, execution_provid
     # Set input/output precision of ONNX model
     io_dtype = set_io_dtype(precision, execution_provider, extra_options)
     onnx_dtype = set_onnx_dtype(precision, extra_options)
+    if precision in INT_PRECISION_BITS:
+        # Carry the number of bits used by the MatMulNBits quantizer. int4 keeps
+        # its historical default so only int2/int8 change the value.
+        extra_options.setdefault("int4_bits", INT_PRECISION_BITS[precision])
     config_only = "config_only" in extra_options
 
     # List architecture options in alphabetical order
@@ -626,7 +640,12 @@ def get_args():
     )
 
     parser.add_argument(
-        "-p", "--precision", required=False, default=None, choices=["int4", "bf16", "fp16", "fp32"], help="Precision of model"
+        "-p",
+        "--precision",
+        required=False,
+        default=None,
+        choices=["int2", "int4", "int8", "bf16", "fp16", "fp32"],
+        help="Precision of model",
     )
 
     parser.add_argument(

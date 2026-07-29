@@ -366,6 +366,7 @@ class Model(LocalFunctionsMixin):
         self.quant_attrs = {
             "int4": {
                 "accuracy_level": int(extra_options.get("int4_accuracy_level", 4 if self.ep in ["cpu", "webgpu"] else 0)),
+                "bits": int(extra_options.get("int4_bits", 4)),
                 "qmoe_block_size": int(self.qmoe_block_size),
                 "qdq_block_size": int(self.int4_block_size),
                 "is_symmetric": extra_options.get("int4_is_symmetric", True),
@@ -815,6 +816,7 @@ class Model(LocalFunctionsMixin):
 
         quant = MatMulNBitsQuantizer(
             model=ir.to_proto(self.model),
+            bits=self.quant_attrs["int4"]["bits"],
             block_size=self.quant_attrs["int4"]["qdq_block_size"],
             is_symmetric=self.quant_attrs["int4"]["is_symmetric"],
             accuracy_level=self.quant_attrs["int4"]["accuracy_level"],

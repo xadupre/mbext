@@ -40,7 +40,7 @@ class TestRandomTinyLLM(ExtTestCase):
         model = AutoModelForCausalLM.from_config(config)
         model.eval().to(provider)
         tokenizer = self.make_word_level_tokenizer()
-        atol = {"fp16": 3e-2, "bf16": 2e-2, "fp32": 2e-3 if provider == "cuda" else 2e-4, "int4": 0.5}
+        atol = {"fp16": 3e-2, "bf16": 2e-2, "fp32": 2e-3 if provider == "cuda" else 2e-4, "int8": 0.1, "int4": 0.5, "int2": 100.0}
         self.run_random_weights_test(
             model=model,
             tokenizer=tokenizer,
@@ -54,7 +54,7 @@ class TestRandomTinyLLM(ExtTestCase):
             vocab_size=config.vocab_size,
             create_model_kwargs={"num_hidden_layers": num_hidden_layers},
             atol=atol,
-            rtol={"fp16": 10, "bf16": 10, "fp32": 1e-4, "int4": 10000},
+            rtol={"fp16": 10, "bf16": 10, "fp32": 1e-4, "int8": 10000, "int4": 10000, "int2": 10000},
             kind="fast",
         )
 
@@ -69,6 +69,14 @@ class TestRandomTinyLLM(ExtTestCase):
     @hide_stdout()
     def test_fast_discrepancy_tiny_llm_int4_cpu(self):
         self.common_fast_tiny_llm_random_weights("int4", "cpu")
+
+    @hide_stdout()
+    def test_fast_discrepancy_tiny_llm_int8_cpu(self):
+        self.common_fast_tiny_llm_random_weights("int8", "cpu")
+
+    @hide_stdout()
+    def test_fast_discrepancy_tiny_llm_int2_cpu(self):
+        self.common_fast_tiny_llm_random_weights("int2", "cpu")
 
     @hide_stdout()
     @requires_cuda()
@@ -89,6 +97,16 @@ class TestRandomTinyLLM(ExtTestCase):
     @requires_cuda()
     def test_fast_discrepancy_tiny_llm_int4_cuda(self):
         self.common_fast_tiny_llm_random_weights("int4", "cuda")
+
+    @hide_stdout()
+    @requires_cuda()
+    def test_fast_discrepancy_tiny_llm_int8_cuda(self):
+        self.common_fast_tiny_llm_random_weights("int8", "cuda")
+
+    @hide_stdout()
+    @requires_cuda()
+    def test_fast_discrepancy_tiny_llm_int2_cuda(self):
+        self.common_fast_tiny_llm_random_weights("int2", "cuda")
 
     def common_tiny_llm_greedy_generation(self, precision, provider):
         import torch
