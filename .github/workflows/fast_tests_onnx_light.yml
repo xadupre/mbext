@@ -21,7 +21,7 @@ jobs:
       matrix:
         os: ["ubuntu-latest"]
         python-version: ["3.13"]
-        onnx-light-version: ["0.1.4"]
+        onnx-light-version: ["0.1.9"]
         torch:
           - version: "2.12.0"
     env:
