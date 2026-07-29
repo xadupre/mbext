@@ -11,8 +11,30 @@ from modelbuilder.ext_test_case import ExtTestCase, hide_stdout, requires_cuda, 
 MODEL_NAME = "arnir0/Tiny-LLM"
 
 
+def _init_llm_like_weights(model, seed=42):
+    """Initialize the model weights with a distribution closer to a trained LLM.
+
+    Transformers' default random initialization draws every 2-D weight from a
+    plain normal law (``std=initializer_range``), whose Gaussian tails produce
+    occasional large-magnitude outliers.  Those outliers dominate the group-wise
+    absmax scale used by ``MatMulNBits`` and inflate the int4 quantization error.
+    Trained LLM weights are far more concentrated, so here we use a *truncated*
+    normal (clipped at +/-2 sigma) which removes the extreme tails while keeping
+    the same mean/scale.  This makes the int4 discrepancies much smaller and
+    reproducible, so the acceptance thresholds can be tightened.
+    """
+    import torch
+
+    generator = torch.Generator().manual_seed(seed)
+    with torch.no_grad():
+        for param in model.parameters():
+            if param.ndim >= 2:
+                torch.nn.init.trunc_normal_(param, mean=0.0, std=0.02, a=-0.04, b=0.04, generator=generator)
+
+
 class TestRandomTinyLLM(ExtTestCase):
     def common_fast_tiny_llm_random_weights(self, precision, provider):
+        import torch
         from transformers import AutoModelForCausalLM, LlamaConfig
 
         # Config matching the arnir0/Tiny-LLM architecture (LlamaForCausalLM)
@@ -38,9 +60,11 @@ class TestRandomTinyLLM(ExtTestCase):
         )
 
         model = AutoModelForCausalLM.from_config(config)
+        torch.manual_seed(42)
+        _init_llm_like_weights(model)
         model.eval().to(provider)
         tokenizer = self.make_word_level_tokenizer()
-        atol = {"fp16": 3e-2, "bf16": 2e-2, "fp32": 2e-3 if provider == "cuda" else 2e-4, "int8": 0.1, "int4": 0.5, "int2": 100.0}
+        atol = {"fp16": 3e-2, "bf16": 2e-2, "fp32": 2e-3 if provider == "cuda" else 2e-4, "int8": 0.1, "int4": 0.35, "int2": 100.0}
         self.run_random_weights_test(
             model=model,
             tokenizer=tokenizer,
