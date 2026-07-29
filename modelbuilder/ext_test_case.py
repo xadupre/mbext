@@ -1430,13 +1430,20 @@ def get_input_np_dtype(precision):
         import ml_dtypes
 
         return ml_dtypes.bfloat16
-    return {"int4": np.float32, "fp16": np.float16, "fp32": np.float32}[precision]
+    return {"int2": np.float32, "int4": np.float32, "int8": np.float32, "fp16": np.float16, "fp32": np.float32}[precision]
 
 
 def get_input_torch_dtype(precision):
     import torch
 
-    return {"int4": torch.float32, "fp16": torch.float16, "fp32": torch.float32, "bf16": torch.bfloat16}[precision]
+    return {
+        "int2": torch.float32,
+        "int4": torch.float32,
+        "int8": torch.float32,
+        "fp16": torch.float16,
+        "fp32": torch.float32,
+        "bf16": torch.bfloat16,
+    }[precision]
 
 
 def ort_dtype_to_onnx_dtype(stype: str):

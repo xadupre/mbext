@@ -31,9 +31,11 @@ class TestParseHfToken(ExtTestCase):
 
 
 class TestSetIoDtype(ExtTestCase):
-    def test_fp32_and_int8_are_float(self):
+    def test_fp32_and_int_cpu_are_float(self):
         self.assertEqual(set_io_dtype("fp32", "cpu", {}), ir.DataType.FLOAT)
-        self.assertEqual(set_io_dtype("int8", "cuda", {}), ir.DataType.FLOAT)
+        for precision in ("int2", "int4", "int8"):
+            with self.subTest(precision=precision):
+                self.assertEqual(set_io_dtype(precision, "cpu", {}), ir.DataType.FLOAT)
 
     def test_int4_cpu_is_float(self):
         self.assertEqual(set_io_dtype("int4", "cpu", {}), ir.DataType.FLOAT)
@@ -58,6 +60,12 @@ class TestSetOnnxDtype(ExtTestCase):
     def test_int4_symmetric_default(self):
         self.assertEqual(set_onnx_dtype("int4", {}), ir.DataType.INT4)
 
+    def test_int_precisions_use_nbits_container(self):
+        for precision in ("int2", "int4", "int8"):
+            with self.subTest(precision=precision):
+                self.assertEqual(set_onnx_dtype(precision, {}), ir.DataType.INT4)
+                self.assertEqual(set_onnx_dtype(precision, {"int4_is_symmetric": False}), ir.DataType.UINT4)
+
     def test_int4_asymmetric(self):
         self.assertEqual(set_onnx_dtype("int4", {"int4_is_symmetric": False}), ir.DataType.UINT4)
 
@@ -68,7 +76,7 @@ class TestSetOnnxDtype(ExtTestCase):
 
     def test_unknown_precision_raises(self):
         with self.assertRaises(KeyError):
-            set_onnx_dtype("int8", {})
+            set_onnx_dtype("int3", {})
 
 
 if __name__ == "__main__":
