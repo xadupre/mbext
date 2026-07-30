@@ -14,7 +14,9 @@ details.
 
 ## Documentation
 
-The documentation lives under [`docs/`](docs) and is built with
+The documentation is published at
+[xadupre.github.io/docs/mbext](https://xadupre.github.io/docs/mbext/index.html).
+It lives under [`docs/`](docs) and is built with
 [Sphinx](https://www.sphinx-doc.org/):
 
 ```bash
