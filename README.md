@@ -6,6 +6,27 @@ The code base comes from https://github.com/microsoft/onnxruntime-genai/tree/mai
 It adds fast unit tests checking discrepancies, end to end test with the trained model.
 It supports more architectures.
 
+**Why mbext?** Its main advantage is a **short CI and fast tests**: every
+supported architecture is validated with a tiny, randomly-initialised model that
+runs fully offline (no weights downloaded) in seconds, while still checking the
+numerical discrepancy between PyTorch and ONNX. See the documentation for
+details.
+
+## Documentation
+
+The documentation lives under [`docs/`](docs) and is built with
+[Sphinx](https://www.sphinx-doc.org/):
+
+```bash
+pip install -e .[doc]
+sphinx-build -b html docs docs/_build/html
+```
+
+It covers the design, the command lines, an automatically generated list of the
+[supported architectures](docs/architectures.rst), the differences with the
+onnxruntime-genai model builder and with Mobius, the `--private` scenario, and a
+gallery with a runnable `create_model` example on random weights.
+
 ## Convert a model
 
 Example converting ``Qwen/Qwen3-8B`` to ONNX for CPU with int4 precision:
