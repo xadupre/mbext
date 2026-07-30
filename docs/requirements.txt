@@ -3,3 +3,4 @@
 sphinx>=7
 furo
 sphinx-gallery
+matplotlib

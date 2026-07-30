@@ -39,6 +39,7 @@ doc = [
     "furo",
     "sphinx>=7",
     "sphinx-gallery",
+    "matplotlib",
 ]
 
 [tool.black]
