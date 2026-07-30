@@ -1,5 +1,11 @@
 # ModelBuilder for onnxruntime-genai
 
+<p align="center">
+  <a href="https://github.com/xadupre/mbext">
+    <img src="docs/_static/logo.svg" alt="mbext logo" width="320">
+  </a>
+</p>
+
 [![codecov](https://codecov.io/gh/xadupre/mbext/branch/main/graph/badge.svg)](https://codecov.io/gh/xadupre/mbext)
 
 The code base comes from https://github.com/microsoft/onnxruntime-genai/tree/main/src/python/py/models.

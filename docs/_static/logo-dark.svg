@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 100" width="320" height="100" role="img" aria-label="mbext">
+  <title>mbext</title>
+  <!-- Node graph mark: a small computational graph evoking ONNX -->
+  <g fill="none" stroke="#8c9eff" stroke-width="6" stroke-linecap="round">
+    <line x1="30" y1="30" x2="60" y2="50"/>
+    <line x1="30" y1="70" x2="60" y2="50"/>
+    <line x1="60" y1="50" x2="90" y2="30"/>
+    <line x1="60" y1="50" x2="90" y2="70"/>
+  </g>
+  <g fill="#8c9eff">
+    <circle cx="30" cy="30" r="9"/>
+    <circle cx="30" cy="70" r="9"/>
+    <circle cx="60" cy="50" r="11"/>
+    <circle cx="90" cy="30" r="9"/>
+    <circle cx="90" cy="70" r="9"/>
+  </g>
+  <text x="118" y="66" font-family="'Segoe UI', 'Helvetica Neue', Arial, sans-serif"
+        font-size="52" font-weight="700" fill="#f5f5f5">mbext</text>
+</svg>

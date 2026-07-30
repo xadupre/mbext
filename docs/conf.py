@@ -34,8 +34,13 @@ templates_path = []
 exclude_patterns = ["_build", "Thumbs.db", ".DS_Store"]
 
 html_theme = "furo"
-html_static_path = []
+html_static_path = ["_static"]
 html_title = "mbext"
+html_favicon = "_static/logo.svg"
+html_theme_options = {
+    "light_logo": "logo.svg",
+    "dark_logo": "logo-dark.svg",
+}
 
 intersphinx_mapping = {"python": ("https://docs.python.org/3", None), "onnx": ("https://onnx.ai/onnx/", None)}
 
