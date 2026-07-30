@@ -6,6 +6,10 @@ outside this package. It is meant for **private architectures** that cannot be
 added to the public dispatch chain — for example a proprietary model that must
 stay in your own repository.
 
+A complete, runnable example is available in `examples/private_model
+<https://github.com/xadupre/mbext/tree/main/examples/private_model>`_ (see
+`A complete example`_ below).
+
 The option value is made of up to three ``;``-separated file paths:
 
 .. code-block:: bash

@@ -9,6 +9,9 @@ fork of the model builder shipped in `onnxruntime-genai
 and extends it with **many more architectures** and, above all, a **fast and
 short test suite**.
 
+The source code is hosted on GitHub: `xadupre/mbext
+<https://github.com/xadupre/mbext>`_.
+
 Why mbext?
 ----------
 
