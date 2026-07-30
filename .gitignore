@@ -72,6 +72,9 @@ instance/
 docs/_build/
 docs/models/
 docs/dashboard/index.html
+docs/auto_examples/
+docs/gen_modules/
+docs/sg_execution_times.rst
 
 # PyBuilder
 .pybuilder/

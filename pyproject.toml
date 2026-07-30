@@ -35,6 +35,12 @@ dev = [
     "tabulate",
     "transformers",
 ]
+doc = [
+    "furo",
+    "sphinx>=7",
+    "sphinx-gallery",
+    "matplotlib",
+]
 
 [tool.black]
 line-length = 140
