@@ -5,4 +5,4 @@
 # --------------------------------------------------------------------------
 
 # Version of onnxruntime-genai this repository was created against.
-__version__ = "0.15.0"
+__version__ = "0.13.0"
