@@ -44,6 +44,7 @@ def check_extra_options(kv_pairs, execution_provider):
         "prune_lm_head",
         "multimodal",
         "int4_quantize_moe_router",
+        "quant_weight_stats",
     ]
     for key in bools:
         if key in kv_pairs:
@@ -109,7 +110,7 @@ def parse_hf_token(hf_token):
 # Integer weight-only precisions and the number of bits they map to.
 # They all reuse the INT4 (MatMulNBits) quantization pipeline with a different
 # ``bits`` value.
-INT_PRECISION_BITS = {"int2": 2, "int4": 4, "int8": 8}
+INT_PRECISION_BITS = {"int2": 2, "int4": 4, "int8": 8, "int16": 16}
 
 
 def set_io_dtype(precision, execution_provider, extra_options) -> ir.DataType:
@@ -132,7 +133,7 @@ def set_io_dtype(precision, execution_provider, extra_options) -> ir.DataType:
 
 def set_onnx_dtype(precision: str, extra_options: dict[str, Any]) -> ir.DataType:
     if precision in INT_PRECISION_BITS:
-        # int2/int4/int8 all use the MatMulNBits quantization pipeline; the
+        # int2/int4/int8/int16 all use the MatMulNBits quantization pipeline; the
         # weight container dtype is INT4/UINT4 while the number of bits is
         # carried separately (see ``int4_bits``).
         return ir.DataType.INT4 if extra_options.get("int4_is_symmetric", True) else ir.DataType.UINT4
@@ -271,7 +272,7 @@ def create_model(model_name, input_path, output_dir, precision, execution_provid
     onnx_dtype = set_onnx_dtype(precision, extra_options)
     if precision in INT_PRECISION_BITS:
         # Carry the number of bits used by the MatMulNBits quantizer. int4 keeps
-        # its historical default so only int2/int8 change the value.
+        # its historical default so only int2/int8/int16 change the value.
         extra_options.setdefault("int4_bits", INT_PRECISION_BITS[precision])
     config_only = "config_only" in extra_options
 
@@ -644,7 +645,7 @@ def get_args():
         "--precision",
         required=False,
         default=None,
-        choices=["int2", "int4", "int8", "bf16", "fp16", "fp32"],
+        choices=["int2", "int4", "int8", "int16", "bf16", "fp16", "fp32"],
         help="Precision of model",
     )
 
@@ -712,6 +713,11 @@ def get_args():
                     By default, MoE router MatMul nodes are excluded from int4 quantization because
                     quantizing the small routing matrix corrupts top-k expert selection.
                     Set to true to override this and quantize the router weights.
+                quant_weight_stats = Dump distribution statistics of the quantized weight tensors. Default is false.
+                    When quantizing (int2/int4/int8/int16), writes a '<filename>.weight_stats.json' file next to the ONNX model
+                    with, for each weight tensor, its shape and distribution statistics (min, max, mean, median,
+                    std, quantiles) as well as the Kolmogorov-Smirnov distance to a fitted normal distribution.
+                    Statistics are computed on the float weights, before quantization.
                 int4_algo_config = Method for int4 quantization. Default is 'default'.
                     Currently supported options are: 'default', 'rtn', 'rtn_last', 'k_quant', 'k_quant_mixed', 'k_quant_last'.
                     default = algo_config passed to MatMulNBitsQuantizer is None. Quantizer uses default RTN algorithm. All MatMuls are quantized as int4.(different node naming conventions to `rtn`)

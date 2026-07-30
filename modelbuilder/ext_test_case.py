@@ -1430,7 +1430,9 @@ def get_input_np_dtype(precision):
         import ml_dtypes
 
         return ml_dtypes.bfloat16
-    return {"int2": np.float32, "int4": np.float32, "int8": np.float32, "fp16": np.float16, "fp32": np.float32}[precision]
+    return {"int2": np.float32, "int4": np.float32, "int8": np.float32, "int16": np.float32, "fp16": np.float16, "fp32": np.float32}[
+        precision
+    ]
 
 
 def get_input_torch_dtype(precision):
@@ -1440,6 +1442,7 @@ def get_input_torch_dtype(precision):
         "int2": torch.float32,
         "int4": torch.float32,
         "int8": torch.float32,
+        "int16": torch.float32,
         "fp16": torch.float16,
         "fp32": torch.float32,
         "bf16": torch.bfloat16,

@@ -834,7 +834,15 @@ class Model(LocalFunctionsMixin):
         already_quantized_in_qdq_format = (
             self.quant_type is not None and self.quant_attrs["use_qdq"]
         )  # Skip quantizing `MatMul` in `DequantizeLinear --> Transpose --> MatMul` path
-        if self.onnx_dtype in {ir.DataType.INT4, ir.DataType.UINT4} and not already_quantized_in_qdq_format:
+        quantizing = self.onnx_dtype in {ir.DataType.INT4, ir.DataType.UINT4} and not already_quantized_in_qdq_format
+
+        # Optionally dump the distribution statistics of the weight tensors that
+        # are about to be quantized to a separate file (computed on the float
+        # weights, before quantization).
+        if quantizing and self.extra_options.get("quant_weight_stats", False):
+            self.save_quant_weight_stats(out_dir)
+
+        if quantizing:
             model = self.to_int4()
         else:
             model = self.model
@@ -869,6 +877,20 @@ class Model(LocalFunctionsMixin):
         # Delete temporary cache dir if empty
         if os.path.exists(self.cache_dir) and not os.listdir(self.cache_dir):
             os.rmdir(self.cache_dir)
+
+    def save_quant_weight_stats(self, out_dir):
+        """Write distribution statistics of the quantized weight tensors to a
+        separate JSON file next to the ONNX model."""
+        from ..quant_stats import save_weight_statistics
+
+        stats_path = os.path.join(out_dir, os.path.basename(self.filename) + ".weight_stats.json")
+        print(f"Saving quantized weight statistics in {stats_path}")
+        save_weight_statistics(
+            self.model,
+            stats_path,
+            op_types=self.quant_attrs["int4"]["op_types_to_quantize"],
+            nodes_to_exclude=self.quant_attrs["int4"]["nodes_to_exclude"],
+        )
 
     def save_vscode_settings(self, out_dir):
         # The output folder holds large ONNX artifacts (*.onnx / *.onnx.data) that
