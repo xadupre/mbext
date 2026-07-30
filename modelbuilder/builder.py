@@ -44,6 +44,7 @@ def check_extra_options(kv_pairs, execution_provider):
         "prune_lm_head",
         "multimodal",
         "int4_quantize_moe_router",
+        "quant_weight_stats",
     ]
     for key in bools:
         if key in kv_pairs:
@@ -712,6 +713,11 @@ def get_args():
                     By default, MoE router MatMul nodes are excluded from int4 quantization because
                     quantizing the small routing matrix corrupts top-k expert selection.
                     Set to true to override this and quantize the router weights.
+                quant_weight_stats = Dump distribution statistics of the quantized weight tensors. Default is false.
+                    When quantizing (int4/int8), writes a '<filename>.weight_stats.json' file next to the ONNX model
+                    with, for each weight tensor, its shape and distribution statistics (min, max, mean, median,
+                    std, quantiles) as well as the Kolmogorov-Smirnov distance to a fitted normal distribution.
+                    Statistics are computed on the float weights, before quantization.
                 int4_algo_config = Method for int4 quantization. Default is 'default'.
                     Currently supported options are: 'default', 'rtn', 'rtn_last', 'k_quant', 'k_quant_mixed', 'k_quant_last'.
                     default = algo_config passed to MatMulNBitsQuantizer is None. Quantizer uses default RTN algorithm. All MatMuls are quantized as int4.(different node naming conventions to `rtn`)
