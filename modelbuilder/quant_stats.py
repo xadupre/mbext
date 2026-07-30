@@ -67,7 +67,8 @@ def compute_weight_statistics(model: ir.Model, op_types=("MatMul",), nodes_to_ex
     """Compute distribution statistics for every quantized weight tensor.
 
     Only the initializer inputs of the nodes whose ``op_type`` is in ``op_types``
-    are considered, matching the tensors that the int4/int8 quantizer targets.
+    are considered, matching the tensors that the int2/int4/int8/int16 quantizer
+    targets.
     Nodes listed in ``nodes_to_exclude`` are skipped.
     """
     op_types = set(op_types)
