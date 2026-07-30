@@ -44,7 +44,7 @@ def _tensor_statistics(name: str, array: np.ndarray, quantiles=DEFAULT_QUANTILES
         if sample.size > _MAX_NORMAL_SAMPLES:
             rng = np.random.default_rng(0)
             sample = rng.choice(sample, size=_MAX_NORMAL_SAMPLES, replace=False)
-        normal_distance = float(stats.kstest(sample, "norm", args=(mean, std)).statistic)
+        normal_distance = float(stats.kstest(sample, stats.norm(loc=mean, scale=std).cdf).statistic)
     else:
         # A constant tensor is degenerate; report the maximal distance.
         normal_distance = 1.0
