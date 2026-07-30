@@ -1,19 +1,36 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 100" width="320" height="100" role="img" aria-label="mbext">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 340 120" width="340" height="120" role="img" aria-label="mbext">
   <title>mbext</title>
-  <!-- Node graph mark: a small computational graph evoking ONNX -->
-  <g fill="none" stroke="#4051b5" stroke-width="6" stroke-linecap="round">
-    <line x1="30" y1="30" x2="60" y2="50"/>
-    <line x1="30" y1="70" x2="60" y2="50"/>
-    <line x1="60" y1="50" x2="90" y2="30"/>
-    <line x1="60" y1="50" x2="90" y2="70"/>
+  <!--
+    Logo mixing the Hugging Face Transformers mark (yellow hugging face)
+    with the ONNX mark (a graph of connected nodes) used here as the smile.
+  -->
+  <g transform="translate(10 10)">
+    <!-- hugging hands -->
+    <g fill="#ffb703">
+      <path d="M8 60 q-8 6 -4 18 q3 8 12 6 l10 -6 q-10 -2 -14 -8 q-3 -5 -4 -10 z"/>
+      <path d="M92 60 q8 6 4 18 q-3 8 -12 6 l-10 -6 q10 -2 14 -8 q3 -5 4 -10 z"/>
+    </g>
+    <!-- face -->
+    <circle cx="50" cy="46" r="40" fill="#ffd21e"/>
+    <!-- cheeks -->
+    <circle cx="30" cy="54" r="7" fill="#ff9d00" opacity="0.85"/>
+    <circle cx="70" cy="54" r="7" fill="#ff9d00" opacity="0.85"/>
+    <!-- eyes -->
+    <circle cx="35" cy="38" r="5" fill="#3a3a3a"/>
+    <circle cx="65" cy="38" r="5" fill="#3a3a3a"/>
+    <!-- ONNX-style node-graph smile -->
+    <g fill="none" stroke="#4051b5" stroke-width="3.5" stroke-linecap="round">
+      <line x1="30" y1="60" x2="42" y2="70"/>
+      <line x1="42" y1="70" x2="58" y2="70"/>
+      <line x1="58" y1="70" x2="70" y2="60"/>
+    </g>
+    <g fill="#4051b5">
+      <circle cx="30" cy="60" r="4.5"/>
+      <circle cx="42" cy="70" r="4.5"/>
+      <circle cx="58" cy="70" r="4.5"/>
+      <circle cx="70" cy="60" r="4.5"/>
+    </g>
   </g>
-  <g fill="#4051b5">
-    <circle cx="30" cy="30" r="9"/>
-    <circle cx="30" cy="70" r="9"/>
-    <circle cx="60" cy="50" r="11"/>
-    <circle cx="90" cy="30" r="9"/>
-    <circle cx="90" cy="70" r="9"/>
-  </g>
-  <text x="118" y="66" font-family="'Segoe UI', 'Helvetica Neue', Arial, sans-serif"
+  <text x="118" y="78" font-family="'Segoe UI', 'Helvetica Neue', Arial, sans-serif"
         font-size="52" font-weight="700" fill="#222222">mbext</text>
 </svg>
