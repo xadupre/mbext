@@ -50,7 +50,7 @@ jobs:
         run: pip install "git+https://github.com/onnx/ir-py.git@xadupre/ol"
 
       - name: Install onnx-light ${{ matrix.onnx-light-version }}
-        run: pip install "https://github.com/xadupre/onnx-light/releases/download/${{ matrix.onnx-light-version }}/onnx_light-${{ matrix.onnx-light-version }}-0reduced-cp313-cp313-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl"
+        run: pip install "https://github.com/xadupre/onnx-light/releases/download/${{ matrix.onnx-light-version }}/onnx_light-${{ matrix.onnx-light-version }}-cp313-cp313-manylinux_2_28_x86_64.whl"
 
       - name: pip freeze
         run: pip freeze
