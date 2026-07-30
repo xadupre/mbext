@@ -27,6 +27,7 @@ extensions = [
     "sphinx.ext.viewcode",
     "sphinx.ext.intersphinx",
     "sphinx_gallery.gen_gallery",
+    "sphinx_copybutton",
     "supported_architectures",
 ]
 
@@ -52,3 +53,9 @@ sphinx_gallery_conf = {
     "download_all_examples": False,
     "abort_on_example_error": True,
 }
+
+# -- sphinx-copybutton -------------------------------------------------------
+# Add a "copy" button to code blocks. Strip common interactive prompts so the
+# copied text is directly runnable.
+copybutton_prompt_text = r">>> |\.\.\. |\$ "
+copybutton_prompt_is_regexp = True

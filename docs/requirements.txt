@@ -3,4 +3,5 @@
 sphinx>=7
 furo
 sphinx-gallery
+sphinx-copybutton
 matplotlib
