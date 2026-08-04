@@ -22,7 +22,7 @@ dev = [
     "black",
     "huggingface_hub",
     "onnxruntime>=1.28",
-    "onnxruntime-genai",
+    "onnxruntime-genai==0.15.1",
     "openpyxl",
     "pandas",
     "peft",
