@@ -56,4 +56,10 @@ def get_default_onnx_opset() -> int:
     for schema in get_all_operator_schema():
         if schema.domain in ("", "ai.onnx"):
             max_opset = max(max_opset, schema.since_version)
-    return max_opset or DEFAULT_ONNX_OPSET
+    if not max_opset:
+        return DEFAULT_ONNX_OPSET
+    # ``onnxruntime`` registers operator schemas for the next opset before it can
+    # actually load models using it, so the highest ``since_version`` overshoots
+    # the opset ``onnxruntime`` accepts by one (e.g. schemas up to 27 while only
+    # 26 is loadable).
+    return max_opset - 1
