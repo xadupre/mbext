@@ -35,7 +35,7 @@ jobs:
         run: pip install "torch==${{ matrix.torch.version }}+cpu" torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
 
       - name: Install dependencies
-        run: pip install -e ".[dev]" "transformers==${{ matrix.transformers-version }}" tokenizers onnxruntime-genai
+        run: pip install -e ".[dev]" "transformers==${{ matrix.transformers-version }}" tokenizers "onnxruntime-genai==0.15.1"
 
       - name: pip freeze
         run: pip freeze
