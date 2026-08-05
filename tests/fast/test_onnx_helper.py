@@ -42,6 +42,26 @@ class TestOnnxHelper(ExtTestCase):
 
         self.assertIs(onnx_helper.onnx, onnx)
 
+    def test_get_default_onnx_opset_returns_positive_int(self):
+        from modelbuilder.helpers import onnx_helper
+
+        opset = onnx_helper.get_default_onnx_opset()
+        self.assertIsInstance(opset, int)
+        self.assertGreater(opset, 0)
+
+    def test_get_default_onnx_opset_fallback_without_onnxruntime(self):
+        from modelbuilder.helpers import onnx_helper
+
+        real_import = __builtins__["__import__"] if isinstance(__builtins__, dict) else __builtins__.__import__
+
+        def fake_import(name, *args, **kwargs):
+            if name.startswith("onnxruntime"):
+                raise ImportError("onnxruntime is not available")
+            return real_import(name, *args, **kwargs)
+
+        with mock.patch("builtins.__import__", side_effect=fake_import):
+            self.assertEqual(onnx_helper.get_default_onnx_opset(), onnx_helper.DEFAULT_ONNX_OPSET)
+
     def test_env_selects_onnx_light(self):
         # When USE_ONNX_LIGHT is set, re-importing the helper must pull in
         # onnx_light.onnx instead of onnx.

@@ -20,6 +20,7 @@ from onnx_ir.tensor_adapters import TorchTensor, to_torch_dtype
 from tqdm import tqdm
 from transformers import AutoConfig, AutoModelForCausalLM, AutoModelForSpeechSeq2Seq, AutoTokenizer, GenerationConfig
 
+from ..helpers.onnx_helper import get_default_onnx_opset
 from .local_functions import LocalFunctionsMixin
 
 
@@ -92,7 +93,8 @@ class Model(LocalFunctionsMixin):
         self.extra_options = extra_options
 
         # States for building the model
-        self.graph = ir.Graph(inputs=(), outputs=(), nodes=(), opset_imports={"": 21, "com.microsoft": 1}, name="main_graph")
+        onnx_opset = int(extra_options.get("onnx_opset", get_default_onnx_opset()))
+        self.graph = ir.Graph(inputs=(), outputs=(), nodes=(), opset_imports={"": onnx_opset, "com.microsoft": 1}, name="main_graph")
         self.model = ir.Model(self.graph, ir_version=10, producer_name="onnxruntime-genai")
         self.values = {}
 

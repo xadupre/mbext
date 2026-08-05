@@ -32,3 +32,28 @@ if use_onnx_light():
     import onnx_light.onnx as onnx  # noqa: F401
 else:
     import onnx  # noqa: F401
+
+
+#: Opset used when the maximum opset supported by ``onnxruntime`` cannot be
+#: determined (for example when ``onnxruntime`` is not installed).
+DEFAULT_ONNX_OPSET = 21
+
+
+def get_default_onnx_opset() -> int:
+    """Returns the highest ONNX opset supported by the installed onnxruntime.
+
+    The value is derived from the operator schemas registered by
+    :mod:`onnxruntime` for the default (``ai.onnx``) domain.  When
+    ``onnxruntime`` is not available, :data:`DEFAULT_ONNX_OPSET` is returned
+    instead.
+    """
+    try:
+        from onnxruntime.capi._pybind_state import get_all_operator_schema
+    except ImportError:
+        return DEFAULT_ONNX_OPSET
+
+    max_opset = 0
+    for schema in get_all_operator_schema():
+        if schema.domain in ("", "ai.onnx"):
+            max_opset = max(max_opset, schema.since_version)
+    return max_opset or DEFAULT_ONNX_OPSET
