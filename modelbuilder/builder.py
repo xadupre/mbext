@@ -685,6 +685,14 @@ def get_args():
     )
 
     parser.add_argument(
+        "--onnx_opset",
+        required=False,
+        default=None,
+        type=int,
+        help="ONNX opset for the main graph. If omitted, the highest opset supported by the installed onnxruntime is used.",
+    )
+
+    parser.add_argument(
         "--extra_options",
         required=False,
         metavar="KEY=VALUE",
@@ -800,6 +808,8 @@ if __name__ == "__main__":
         if missing:
             raise ValueError(f"The following arguments are required to convert a model: {', '.join(missing)}.")
         extra_options = parse_extra_options(args.extra_options, args.execution_provider)
+        if args.onnx_opset is not None:
+            extra_options["onnx_opset"] = args.onnx_opset
         if args.private:
             extra_options["private"] = args.private
         create_model(args.model_name, args.input, args.output, args.precision, args.execution_provider, args.cache_dir, **extra_options)
