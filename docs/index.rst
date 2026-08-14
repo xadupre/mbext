@@ -48,6 +48,12 @@ downloads. See :doc:`design` for how this is achieved.
 
 .. toctree::
    :maxdepth: 1
+   :caption: Next steps
+
+   next_steps/index
+
+.. toctree::
+   :maxdepth: 1
    :caption: Examples
 
    auto_examples/index
