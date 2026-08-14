@@ -24,7 +24,7 @@ dev = [
     "huggingface_hub==1.27.0",
     "mypy==2.3.0",
     "onnxruntime==1.28.0",
-    "onnxruntime-genai==0.15.2",
+    "onnxruntime-genai>=0.15.1,<=0.15.2",
     "openpyxl==3.1.5",
     "pandas==3.0.5",
     "peft==0.20.0",
@@ -36,8 +36,8 @@ dev = [
     "pytest-timeout==2.4.0",
     "ruff==0.16.3",
     "tabulate==0.10.0",
-    "tokenizers==0.23.0rc0",
-    "transformers==5.15.0",
+    "tokenizers>=0.22.2,<=0.23.0rc0",
+    "transformers>=5.6,<=5.15.0",
 ]
 doc = [
     "furo==2025.12.19",
