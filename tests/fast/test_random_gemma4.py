@@ -671,8 +671,12 @@ class TestRandomGemma4(ExtTestCase):
         from modelbuilder.builder import create_model
 
         config = self._make_global_head_dim_config()
-        sliding_head_size = config.head_dim  # 64
-        global_head_size = config.global_head_dim  # 128
+        if hasattr(config, "per_layer_config"):
+            sliding_head_size = config.per_layer_config[0].head_dim  # 64
+            global_head_size = config.per_layer_config[1].head_dim  # 128
+        else:
+            sliding_head_size = config.head_dim  # 64
+            global_head_size = config.global_head_dim  # 128
         assert global_head_size != sliding_head_size
         layer_types = config.layer_types
 

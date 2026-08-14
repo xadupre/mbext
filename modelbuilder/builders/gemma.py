@@ -188,8 +188,17 @@ class Gemma4Model(Gemma3Model):
         self._layer_types = list(config.layer_types) if hasattr(config, "layer_types") and config.layer_types else None
 
         # Gemma4 full-attention layers may use a wider head_dim (global_head_dim).
-        self._global_head_size = getattr(config, "global_head_dim", None) or config.head_dim
-        self._global_num_kv_heads = getattr(config, "num_global_key_value_heads", None) or config.num_key_value_heads
+        per_layer_config = getattr(config, "per_layer_config", None)
+        full_attention_index = (
+            self._layer_types.index("full_attention") if self._layer_types and "full_attention" in self._layer_types else 0
+        )
+        if per_layer_config:
+            full_attention_config = per_layer_config[full_attention_index]
+            self._global_head_size = vars(full_attention_config).get("head_dim")
+            self._global_num_kv_heads = vars(full_attention_config).get("num_key_value_heads")
+        else:
+            self._global_head_size = getattr(config, "global_head_dim", None) or vars(config).get("head_dim")
+            self._global_num_kv_heads = getattr(config, "num_global_key_value_heads", None) or config.num_key_value_heads
 
         # Cache full-attention RoPE params so make_rotary_embedding_multi_cache can use them.
         self._full_rope_params = {}

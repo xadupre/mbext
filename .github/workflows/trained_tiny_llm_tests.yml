@@ -21,7 +21,7 @@ jobs:
       matrix:
         os: ["ubuntu-latest"]
         python-version: ["3.14"]
-        transformers-version: ["5.6", "5.12.1", "5.14.1"]
+        transformers-version: ["5.15.0"]
         torch:
           - version: "2.13.0"
     steps:
@@ -41,7 +41,7 @@ jobs:
         run: pip install "torch==${{ matrix.torch.version }}+cpu" torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
 
       - name: Install dependencies
-        run: pip install -e ".[dev]" torch transformers tokenizers
+        run: pip install -e ".[dev]" torch "transformers==${{ matrix.transformers-version }}" tokenizers
 
       - name: Run trained tiny LLM tests
         continue-on-error: true

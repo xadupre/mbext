@@ -64,11 +64,11 @@ class Model(LocalFunctionsMixin):
             else (config.multi_query_group_num if hasattr(config, "multi_query_group_num") else config.num_attention_heads)
         )
         self.num_attn_heads = config.num_attention_heads
-        self.head_size = (
-            config.head_dim
-            if hasattr(config, "head_dim") and config.head_dim is not None
-            else config.hidden_size // config.num_attention_heads
-        )
+        head_size = vars(config).get("head_dim")
+        per_layer_config = getattr(config, "per_layer_config", None)
+        if per_layer_config:
+            head_size = vars(per_layer_config[0]).get("head_dim", head_size)
+        self.head_size = head_size if head_size is not None else config.hidden_size // config.num_attention_heads
         self.num_layers = (
             int(extra_options["num_hidden_layers"])
             if "num_hidden_layers" in extra_options

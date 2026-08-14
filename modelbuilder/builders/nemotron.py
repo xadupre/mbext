@@ -143,7 +143,7 @@ class NemotronHModel(LlamaModel):
         K = mamba.conv_kernel_size
         GN = G * N  # n_groups * ssm_state_size
         rH = H // G  # repeat factor per group
-        time_step_min = float(mamba.time_step_min)
+        time_step_min = float(mamba.time_step_limit[0] if hasattr(mamba, "time_step_limit") else mamba.time_step_min)
         use_cast = self.io_dtype != ir.DataType.FLOAT
         ssm_dtype = ir.DataType.FLOAT  # SSM computations always in fp32
 

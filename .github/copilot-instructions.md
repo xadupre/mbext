@@ -7,7 +7,7 @@ via `.github/workflows/style.yml`.
 ## Formatter: Black
 
 - Line length: **88 characters**
-- Target versions: Python 3.8 through 3.12
+- Target versions: Python 3.12 through 3.14
 
 Run locally:
 

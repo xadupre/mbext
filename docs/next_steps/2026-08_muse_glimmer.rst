@@ -82,11 +82,9 @@ Transformers dependency
 +++++++++++++++++++++++
 
 The released configuration names ``MuseGlimmerForConditionalGeneration`` and
-was produced with ``transformers==5.15.0.dev0``. The current fast-test matrix
-ends at 5.14.1. Support therefore starts by adding a Transformers version that
-contains ``transformers.models.muse_glimmer``. A development revision may be
-used temporarily, but the CI matrix should move to a released version when
-available.
+was produced with ``transformers==5.15.0.dev0``. The dependency and fast-test
+matrix now use Transformers 5.15.0, which contains
+``transformers.models.muse_glimmer``.
 
 Builder implementation
 ++++++++++++++++++++++
@@ -235,8 +233,9 @@ that pull request is open. It adds:
 * expansion of each ``<|patch|>`` placeholder to the visual token count.
 
 The validated package requires ONNX Runtime 1.28 and ONNX Runtime GenAI
-0.16.0-dev built with that change. The ``onnxruntime-genai==0.15.1`` currently
-pinned by ``mbext`` is insufficient for native multimodal execution.
+0.16.0-dev built with that change. The latest stable
+``onnxruntime-genai==0.15.2`` pinned by ``mbext`` remains insufficient for
+native multimodal execution.
 
 Video processing is not covered by that pull request. It should not be
 declared supported by the ORT GenAI pipeline until token expansion,
