@@ -293,7 +293,7 @@ class TestPhiMoE(ExtTestCase):
         # Standard inputs
         self.assertIn("input_ids", input_names)
         self.assertIn("attention_mask", input_names)
-        self.assertIn("position_ids", input_names)
+        # position_ids is omitted when RoPE is fused into GroupQueryAttention.
 
         # KV-cache inputs and outputs
         num_hidden_layers = config.num_hidden_layers

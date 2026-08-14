@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=61"]
+requires = ["setuptools>=84.0.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -7,45 +7,52 @@ name = "modelbuilder"
 version = "0.1.0"
 description = "Writes LLM in ONNX format."
 readme = "README.md"
-license = { file = "LICENSE" }
-requires-python = ">=3.10"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.12"
 dependencies = [
-    "ml_dtypes",
-    "numpy>=2.1",
-    "onnx>=1.22",
-    "onnxscript",
-    "scipy",
+    "ml_dtypes>=0.6.0",
+    "numpy>=2.5.2",
+    "onnx>=1.22.0",
+    "onnxscript>=0.7.1",
+    "scipy>=1.18.0",
 ]
 
 [project.optional-dependencies]
 dev = [
-    "black",
-    "huggingface_hub",
-    "onnxruntime>=1.28",
-    "onnxruntime-genai==0.15.1",
-    "openpyxl",
-    "pandas",
-    "peft",
-    "pytest>=8",
-    "py-cpuinfo",
-    "pytest-cov",
-    "pytest-subtests",
-    "pytest-timeout",
-    "ruff",
-    "tabulate",
-    "transformers",
+    "black==26.5.1",
+    "huggingface_hub==1.27.0",
+    "mypy==2.3.0",
+    "onnxruntime==1.28.0",
+    "onnxruntime-genai>=0.15.1,<=0.15.2",
+    "openpyxl==3.1.5",
+    "pandas==3.0.5",
+    "peft==0.20.0",
+    "py-cpuinfo==9.0.0",
+    "pyrefly==1.2.0",
+    "pytest==9.1.1",
+    "pytest-cov==7.1.0",
+    "pytest-subtests==0.15.0",
+    "pytest-timeout==2.4.0",
+    "ruff==0.16.3",
+    "tabulate==0.10.0",
+    "tokenizers>=0.22.2,<=0.23.0rc0",
+    "transformers>=5.6,<=5.15.0",
 ]
 doc = [
-    "furo",
-    "sphinx>=7",
-    "sphinx-copybutton",
-    "sphinx-gallery",
-    "matplotlib",
+    "furo==2025.12.19",
+    "matplotlib==3.11.1",
+    "sphinx==9.1.0",
+    "sphinx-copybutton==0.5.2",
+    "sphinx-gallery==0.21.0",
 ]
+
+[tool.setuptools.packages.find]
+include = ["modelbuilder*"]
 
 [tool.black]
 line-length = 140
-target-version = ["py310", "py311", "py312", "py313", "py314"]
+target-version = ["py312", "py313", "py314"]
 skip-magic-trailing-comma = true
 
 [tool.ruff]
