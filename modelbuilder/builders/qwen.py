@@ -33,6 +33,12 @@ class QwenModel(Model):
 class Qwen3Model(QwenModel):
     def __init__(self, config, io_dtype, onnx_dtype, ep, cache_dir, extra_options):
         super().__init__(config, io_dtype, onnx_dtype, ep, cache_dir, extra_options)
+        # Qwen3RMSNorm computes the normalization in float32.
+        self.layernorm_attrs["cast"]["use_fp32"] = True
+        self.layernorm_attrs["cast"]["root_input"] = True
+        self.layernorm_attrs["cast"]["skip_input"] = True
+        self.layernorm_attrs["cast"]["output_0"] = True
+        self.layernorm_attrs["cast"]["output_3"] = True
 
     def make_attention_init(self):
         self.attention_attrs["q_norm"] = True
