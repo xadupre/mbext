@@ -985,6 +985,7 @@ class ExtTestCase(unittest.TestCase):
         input_type: str = "text",
         kind: str = "random",
         embed_fn=None,
+        reference_dtype=None,
     ):
         """Build and export a random-weight model to ONNX and compare PyTorch vs ONNX.
 
@@ -1005,6 +1006,8 @@ class ExtTestCase(unittest.TestCase):
 
         model.save_pretrained(model_dir)
         tokenizer.save_pretrained(model_dir)
+        if reference_dtype is not None:
+            model.to(reference_dtype)
 
         create_kwargs: Dict = dict(
             model_name=model_name,

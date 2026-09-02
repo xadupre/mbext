@@ -12,7 +12,7 @@ QWEN3_MODEL_NAME = "Qwen/Qwen3-0.6B"
 
 
 class TestRandomQwen3(ExtTestCase):
-    def common_fast_qwen3_random_weights(self, precision, provider):
+    def common_fast_qwen3_random_weights(self, precision, provider, model_dtype=None, reference_dtype=None):
         from transformers import AutoModelForCausalLM, Qwen3Config
 
         num_hidden_layers = 1
@@ -37,6 +37,8 @@ class TestRandomQwen3(ExtTestCase):
         )
 
         model = AutoModelForCausalLM.from_config(config)
+        if model_dtype is not None:
+            model.to(model_dtype)
         model.eval().to(provider)
         tokenizer = self.make_word_level_tokenizer()
         self.run_random_weights_test(
@@ -51,6 +53,7 @@ class TestRandomQwen3(ExtTestCase):
             head_size=config.head_dim,
             vocab_size=config.vocab_size,
             create_model_kwargs={"num_hidden_layers": num_hidden_layers},
+            reference_dtype=reference_dtype,
         )
 
     def common_qwen3_greedy_generation(self, precision, provider):
@@ -126,6 +129,12 @@ class TestRandomQwen3(ExtTestCase):
     @hide_stdout()
     def test_fast_discrepancy_qwen3_fp16_cpu(self):
         self.common_fast_qwen3_random_weights("fp16", "cpu")
+
+    @hide_stdout()
+    def test_fast_discrepancy_qwen3_bf16_weights_fp16_cpu(self):
+        import torch
+
+        self.common_fast_qwen3_random_weights("fp16", "cpu", model_dtype=torch.bfloat16, reference_dtype=torch.float32)
 
     @hide_stdout()
     def test_fast_discrepancy_qwen3_int4_cpu(self):
