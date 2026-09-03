@@ -383,11 +383,7 @@ class Model(LocalFunctionsMixin):
         # Propagate block_size to MoE/QMoE op when supported.
         # QMoE on supported EPs uses block-wise quantization via the 'block_size' attribute.
         # Ensure the attribute is set on the MoE op so runtime kernels can honor it.
-        if (
-            self.moe_attrs.get("op_type") == "QMoE"
-            and self.ep in supported_blockwise_eps
-            and self.qmoe_block_size > 0
-        ):
+        if self.moe_attrs.get("op_type") == "QMoE" and self.ep in supported_blockwise_eps and self.qmoe_block_size > 0:
             self.moe_attrs["block_size"] = int(self.qmoe_block_size)
             if self.ep == "cuda":
                 # CUDA receives raw MatMulNBits-compatible weights and prepacks
