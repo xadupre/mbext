@@ -383,8 +383,12 @@ class Model(LocalFunctionsMixin):
         # Propagate block_size to MoE/QMoE op when supported.
         # QMoE on supported EPs uses block-wise quantization via the 'block_size' attribute.
         # Ensure the attribute is set on the MoE op so runtime kernels can honor it.
-        if self.moe_attrs.get("op_type") == "QMoE" and self.ep in supported_blockwise_eps:
+        if self.moe_attrs.get("op_type") == "QMoE" and self.ep in supported_blockwise_eps and self.qmoe_block_size > 0:
             self.moe_attrs["block_size"] = int(self.qmoe_block_size)
+            if self.ep == "cuda":
+                # CUDA receives raw MatMulNBits-compatible weights and prepacks
+                # them into the CUTLASS layout while loading the model.
+                self.moe_attrs["weights_prepacked"] = 0
         if self.quant_type is not None:
             # Create quantized attributes from quantization config
             self.quant_attrs["config"] = config.quantization_config
@@ -3563,6 +3567,8 @@ class Model(LocalFunctionsMixin):
         # Only include block_size attribute if it was set
         if "block_size" in self.moe_attrs:
             extra_kwargs["block_size"] = self.moe_attrs["block_size"]
+        if self.ep == "cuda" and "weights_prepacked" in self.moe_attrs:
+            extra_kwargs["weights_prepacked"] = self.moe_attrs["weights_prepacked"]
 
         self.make_node(
             "QMoE",
@@ -3586,9 +3592,20 @@ class Model(LocalFunctionsMixin):
         dtype = torch.quint4x2 if self.moe_attrs["expert_weight_bits"] == 4 else torch.int8
         qweight, scales = None, None
 
+        if self.ep == "cuda" and self.qmoe_block_size > 0:
+            block_size = self.quant_attrs["int4"]["qmoe_block_size"]
+            if block_size not in (32, 64, 128):
+                raise ValueError(f"CUDA QMoE only supports block_size 32, 64, or 128, got {block_size}.")
+            try:
+                qweight, scales = self._matmulnbits_blockwise_quantize(weights, block_size)
+                self.moe_attrs["block_size"] = block_size
+                return qweight, scales.to(torch.float16)
+            except Exception as e:
+                raise RuntimeError(f"CUDA QMoE block-wise quantization failed with block_size={block_size}: {e}") from e
+
         # Use block-wise quantization for supported EPs when qmoe_block_size > 0.
         # TRT-RTX defaults to 128; others default to 32.
-        supported_blockwise_eps = ["cpu", "cuda", "webgpu", "trt-rtx"]
+        supported_blockwise_eps = ["cpu", "webgpu", "trt-rtx"]
         use_blockwise_quant = self.ep in supported_blockwise_eps and self.qmoe_block_size > 0
 
         if use_blockwise_quant:
@@ -3625,6 +3642,35 @@ class Model(LocalFunctionsMixin):
                 )
 
         return qweight, scales.to(torch.float16)
+
+    def _matmulnbits_blockwise_quantize(self, weights, block_size):
+        """Quantize raw CUDA QMoE weights using ORT's signed blockwise layout."""
+        weights_np = weights.detach().cpu().to(torch.float32).contiguous().numpy()
+        bits = self.moe_attrs["expert_weight_bits"]
+        if bits not in (4, 8):
+            raise ValueError(f"CUDA QMoE only supports 4-bit or 8-bit weights, got {bits}.")
+
+        n, k = weights_np.shape
+        if k % block_size:
+            raise ValueError(f"CUDA QMoE weight dimension K={k} must be divisible by block_size={block_size}.")
+        num_blocks = (k + block_size - 1) // block_size
+
+        blocked = weights_np.reshape(n, num_blocks, block_size)
+        qmin, qmax, zero_point = (-8, 7, 8) if bits == 4 else (-128, 127, 128)
+        argmax = np.argmax(np.abs(blocked), axis=2)
+        signed_max = np.take_along_axis(blocked, argmax[:, :, np.newaxis], axis=2)[:, :, 0]
+        eps = np.finfo(np.float32).eps
+        scales = signed_max.astype(np.float32) / np.float32(qmin)
+        scales = np.where(np.abs(scales) < eps, np.float32(eps), scales)
+        quantized = np.clip(np.rint(blocked / scales[:, :, np.newaxis]), qmin, qmax).astype(np.int16)
+        quantized = (quantized + zero_point).astype(np.uint8)
+
+        if bits == 4:
+            qweight = (quantized[:, :, 0::2] & 0xF) | ((quantized[:, :, 1::2] & 0xF) << 4)
+        else:
+            qweight = quantized
+
+        return torch.from_numpy(qweight.reshape(n, -1).copy()), torch.from_numpy(scales.copy())
 
     def _symmetric_blockwise_quantize(self, weights, block_size):
         # Ensure weights are on CPU for quantization
