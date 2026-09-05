@@ -20,7 +20,7 @@ from tqdm import tqdm
 from transformers import AutoConfig, AutoModelForCausalLM, AutoModelForSpeechSeq2Seq, AutoTokenizer, GenerationConfig
 
 from .. import ir
-from ..helpers.onnx_helper import get_default_onnx_opset
+from ..helpers.onnx_helper import enable_onnxruntime_quantization, get_default_onnx_opset
 from ..ir.tensor_adapters import TorchTensor, to_torch_dtype
 from .local_functions import LocalFunctionsMixin
 
@@ -785,6 +785,7 @@ class Model(LocalFunctionsMixin):
         tokenizer.save_pretrained(out_dir)
 
     def make_int4_algo_config(self, quant_method: str):
+        enable_onnxruntime_quantization()
         from onnxruntime.quantization.matmul_nbits_quantizer import KQuantWeightOnlyQuantConfig, RTNWeightOnlyQuantConfig
 
         customized_weight_config = {}
@@ -827,6 +828,7 @@ class Model(LocalFunctionsMixin):
         into a temporary folder located in *work_dir* and given to the quantizer as
         a file path. The temporary folder is removed once the quantization is done.
         """
+        enable_onnxruntime_quantization()
         from onnxruntime.quantization.matmul_nbits_quantizer import MatMulNBitsQuantizer, QuantFormat
 
         tmp_dir = os.path.join(work_dir, f".int4_{os.getpid()}")

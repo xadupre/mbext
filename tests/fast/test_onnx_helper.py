@@ -32,6 +32,19 @@ class TestOnnxHelper(ExtTestCase):
 
         self.assertTrue(callable(ReferenceEvaluator))
 
+    def test_onnxruntime_quantization_uses_onnx_light(self):
+        import sys
+
+        from modelbuilder import ir
+        from modelbuilder.helpers import onnx_helper
+
+        onnx_helper.enable_onnxruntime_quantization()
+        self.assertIs(sys.modules["onnx"], onnx_helper.onnx)
+        self.assertIs(sys.modules["onnx_ir"], ir)
+        from onnxruntime.quantization.matmul_nbits_quantizer import MatMulNBitsQuantizer
+
+        self.assertTrue(callable(MatMulNBitsQuantizer))
+
     def test_get_default_onnx_opset_returns_positive_int(self):
         from modelbuilder.helpers import onnx_helper
 

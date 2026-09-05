@@ -15,6 +15,8 @@ of the code uses the exported ``onnx`` object transparently::
     TensorProto = onnx.TensorProto
 """
 
+import sys
+
 import onnx_light.onnx as onnx  # noqa: F401
 
 # ``onnx_light.onnx`` does not import its submodules automatically while the
@@ -24,8 +26,33 @@ import onnx_light.onnx.checker  # noqa: F401,E402
 import onnx_light.onnx.external_data_helper  # noqa: F401,E402
 import onnx_light.onnx.helper  # noqa: F401,E402
 import onnx_light.onnx.numpy_helper  # noqa: F401,E402
+import onnx_light.onnx.onnx_pb  # noqa: F401,E402
 import onnx_light.onnx.reference  # noqa: F401,E402
 import onnx_light.onnx.shape_inference  # noqa: F401,E402
+
+
+def enable_onnxruntime_quantization() -> None:
+    """Expose onnx-light compatibility modules required by ORT quantization.
+
+    ``onnxruntime.quantization`` imports the legacy module names even though it
+    only needs APIs implemented by onnx-light and :mod:`modelbuilder.ir`.
+    Registering these aliases keeps quantization usable without installing
+    either legacy package.
+    """
+    from modelbuilder import ir
+
+    modules = {
+        "onnx": onnx,
+        "onnx.external_data_helper": onnx.external_data_helper,
+        "onnx.helper": onnx.helper,
+        "onnx.numpy_helper": onnx.numpy_helper,
+        "onnx.onnx_pb": onnx.onnx_pb,
+        "onnx.reference": onnx.reference,
+        "onnx.shape_inference": onnx.shape_inference,
+        "onnx_ir": ir,
+    }
+    sys.modules.update(modules)
+
 
 #: Opset used when the maximum opset supported by ``onnxruntime`` cannot be
 #: determined (for example when ``onnxruntime`` is not installed).
