@@ -31,6 +31,42 @@ import onnx_light.onnx.reference  # noqa: F401,E402
 import onnx_light.onnx.shape_inference  # noqa: F401,E402
 
 
+def _add_repeated_field_compatibility() -> None:
+    """Add protobuf-style mutation methods missing from onnx-light fields."""
+
+    def deepcopy(self, memo):
+        copied = type(self)()
+        copied.ParseFromString(self.SerializeToString())
+        memo[id(self)] = copied
+        return copied
+
+    def remove(self, value) -> None:
+        values = list(self)
+        for index, item in enumerate(values):
+            if item is value or item == value:
+                self.clear()
+                self.extend(values[:index])
+                self.extend(values[index + 1 :])
+                return
+        raise ValueError(f"{value!r} is not in the repeated field")
+
+    def insert(self, index, value) -> None:
+        values = list(self)
+        values.insert(index, value)
+        self.clear()
+        self.extend(values)
+
+    graph = onnx.GraphProto()
+    if not hasattr(onnx.Message, "__deepcopy__"):
+        onnx.Message.__deepcopy__ = deepcopy
+    for field in (graph.node, graph.input, graph.output, graph.initializer):
+        cls = type(field)
+        if not hasattr(cls, "remove"):
+            cls.remove = remove
+        if not hasattr(cls, "insert"):
+            cls.insert = insert
+
+
 def enable_onnxruntime_quantization() -> None:
     """Expose onnx-light compatibility modules required by ORT quantization.
 
@@ -41,6 +77,7 @@ def enable_onnxruntime_quantization() -> None:
     """
     from modelbuilder import ir
 
+    _add_repeated_field_compatibility()
     modules = {
         "onnx": onnx,
         "onnx.external_data_helper": onnx.external_data_helper,

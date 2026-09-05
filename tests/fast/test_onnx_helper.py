@@ -41,6 +41,11 @@ class TestOnnxHelper(ExtTestCase):
         onnx_helper.enable_onnxruntime_quantization()
         self.assertIs(sys.modules["onnx"], onnx_helper.onnx)
         self.assertIs(sys.modules["onnx_ir"], ir)
+        graph = onnx_helper.onnx.GraphProto()
+        node = graph.node.add()
+        graph.node.remove(node)
+        graph.node.insert(0, onnx_helper.onnx.NodeProto())
+        self.assertEqual(len(graph.node), 1)
         from onnxruntime.quantization.matmul_nbits_quantizer import MatMulNBitsQuantizer
 
         self.assertTrue(callable(MatMulNBitsQuantizer))
