@@ -17,7 +17,7 @@ import sys
 import textwrap
 from typing import Any
 
-import onnx_ir as ir
+from . import ir
 import torch
 from transformers import AutoConfig
 from .builders import Model

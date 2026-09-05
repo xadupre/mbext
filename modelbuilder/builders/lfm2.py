@@ -7,7 +7,7 @@ import json
 import os
 
 import torch
-import onnx_ir as ir
+from .. import ir
 
 from .base import Model
 

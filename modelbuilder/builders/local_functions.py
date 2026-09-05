@@ -20,7 +20,7 @@ Usage::
 from __future__ import annotations
 
 import numpy as np
-import onnx_ir as ir
+from .. import ir
 
 # Sentinel used as the "end-of-tensor" value for ONNX Slice nodes.  We pick
 # 2**62 rather than sys.maxsize (2**63-1) to stay safely within the signed
@@ -32,8 +32,8 @@ class LocalFunctionsMixin:
     """Mixin that adds ONNX local-function helpers to model-builder classes.
 
     Concrete subclasses are expected to expose ``self.model`` (an
-    :class:`onnx_ir.Model`) and ``self.io_dtype`` (an
-    :class:`onnx_ir.DataType`) — both of which are set by
+    :class:`modelbuilder.ir.Model`) and ``self.io_dtype`` (an
+    :class:`modelbuilder.ir.DataType`) — both of which are set by
     :class:`~modelbuilder.builders.base.Model`.
     """
 

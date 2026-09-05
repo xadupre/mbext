@@ -6,7 +6,7 @@
 import unittest
 from types import SimpleNamespace
 
-import onnx_ir as ir
+from modelbuilder import ir
 import torch
 
 from modelbuilder.ext_test_case import ExtTestCase, hide_stdout

@@ -3,7 +3,7 @@
 # Licensed under the MIT License.  See License.txt in the project root for
 # license information.
 # --------------------------------------------------------------------------
-import onnx_ir as ir
+from .. import ir
 import torch
 
 from .base import Model

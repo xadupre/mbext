@@ -7,7 +7,7 @@ import copy
 import json
 import os
 
-import onnx_ir as ir
+from .. import ir
 import torch
 
 from .base import Model
@@ -144,7 +144,7 @@ class Ministral3TextModel(MistralModel):
 
 
 class Ministral3VisionEncoderModel(VisionEncoderModel):
-    """Direct ``onnx_ir`` graph builder for the Pixtral vision encoder + multimodal projector.
+    """Direct ``modelbuilder.ir`` graph builder for the Pixtral vision encoder + multimodal projector.
 
     Builds the ONNX graph manually (analogous to other model builders in this
     codebase) rather than going through :func:`torch.onnx.export`.

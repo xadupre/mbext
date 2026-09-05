@@ -196,7 +196,7 @@ class TestRandomQwen3_5Moe(ExtTestCase):
         """
         import json
 
-        import onnx
+        from modelbuilder.helpers.onnx_helper import onnx
 
         config = _make_qwen3_5_moe_config(["full_attention", "full_attention"])
         output_dir = self._build_model(config, "fp32", "cpu")
@@ -255,7 +255,7 @@ class TestRandomQwen3_5Moe(ExtTestCase):
         """
         import json
 
-        import onnx
+        from modelbuilder.helpers.onnx_helper import onnx
 
         config = _make_qwen3_5_moe_text_config(["full_attention", "full_attention"])
         output_dir = self._build_text_model(config, "fp32", "cpu")

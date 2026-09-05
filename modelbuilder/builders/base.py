@@ -11,16 +11,17 @@ from __future__ import annotations
 import ast
 import json
 import os
+import shutil
 from collections.abc import Mapping, Sequence
 
 import numpy as np
-import onnx_ir as ir
 import torch
-from onnx_ir.tensor_adapters import TorchTensor, to_torch_dtype
 from tqdm import tqdm
 from transformers import AutoConfig, AutoModelForCausalLM, AutoModelForSpeechSeq2Seq, AutoTokenizer, GenerationConfig
 
+from .. import ir
 from ..helpers.onnx_helper import get_default_onnx_opset
+from ..ir.tensor_adapters import TorchTensor, to_torch_dtype
 from .local_functions import LocalFunctionsMixin
 
 
@@ -817,22 +818,50 @@ class Model(LocalFunctionsMixin):
 
         return int4_algo_config
 
-    def to_int4(self) -> ir.Model:
+    def to_int4(self, work_dir: str) -> ir.Model:
+        """
+        Quantizes the model to int4 with ``onnxruntime``.
+
+        The quantizer manipulates the model with the ``onnx`` package, which cannot
+        consume the protos this package builds. The model is therefore serialized
+        into a temporary folder located in *work_dir* and given to the quantizer as
+        a file path. The temporary folder is removed once the quantization is done.
+        """
         from onnxruntime.quantization.matmul_nbits_quantizer import MatMulNBitsQuantizer, QuantFormat
 
-        quant = MatMulNBitsQuantizer(
-            model=ir.to_proto(self.model),
-            bits=self.quant_attrs["int4"]["bits"],
-            block_size=self.quant_attrs["int4"]["qdq_block_size"],
-            is_symmetric=self.quant_attrs["int4"]["is_symmetric"],
-            accuracy_level=self.quant_attrs["int4"]["accuracy_level"],
-            nodes_to_exclude=self.quant_attrs["int4"]["nodes_to_exclude"],
-            quant_format=QuantFormat.QDQ if self.quant_attrs["use_qdq"] else QuantFormat.QOperator,
-            op_types_to_quantize=self.quant_attrs["int4"]["op_types_to_quantize"],
-            algo_config=self.quant_attrs["int4"]["algo_config"],
-        )
-        quant.process()
-        return ir.from_proto(quant.model.model)
+        tmp_dir = os.path.join(work_dir, f".int4_{os.getpid()}")
+        if os.path.exists(tmp_dir):
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+        os.makedirs(tmp_dir, exist_ok=True)
+        tmp_path = os.path.join(tmp_dir, "model.onnx")
+        try:
+            ir.save(self.model, tmp_path, external_data="model.onnx.data", size_threshold_bytes=0)
+            quant = MatMulNBitsQuantizer(
+                model=tmp_path,
+                bits=self.quant_attrs["int4"]["bits"],
+                block_size=self.quant_attrs["int4"]["qdq_block_size"],
+                is_symmetric=self.quant_attrs["int4"]["is_symmetric"],
+                accuracy_level=self.quant_attrs["int4"]["accuracy_level"],
+                nodes_to_exclude=self.quant_attrs["int4"]["nodes_to_exclude"],
+                quant_format=QuantFormat.QDQ if self.quant_attrs["use_qdq"] else QuantFormat.QOperator,
+                op_types_to_quantize=self.quant_attrs["int4"]["op_types_to_quantize"],
+                algo_config=self.quant_attrs["int4"]["algo_config"],
+            )
+            quant.process()
+            model = ir.from_proto(quant.model.model, base_dir=tmp_dir)
+            for value in model.graph.initializers.values():
+                tensor = value.const_value
+                if isinstance(tensor, ir.ExternalTensor):
+                    value.const_value = ir.Tensor(
+                        tensor.numpy().copy(),
+                        dtype=tensor.dtype,
+                        name=tensor.name,
+                        doc_string=tensor.doc_string,
+                        metadata_props=tensor.metadata_props,
+                    )
+            return model
+        finally:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
 
     def save_model(self, out_dir):
         print(f"Saving ONNX model in {out_dir}")
@@ -849,7 +878,7 @@ class Model(LocalFunctionsMixin):
             self.save_quant_weight_stats(out_dir)
 
         if quantizing:
-            model = self.to_int4()
+            model = self.to_int4(out_dir)
         else:
             model = self.model
 

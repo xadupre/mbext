@@ -12,9 +12,9 @@ import unittest
 from unittest import mock
 
 import numpy as np
-import onnx
-import onnx_ir as ir
-from onnx.reference import ReferenceEvaluator
+from modelbuilder.helpers.onnx_helper import onnx
+from modelbuilder import ir
+from onnx_light.onnx.reference import ReferenceEvaluator
 
 from modelbuilder.builders.local_functions import LocalFunctionsMixin
 from modelbuilder.ext_test_case import ExtTestCase

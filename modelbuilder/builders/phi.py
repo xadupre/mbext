@@ -8,7 +8,7 @@ import json
 import os
 
 import numpy as np
-import onnx_ir as ir
+from .. import ir
 import torch
 
 from .base import Model

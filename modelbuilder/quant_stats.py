@@ -15,7 +15,7 @@ They are written to a separate file next to the ONNX model.
 import json
 
 import numpy as np
-import onnx_ir as ir
+from . import ir
 from scipy import stats
 
 # Quantiles reported for every weight tensor.

@@ -716,7 +716,7 @@ class TestNemotronH(ExtTestCase):
 
     def common_nemotron_h_mamba_build(self, precision, provider, layers_block_type=None):
         """Verify that create_model builds a mamba model and emits CausalConvWithState."""
-        import onnx
+        from modelbuilder.helpers.onnx_helper import onnx
 
         config = self._make_nemotronh_mamba_config(layers_block_type)
         prefix = f"test_nemotron_h_mamba_build_{precision}_{provider}_{'_'.join(config.layers_block_type)}"
@@ -818,7 +818,7 @@ class TestNemotronH(ExtTestCase):
     @hide_stdout()
     def test_nemotron_h_full_hybrid_fp32_cpu_build(self):
         """Build a full hybrid attention+mamba+moe model (fp32/CPU) and check for CausalConvWithState."""
-        import onnx
+        from modelbuilder.helpers.onnx_helper import onnx
         import torch
         from transformers import AutoModelForCausalLM
 

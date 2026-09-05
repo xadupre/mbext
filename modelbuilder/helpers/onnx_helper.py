@@ -4,35 +4,28 @@
 # license information.
 # --------------------------------------------------------------------------
 """
-Resolves the :mod:`onnx` module, optionally backed by ``onnx-light``.
+Resolves the :mod:`onnx` module, backed by ``onnx-light``.
 
-When the environment variable ``USE_ONNX_LIGHT`` is set to a truthy value
-(``1``, ``true`` or ``True``), the lightweight :mod:`onnx_light.onnx` module is
-imported in place of the regular :mod:`onnx` package.  Both modules expose the
-same Python API, so the rest of the code can use the exported ``onnx`` object
-transparently::
+mbext only depends on ``onnx-light``: the lightweight :mod:`onnx_light.onnx`
+module implements the same Python API as the :mod:`onnx` package, so the rest
+of the code uses the exported ``onnx`` object transparently::
 
     from modelbuilder.helpers.onnx_helper import onnx
 
     TensorProto = onnx.TensorProto
 """
 
-import os
+import onnx_light.onnx as onnx  # noqa: F401
 
-
-def use_onnx_light() -> bool:
-    """Returns ``True`` if mbext should use ``onnx_light.onnx`` instead of ``onnx``.
-
-    The choice is controlled by the ``USE_ONNX_LIGHT`` environment variable.
-    """
-    return os.environ.get("USE_ONNX_LIGHT", "") in (1, "1", "True", "true")
-
-
-if use_onnx_light():
-    import onnx_light.onnx as onnx  # noqa: F401
-else:
-    import onnx  # noqa: F401
-
+# ``onnx_light.onnx`` does not import its submodules automatically while the
+# ``onnx`` package does. They are imported here so that ``onnx.checker``,
+# ``onnx.helper``, ... are available on the exported module.
+import onnx_light.onnx.checker  # noqa: F401,E402
+import onnx_light.onnx.external_data_helper  # noqa: F401,E402
+import onnx_light.onnx.helper  # noqa: F401,E402
+import onnx_light.onnx.numpy_helper  # noqa: F401,E402
+import onnx_light.onnx.reference  # noqa: F401,E402
+import onnx_light.onnx.shape_inference  # noqa: F401,E402
 
 #: Opset used when the maximum opset supported by ``onnxruntime`` cannot be
 #: determined (for example when ``onnxruntime`` is not installed).

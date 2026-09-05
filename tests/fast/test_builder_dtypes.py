@@ -9,7 +9,7 @@ Tests for the dtype/token helpers in :mod:`modelbuilder.builder`.
 
 import unittest
 
-import onnx_ir as ir
+from modelbuilder import ir
 
 from modelbuilder.builder import parse_hf_token, set_io_dtype, set_onnx_dtype
 from modelbuilder.ext_test_case import ExtTestCase

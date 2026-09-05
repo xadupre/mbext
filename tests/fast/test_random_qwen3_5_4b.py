@@ -216,7 +216,7 @@ class TestRandomQwen3_5_4B(ExtTestCase):
         fallbacks for both ops so inference also runs on standard
         ``onnxruntime``.
         """
-        import onnx
+        from modelbuilder.helpers.onnx_helper import onnx
 
         config = _make_qwen3_5_4b_config(["full_attention", "linear_attention"])
         output_dir = self._build_and_save_model(config, "fp32", "cpu")
@@ -241,7 +241,7 @@ class TestRandomQwen3_5_4B(ExtTestCase):
     @hide_stdout()
     def test_qwen3_5_4b_fp16_cpu_hybrid_build(self):
         """fp16 variant of :meth:`test_qwen3_5_4b_fp32_cpu_hybrid_build`."""
-        import onnx
+        from modelbuilder.helpers.onnx_helper import onnx
 
         config = _make_qwen3_5_4b_config(["full_attention", "linear_attention"])
         output_dir = self._build_and_save_model(config, "fp16", "cpu")
@@ -333,7 +333,7 @@ class TestRandomQwen3_5_4B(ExtTestCase):
         """
         import json
 
-        import onnx
+        from modelbuilder.helpers.onnx_helper import onnx
 
         config = _make_qwen3_5_4b_config(["full_attention", "full_attention"])
         output_dir = self._build_and_save_model(config, "fp32", "cpu")

@@ -135,7 +135,7 @@ class TestRandomMixtral(ExtTestCase):
 
         # Verify that the ONNX model has the expected inputs and outputs by
         # loading it with the onnx library (no ORT / CUDA required).
-        import onnx
+        from modelbuilder.helpers.onnx_helper import onnx
 
         model_proto = onnx.load(onnx_path)
         input_names = {inp.name for inp in model_proto.graph.input}

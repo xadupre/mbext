@@ -313,7 +313,7 @@ class Gemma4Model(Gemma3Model):
 
             ple_inputs   = (context_proj + token_embed) * (1 / sqrt(2))
         """
-        import onnx_ir as ir
+        from .. import ir
 
         basename = "/model/ple"
         num_layers = self.num_layers
@@ -445,7 +445,7 @@ class Gemma4Model(Gemma3Model):
         so that the *next* layer's SkipLayerNorm correctly evaluates
         ``norm(layer_output + ple_contribution) == norm(ple_output)``.
         """
-        import onnx_ir as ir
+        from .. import ir
 
         basename = f"/model/layers.{layer_id}/ple"
         ple_dim = self._ple_dim
@@ -547,7 +547,7 @@ class Gemma4Model(Gemma3Model):
 
     def make_rotary_embedding_multi_cache(self):
         import torch
-        from onnx_ir.tensor_adapters import to_torch_dtype
+        from ..ir.tensor_adapters import to_torch_dtype
 
         full_params = getattr(self, "_full_rope_params", {})
         global_partial_rotary_factor = full_params.get("partial_rotary_factor", 1.0)
@@ -636,7 +636,7 @@ class Gemma4Model(Gemma3Model):
         Shared-KV layers have q_norm but no k_norm/v_norm weights: the donor's
         K/V are already normalized, so only Q needs normalization here.
         """
-        import onnx_ir as ir
+        from .. import ir
 
         layernorm_kwargs = {"epsilon": self.layernorm_attrs["epsilon"], "axis": -1, "stash_type": 1}
         old_io_dtype = self.io_dtype

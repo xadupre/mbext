@@ -69,7 +69,7 @@ def requires_yobx(version: str = "", msg: str = "") -> Callable:
         return lambda x: x
 
     if PvVersion(yobx.__version__) < PvVersion(version):
-        msg = f"onnx_ir version {yobx.__version__} < {version}: {msg}"
+        msg = f"yobx version {yobx.__version__} < {version}: {msg}"
         return unittest.skip(msg)
     return lambda x: x
 

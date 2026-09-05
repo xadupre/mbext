@@ -13,8 +13,7 @@ requires-python = ">=3.12"
 dependencies = [
     "ml_dtypes>=0.6.0",
     "numpy>=2.5.2",
-    "onnx>=1.22.0",
-    "onnxscript>=0.7.1",
+    "onnx-light @ https://github.com/xadupre/onnx-light/archive/refs/tags/0.1.24.tar.gz",
     "scipy>=1.18.0",
 ]
 

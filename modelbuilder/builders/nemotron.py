@@ -6,7 +6,7 @@
 import json
 import os
 
-import onnx_ir as ir
+from .. import ir
 import torch
 
 from .llama import LlamaModel
