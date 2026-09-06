@@ -158,7 +158,7 @@ class TestRandomFara1_5(ExtTestCase):
         rope configuration (partial_rotary_factor=0.25, mrope_section=[11, 11, 10],
         rope_theta=10000000, head_dim=256) and its hybrid layer pattern.
         """
-        import onnx
+        import onnx_light.onnx as onnx
 
         config = _make_fara1_5_config()
         model, output_dir = self._build_and_save_model(config, "fp32", "cpu")

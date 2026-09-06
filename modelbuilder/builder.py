@@ -17,9 +17,10 @@ import sys
 import textwrap
 from typing import Any
 
-import onnx_ir as ir
 import torch
+from onnx_light.onnx import TensorProto
 from transformers import AutoConfig
+
 from .builders import Model
 
 
@@ -113,7 +114,7 @@ def parse_hf_token(hf_token):
 INT_PRECISION_BITS = {"int2": 2, "int4": 4, "int8": 8, "int16": 16}
 
 
-def set_io_dtype(precision, execution_provider, extra_options) -> ir.DataType:
+def set_io_dtype(precision, execution_provider, extra_options) -> TensorProto.DataType:
     int_precision = precision in INT_PRECISION_BITS
     int_cpu = int_precision and execution_provider == "cpu"
     fp32_webgpu = execution_provider == "webgpu" and extra_options.get("use_webgpu_fp32", False)
@@ -121,24 +122,24 @@ def set_io_dtype(precision, execution_provider, extra_options) -> ir.DataType:
 
     if precision == "fp32" or int_cpu or fp32_webgpu:
         # FP32 precision
-        return ir.DataType.FLOAT
+        return TensorProto.DataType.FLOAT
 
     if precision == "bf16" or bf16_cuda:
         # BF16 precision
-        return ir.DataType.BFLOAT16
+        return TensorProto.DataType.BFLOAT16
 
     # FP16 precision
-    return ir.DataType.FLOAT16
+    return TensorProto.DataType.FLOAT16
 
 
-def set_onnx_dtype(precision: str, extra_options: dict[str, Any]) -> ir.DataType:
+def set_onnx_dtype(precision: str, extra_options: dict[str, Any]) -> TensorProto.DataType:
     if precision in INT_PRECISION_BITS:
         # int2/int4/int8/int16 all use the MatMulNBits quantization pipeline; the
         # weight container dtype is INT4/UINT4 while the number of bits is
         # carried separately (see ``int4_bits``).
-        return ir.DataType.INT4 if extra_options.get("int4_is_symmetric", True) else ir.DataType.UINT4
+        return TensorProto.DataType.INT4 if extra_options.get("int4_is_symmetric", True) else TensorProto.DataType.UINT4
 
-    to_onnx_dtype = {"fp32": ir.DataType.FLOAT, "fp16": ir.DataType.FLOAT16, "bf16": ir.DataType.BFLOAT16}
+    to_onnx_dtype = {"fp32": TensorProto.DataType.FLOAT, "fp16": TensorProto.DataType.FLOAT16, "bf16": TensorProto.DataType.BFLOAT16}
     return to_onnx_dtype[precision]
 
 

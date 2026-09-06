@@ -5,7 +5,7 @@
 # --------------------------------------------------------------------------
 
 import numpy as np
-import onnx_ir as ir
+from onnx_light.onnx import TensorProto as ir
 
 from .base import Model
 

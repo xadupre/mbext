@@ -12,7 +12,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 import numpy as np
 
-from modelbuilder.helpers.onnx_helper import onnx
+import onnx_light.onnx as onnx
 
 
 class PvVersion:
@@ -69,7 +69,7 @@ def requires_yobx(version: str = "", msg: str = "") -> Callable:
         return lambda x: x
 
     if PvVersion(yobx.__version__) < PvVersion(version):
-        msg = f"onnx_ir version {yobx.__version__} < {version}: {msg}"
+        msg = f"yobx version {yobx.__version__} < {version}: {msg}"
         return unittest.skip(msg)
     return lambda x: x
 
@@ -1652,7 +1652,7 @@ def _read_results(json_path: str) -> List[Dict[str, Any]]:
 
 def torch_dtype_to_ort_element_type(dtype):
     """Map a :class:`torch.dtype` to the corresponding ORT TensorProto element type int."""
-    from modelbuilder.helpers.onnx_helper import onnx
+    import onnx_light.onnx as onnx
     import torch
 
     return {

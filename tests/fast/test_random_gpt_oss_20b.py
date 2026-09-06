@@ -205,7 +205,7 @@ class TestGptOss20b(ExtTestCase):
           * the mscale formula (0.1 * log(factor) + 1)
         """
         import torch
-        import onnx_ir as ir
+        from onnx_light.onnx import TensorProto as ir
         from transformers import GptOssConfig
 
         from modelbuilder.builders.gptoss import GPTOSSModel
@@ -271,7 +271,7 @@ class TestGptOss20b(ExtTestCase):
         Patching ``make_moe`` lets us test the decomposed code path with standard CPU
         attention ops and without requiring any non-standard execution environment.
         """
-        import onnx
+        import onnx_light.onnx as onnx
         import torch
         from tokenizers import Tokenizer
         from tokenizers.models import WordLevel

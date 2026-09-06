@@ -10,9 +10,9 @@ import json
 import os
 
 import numpy as np
-import onnx_ir as ir
+import onnx_light.onnx.numpy_helper as numpy_helper
 import torch
-from onnxruntime.quantization.matmul_nbits_quantizer import RTNWeightOnlyQuantConfig
+from onnx_light.onnx import TensorProto as ir
 from transformers import AutoConfig
 
 from .base import Model
@@ -343,7 +343,7 @@ class Qwen25VLTextModel(Model):
                 [],
                 [sections_output],
                 name=sections_name,
-                value=ir.tensor(torch.tensor(self.mrope_sections, dtype=torch.int64), name=sections_output),
+                value=numpy_helper.from_array(np.asarray(self.mrope_sections, dtype=np.int64), name=sections_output),
             )
             self.make_value(sections_output, ir.DataType.INT64, [3])
 
@@ -863,7 +863,7 @@ class Qwen25OmniVisionEncoderModel(VisionEncoderModel):
         # Tile [n_patches, head_dim//2] → [n_patches, head_dim].
         # Use an inline Constant node (not initializer) to avoid external-data serialisation.
         tile_const = f"{name}/tile_repeats"
-        _tile_t = ir.Tensor(np.array([1, 2], dtype=np.int64), name=tile_const)
+        _tile_t = numpy_helper.from_array(np.array([1, 2], dtype=np.int64), name=tile_const)
         self.make_node("Constant", inputs=[], outputs=[tile_const], name=f"{tile_const}/Constant", value=_tile_t)
         self.make_value(tile_const, ir.DataType.INT64, shape=[2])
         self.make_tile(f"{name}/cos_full", [cos_raw, tile_const], ir.DataType.FLOAT, [None, head_dim])
@@ -873,7 +873,7 @@ class Qwen25OmniVisionEncoderModel(VisionEncoderModel):
 
         # Unsqueeze to [n_patches, 1, head_dim] for broadcasting with [n_patches, num_heads, head_dim].
         ax_1 = f"{name}/ax1_const"
-        _ax_t = ir.Tensor(np.array([1], dtype=np.int64), name=ax_1)
+        _ax_t = numpy_helper.from_array(np.array([1], dtype=np.int64), name=ax_1)
         self.make_node("Constant", inputs=[], outputs=[ax_1], name=f"{ax_1}/Constant", value=_ax_t)
         self.make_value(ax_1, ir.DataType.INT64, shape=[1])
         self.make_unsqueeze(f"{name}/cos_3d", [cos_full_out, ax_1], ir.DataType.FLOAT, [None, 1, head_dim])
@@ -893,7 +893,7 @@ class Qwen25OmniVisionEncoderModel(VisionEncoderModel):
         split_out_1 = f"{name}/split_1/output_0"
         split_out_2 = f"{name}/split_2/output_0"
         half_const = f"{name}/half_const"
-        _half_t = ir.Tensor(np.array([half, half], dtype=np.int64), name=half_const)
+        _half_t = numpy_helper.from_array(np.array([half, half], dtype=np.int64), name=half_const)
         self.make_node("Constant", inputs=[], outputs=[half_const], name=f"{half_const}/Constant", value=_half_t)
         self.make_value(half_const, ir.DataType.INT64, shape=[2])
         self.make_node("Split", inputs=[x_fp32, half_const], outputs=[split_out_1, split_out_2], name=f"{name}/Split", axis=-1)
@@ -1054,11 +1054,9 @@ class Qwen25OmniVisionEncoderModel(VisionEncoderModel):
         vis = hf_model.visual
 
         # --- Graph inputs ---
-        pv_in = self.make_value("pixel_values", ir.DataType.FLOAT, shape=[None, self.in_feat_dim])
-        self.graph.inputs.append(pv_in)
+        self.make_graph_input("pixel_values", ir.DataType.FLOAT, [None, self.in_feat_dim])
         # rotary_pos_emb is always float32 (computed by the image processor).
-        rope_in = self.make_value("rotary_pos_emb", ir.DataType.FLOAT, shape=[None, self.vis_head_dim // 2])
-        self.graph.inputs.append(rope_in)
+        self.make_graph_input("rotary_pos_emb", ir.DataType.FLOAT, [None, self.vis_head_dim // 2])
 
         # --- Patch embedding: Linear [n_patches, in_feat_dim] → [n_patches, hidden_size] ---
         pv_cast = "pixel_values"
@@ -1090,10 +1088,7 @@ class Qwen25OmniVisionEncoderModel(VisionEncoderModel):
 
         # --- Graph output ---
         self.make_node("Identity", inputs=[image_features], outputs=["image_features"], name="/vision/output/Identity")
-        out_val = self.make_value("image_features", self.io_dtype, shape=[None, self.out_hidden_size])
-        self.graph.outputs.append(out_val)
-
-        self.graph.sort()
+        self.make_graph_output("image_features", self.io_dtype, [None, self.out_hidden_size])
 
 
 class Qwen25OmniAudioEncoderModel(AudioEncoderModel):
@@ -1212,7 +1207,7 @@ class Qwen25OmniAudioEncoderModel(AudioEncoderModel):
         scale_val = float(hd) ** -0.5
         scale_name = f"{b}/attn_scale"
         np_dtype = np.float32 if self.io_dtype in (ir.DataType.FLOAT, ir.DataType.BFLOAT16) else np.float16
-        _scale_t = ir.Tensor(np.array(scale_val, dtype=np_dtype), name=scale_name)
+        _scale_t = numpy_helper.from_array(np.array(scale_val, dtype=np_dtype), name=scale_name)
         self.make_node("Constant", inputs=[], outputs=[scale_name], name=f"{scale_name}/Constant", value=_scale_t)
         self.make_value(scale_name, self.io_dtype, shape=[])
 
@@ -1336,11 +1331,10 @@ class Qwen25OmniAudioEncoderModel(AudioEncoderModel):
         n = None  # dynamic sequence length
 
         # --- Graph input: float32 mel-spectrogram [num_mel_bins, n_frames] ---
-        in_val = self.make_value("audio_embeds", ir.DataType.FLOAT, shape=[self.num_mel_bins, n])
-        self.graph.inputs.append(in_val)
+        self.make_graph_input("audio_embeds", ir.DataType.FLOAT, [self.num_mel_bins, n])
 
         # Constant axes tensor for Unsqueeze/Squeeze at batch dim 0.
-        _bax = ir.Tensor(np.array([0], dtype=np.int64), name="/audio/batch_ax")
+        _bax = numpy_helper.from_array(np.array([0], dtype=np.int64), name="/audio/batch_ax")
         self.make_node("Constant", inputs=[], outputs=["/audio/batch_ax"], name="/audio/batch_ax/Constant", value=_bax)
         self.make_value("/audio/batch_ax", ir.DataType.INT64, shape=[1])
 
@@ -1408,7 +1402,7 @@ class Qwen25OmniAudioEncoderModel(AudioEncoderModel):
 
         # Dynamically slice to [n_conv_out, d_model] using Shape + Gather + Slice.
         self.make_shape("/audio/hidden_shape", hidden, [2])
-        _idx = ir.Tensor(np.array(0, dtype=np.int64), name="/audio/seq_len_idx")
+        _idx = numpy_helper.from_array(np.array(0, dtype=np.int64), name="/audio/seq_len_idx")
         self.make_node("Constant", inputs=[], outputs=["/audio/seq_len_idx"], name="/audio/seq_len_idx/Constant", value=_idx)
         self.make_value("/audio/seq_len_idx", ir.DataType.INT64, shape=[])
         self.make_gather("/audio/seq_len", ["/audio/hidden_shape/output_0", "/audio/seq_len_idx"], ir.DataType.INT64, [], axis=0)
@@ -1416,10 +1410,10 @@ class Qwen25OmniAudioEncoderModel(AudioEncoderModel):
         # Unsqueeze scalar → [1] for use as Slice ends
         self.make_unsqueeze("/audio/seq_len_1d", ["/audio/seq_len/output_0", "/audio/batch_ax"], ir.DataType.INT64, [1])
 
-        _starts = ir.Tensor(np.array([0], dtype=np.int64), name="/audio/pos_emb_starts")
+        _starts = numpy_helper.from_array(np.array([0], dtype=np.int64), name="/audio/pos_emb_starts")
         self.make_node("Constant", inputs=[], outputs=["/audio/pos_emb_starts"], name="/audio/pos_emb_starts/Constant", value=_starts)
         self.make_value("/audio/pos_emb_starts", ir.DataType.INT64, shape=[1])
-        _axes = ir.Tensor(np.array([0], dtype=np.int64), name="/audio/pos_emb_axes")
+        _axes = numpy_helper.from_array(np.array([0], dtype=np.int64), name="/audio/pos_emb_axes")
         self.make_node("Constant", inputs=[], outputs=["/audio/pos_emb_axes"], name="/audio/pos_emb_axes/Constant", value=_axes)
         self.make_value("/audio/pos_emb_axes", ir.DataType.INT64, shape=[1])
 
@@ -1483,10 +1477,7 @@ class Qwen25OmniAudioEncoderModel(AudioEncoderModel):
 
         # --- Graph output ---
         self.make_node("Identity", inputs=[audio_feat], outputs=["audio_features"], name="/audio/output/Identity")
-        out_val = self.make_value("audio_features", self.io_dtype, shape=[n, self.output_dim])
-        self.graph.outputs.append(out_val)
-
-        self.graph.sort()
+        self.make_graph_output("audio_features", self.io_dtype, [n, self.output_dim])
 
 
 class Qwen25OmniEmbeddingModel(EmbeddingModel):
@@ -1541,16 +1532,16 @@ class Qwen25OmniEmbeddingModel(EmbeddingModel):
         self.make_initializer(np.array(self.image_token_id, dtype=np.int64), name="image_token_id_const")
         self.make_initializer(np.array(self.audio_token_id, dtype=np.int64), name="audio_token_id_const")
 
-        _squeeze_axes = ir.Tensor(np.array([0], dtype=np.int64), name="squeeze_batch_axes")
+        _squeeze_axes = numpy_helper.from_array(np.array([0], dtype=np.int64), name="squeeze_batch_axes")
         self.make_node(
             "Constant", inputs=[], outputs=["squeeze_batch_axes"], name="/embed/squeeze_batch_axes/Constant", value=_squeeze_axes
         )
         self.make_value("squeeze_batch_axes", ir.DataType.INT64, shape=[1])
 
         # Graph inputs
-        self.graph.inputs.append(self.make_value("input_ids", ir.DataType.INT64, shape=[None, None]))
-        self.graph.inputs.append(self.make_value("image_features", self.io_dtype, shape=[None, self.hidden_size]))
-        self.graph.inputs.append(self.make_value("audio_features", self.io_dtype, shape=[None, self.hidden_size]))
+        self.make_graph_input("input_ids", ir.DataType.INT64, [None, None])
+        self.make_graph_input("image_features", self.io_dtype, [None, self.hidden_size])
+        self.make_graph_input("audio_features", self.io_dtype, [None, self.hidden_size])
 
         # 1. Embed all tokens: [1, T] → [1, T, H] (float32)
         self.make_node("Gather", inputs=["embed_tokens_weight", "input_ids"], outputs=["text_embeds"], name="/embed/Gather", axis=0)
@@ -1584,9 +1575,7 @@ class Qwen25OmniEmbeddingModel(EmbeddingModel):
         self.make_node("Unsqueeze", inputs=["scattered_2d", "squeeze_batch_axes"], outputs=["inputs_embeds"], name="/embed/Unsqueeze")
 
         # Graph output
-        self.graph.outputs.append(self.make_value("inputs_embeds", self.io_dtype, shape=[1, None, self.hidden_size]))
-
-        self.graph.sort()
+        self.make_graph_output("inputs_embeds", self.io_dtype, [1, None, self.hidden_size])
 
 
 class Qwen25OmniConditionalGenerationModel(Model):
@@ -1794,14 +1783,18 @@ class Qwen3VLTextModel(Qwen25VLTextModel):
                     continue
                 pname = f"{shared_base}/dim{dim_idx}/Positions/Constant"
                 pout = f"{shared_base}/dim{dim_idx}/positions"
-                self.make_node("Constant", [], [pout], name=pname, value=ir.tensor(torch.tensor(positions, dtype=torch.int64), name=pout))
+                self.make_node(
+                    "Constant", [], [pout], name=pname, value=numpy_helper.from_array(np.asarray(positions, dtype=np.int64), name=pout)
+                )
                 self.make_value(pout, ir.DataType.INT64, [len(positions)])
                 positions_outputs[dim_idx] = pout
 
             # Emit shared reorder constant
             rname = f"{shared_base}/Reorder/Constant"
             rout = f"{shared_base}/reorder"
-            self.make_node("Constant", [], [rout], name=rname, value=ir.tensor(torch.tensor(reorder_indices, dtype=torch.int64), name=rout))
+            self.make_node(
+                "Constant", [], [rout], name=rname, value=numpy_helper.from_array(np.asarray(reorder_indices, dtype=np.int64), name=rout)
+            )
             self.make_value(rout, ir.DataType.INT64, [half_head])
 
             self._mrope_cache = {"dim_to_positions": dim_to_positions, "positions_outputs": positions_outputs, "reorder_output": rout}
@@ -2083,10 +2076,10 @@ class Qwen35TextModel(Model):
 
         if int8_nodes:
             algo_config = self.quant_attrs["int4"].get("algo_config")
-            if algo_config is not None and hasattr(algo_config, "customized_weight_config"):
-                algo_config.customized_weight_config.update(int8_nodes)
+            if algo_config is not None:
+                algo_config["customized_weight_config"].update(int8_nodes)
             else:
-                algo_config = RTNWeightOnlyQuantConfig(customized_weight_config=int8_nodes)
+                algo_config = {"algorithm": "rtn", "customized_weight_config": int8_nodes}
                 self.quant_attrs["int4"]["algo_config"] = algo_config
 
         # Replace standard KV cache I/O with hybrid cache I/O
@@ -3079,10 +3072,11 @@ class Qwen35MoeTextModel(Qwen35TextModel):
         # MoE layers use MoE/QMoE ops instead of individual MatMul nodes,
         # so remove any /mlp/ MatMul overrides that don't apply.
         algo_config = self.quant_attrs["int4"].get("algo_config")
-        if algo_config is not None and hasattr(algo_config, "customized_weight_config"):
-            keys_to_remove = [k for k in algo_config.customized_weight_config if "/mlp/" in k]
+        if algo_config is not None:
+            customized_weight_config = algo_config["customized_weight_config"]
+            keys_to_remove = [k for k in customized_weight_config if "/mlp/" in k]
             for k in keys_to_remove:
-                del algo_config.customized_weight_config[k]
+                del customized_weight_config[k]
 
     def load_weights(self, input_path):
         from transformers import Qwen3_5MoeForConditionalGeneration

@@ -193,6 +193,7 @@ class TestMistralNeMo(ExtTestCase):
         self.run_genai_generation_test(output_dir, model, config.vocab_size, config.eos_token_id)
 
     @hide_stdout()
+    @unittest.skip("torch.onnx.export is outside the onnx-light-only dependency set")
     def test_mistral_nemo_torch_onnx_export(self):
         """
         Verify that a randomly-initialised MistralNeMoForCausalLM can be

@@ -5,7 +5,8 @@
 # --------------------------------------------------------------------------
 
 import numpy as np
-import onnx_ir as ir
+import onnx_light.onnx.numpy_helper as numpy_helper
+from onnx_light.onnx import TensorProto
 
 from .base import Model
 
@@ -57,18 +58,18 @@ class EmbeddingModel(Model):
         self.make_initializer(np.array(self.image_token_id, dtype=np.int64), name="image_token_id_const")
         # Use a Constant node (always inline) rather than an initializer so that
         # shape inference can read the axes value even when external data is used.
-        _squeeze_axes = ir.Tensor(np.array([0], dtype=np.int64), name="squeeze_batch_axes")
+        _squeeze_axes = numpy_helper.from_array(np.array([0], dtype=np.int64), name="squeeze_batch_axes")
         self.make_node(
             "Constant", inputs=[], outputs=["squeeze_batch_axes"], name="/embed/squeeze_batch_axes/Constant", value=_squeeze_axes
         )
-        self.make_value("squeeze_batch_axes", ir.DataType.INT64, shape=[1])
+        self.make_value("squeeze_batch_axes", TensorProto.INT64, shape=[1])
 
         # Graph inputs (dynamic shapes).
         # ORT-GenAI passes input_ids as 2D [batch, seq_len].
-        self.graph.inputs.append(self.make_value("input_ids", ir.DataType.INT64, shape=[None, None]))
+        self.make_graph_input("input_ids", TensorProto.INT64, [None, None])
         # image_features dtype follows io_dtype so that it matches the vision
         # encoder output (float16 for fp16 models, float32 for fp32/int4).
-        self.graph.inputs.append(self.make_value("image_features", self.io_dtype, shape=[None, self.hidden_size]))
+        self.make_graph_input("image_features", self.io_dtype, [None, self.hidden_size])
 
         # 1. Embed all tokens: input_ids [1, T] -> text_embeds [1, T, H] (fp32, weights are float32)
         self.make_node("Gather", inputs=["embed_tokens_weight", "input_ids"], outputs=["text_embeds"], name="/embed/Gather", axis=0)
@@ -97,6 +98,4 @@ class EmbeddingModel(Model):
         self.make_node("Unsqueeze", inputs=["scattered_2d", "squeeze_batch_axes"], outputs=["inputs_embeds"], name="/embed/Unsqueeze")
 
         # Graph output — dtype matches io_dtype (float16 for fp16 models, float32 for fp32/int4)
-        self.graph.outputs.append(self.make_value("inputs_embeds", self.io_dtype, shape=[1, None, self.hidden_size]))
-
-        self.graph.sort()
+        self.make_graph_output("inputs_embeds", self.io_dtype, [1, None, self.hidden_size])

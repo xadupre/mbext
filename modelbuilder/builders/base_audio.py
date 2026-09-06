@@ -5,7 +5,8 @@
 # --------------------------------------------------------------------------
 
 import numpy as np
-import onnx_ir as ir
+import onnx_light.onnx.numpy_helper as numpy_helper
+from onnx_light.onnx import TensorProto
 
 from .base import Model
 
@@ -151,9 +152,9 @@ class AudioEncoderModel(Model):
         str
             Output value name (same as *name*).
         """
-        t = ir.Tensor(np.array(value, dtype=np.int64), name=name)
+        t = numpy_helper.from_array(np.array(value, dtype=np.int64), name=name)
         self.make_node("Constant", inputs=[], outputs=[name], name=f"{name}/Constant", value=t)
-        self.make_value(name, ir.DataType.INT64, shape=[])
+        self.make_value(name, TensorProto.INT64, shape=[])
         return name
 
     def _make_constant_i64_1d(self, name, values):
@@ -171,7 +172,7 @@ class AudioEncoderModel(Model):
         str
             Output value name (same as *name*).
         """
-        t = ir.Tensor(np.array(values, dtype=np.int64), name=name)
+        t = numpy_helper.from_array(np.array(values, dtype=np.int64), name=name)
         self.make_node("Constant", inputs=[], outputs=[name], name=f"{name}/Constant", value=t)
-        self.make_value(name, ir.DataType.INT64, shape=[len(values)])
+        self.make_value(name, TensorProto.INT64, shape=[len(values)])
         return name

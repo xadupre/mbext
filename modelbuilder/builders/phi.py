@@ -8,8 +8,9 @@ import json
 import os
 
 import numpy as np
-import onnx_ir as ir
+import onnx_light.onnx.numpy_helper as numpy_helper
 import torch
+from onnx_light.onnx import TensorProto as ir
 
 from .base import Model
 from .base_audio import AudioEncoderModel
@@ -618,8 +619,7 @@ class Phi4MultimodalVisionEncoderModel(VisionEncoderModel):
         d = self.vis_hidden_size
 
         # Graph input.
-        pixel_values_in = self.make_value("pixel_values", self.io_dtype, shape=[nc, self.num_channels, self.crop_size, self.crop_size])
-        self.graph.inputs.append(pixel_values_in)
+        self.make_graph_input("pixel_values", self.io_dtype, [nc, self.num_channels, self.crop_size, self.crop_size])
 
         patch_embed = self.make_patch_embedding(
             "pixel_values", vision_embed.patch_embedding.weight, "vision.embeddings.patch_embedding.weight", [nc]
@@ -779,10 +779,7 @@ class Phi4MultimodalVisionEncoderModel(VisionEncoderModel):
 
         # Graph output.
         self.make_node("Identity", inputs=[image_features], outputs=["image_features"], name="/vision/output/Identity")
-        out_val = self.make_value("image_features", self.io_dtype, shape=[self.n_image_tokens, self.text_hidden_size])
-        self.graph.outputs.append(out_val)
-
-        self.graph.sort()
+        self.make_graph_output("image_features", self.io_dtype, [self.n_image_tokens, self.text_hidden_size])
 
 
 class Phi4MultimodalAudioEncoderModel(AudioEncoderModel):
@@ -1019,7 +1016,7 @@ class Phi4MultimodalAudioEncoderModel(AudioEncoderModel):
         # Split into gate and up: each [1, n, mid]
         split_g = f"{name}/Split/output_0"
         split_u = f"{name}/Split/output_1"
-        split_sizes = ir.Tensor(np.array([mid, mid], dtype=np.int64), name=f"{name}/split_sizes")
+        split_sizes = numpy_helper.from_array(np.array([mid, mid], dtype=np.int64), name=f"{name}/split_sizes")
         self.make_node("Constant", inputs=[], outputs=[f"{name}/split_sizes"], name=f"{name}/split_sizes/Constant", value=split_sizes)
         self.make_value(f"{name}/split_sizes", ir.DataType.INT64, shape=[2])
         self.make_node("Split", inputs=[combined, f"{name}/split_sizes"], outputs=[split_g, split_u], name=f"{name}/Split", axis=-1)
@@ -1075,7 +1072,7 @@ class Phi4MultimodalAudioEncoderModel(AudioEncoderModel):
         # Split: [1, ep*2, n] → left [1, ep, n], right [1, ep, n]
         split_l = f"{name}/Split/output_0"
         split_r = f"{name}/Split/output_1"
-        glu_split_sizes = ir.Tensor(np.array([ep, ep], dtype=np.int64), name=f"{name}/glu_split_sizes")
+        glu_split_sizes = numpy_helper.from_array(np.array([ep, ep], dtype=np.int64), name=f"{name}/glu_split_sizes")
         self.make_node(
             "Constant", inputs=[], outputs=[f"{name}/glu_split_sizes"], name=f"{name}/glu_split_sizes/Constant", value=glu_split_sizes
         )
@@ -1256,7 +1253,7 @@ class Phi4MultimodalAudioEncoderModel(AudioEncoderModel):
 
         # Scale
         np_dtype = np.float32 if self.io_dtype in (ir.DataType.FLOAT, ir.DataType.BFLOAT16) else np.float16
-        scale_t = ir.Tensor(np.array(scale, dtype=np_dtype), name=f"{name}/scale")
+        scale_t = numpy_helper.from_array(np.array(scale, dtype=np_dtype), name=f"{name}/scale")
         self.make_node("Constant", inputs=[], outputs=[f"{name}/scale"], name=f"{name}/scale/Constant", value=scale_t)
         self.make_value(f"{name}/scale", self.io_dtype, shape=[])
         attn_scaled = self.make_mul(f"{name}/attn_scale", [attn_logits, f"{name}/scale"], self.io_dtype, [1, nh, None, None])
@@ -1349,8 +1346,7 @@ class Phi4MultimodalAudioEncoderModel(AudioEncoderModel):
         th = self.text_hidden_size
 
         # Graph input: float32 [1, T, input_size]
-        in_val = self.make_value("audio_features", ir.DataType.FLOAT, shape=[1, None, self.input_size])
-        self.graph.inputs.append(in_val)
+        self.make_graph_input("audio_features", ir.DataType.FLOAT, [1, None, self.input_size])
 
         # 1. Encoder embedding: mean-variance normalization
         hidden = self._make_encoder_embedding(encoder.encoder_embedding, "audio_features")
@@ -1363,7 +1359,7 @@ class Phi4MultimodalAudioEncoderModel(AudioEncoderModel):
 
         # Shared 0.5 scale initializer (reused by all Conformer layers)
         np_dtype = np.float32 if self.io_dtype in (ir.DataType.FLOAT, ir.DataType.BFLOAT16) else np.float16
-        half_t = ir.Tensor(np.array(0.5, dtype=np_dtype), name="audio.half_scale")
+        half_t = numpy_helper.from_array(np.array(0.5, dtype=np_dtype), name="audio.half_scale")
         self.make_node("Constant", inputs=[], outputs=["audio.half_scale"], name="audio.half_scale/Constant", value=half_t)
         self.make_value("audio.half_scale", self.io_dtype, shape=[])
 
@@ -1389,10 +1385,7 @@ class Phi4MultimodalAudioEncoderModel(AudioEncoderModel):
 
         # Graph output — named differently from the graph input ("audio_features")
         self.make_node("Identity", inputs=[squeezed], outputs=["audio_features_out"], name="/audio/output/Identity")
-        out_val = self.make_value("audio_features_out", self.io_dtype, shape=[None, th])
-        self.graph.outputs.append(out_val)
-
-        self.graph.sort()
+        self.make_graph_output("audio_features_out", self.io_dtype, [None, th])
 
 
 class Phi4MultimodalEmbeddingModel(EmbeddingModel):
@@ -1451,16 +1444,16 @@ class Phi4MultimodalEmbeddingModel(EmbeddingModel):
         self.make_initializer(np.array(self.image_token_id, dtype=np.int64), name="image_token_id_const")
         self.make_initializer(np.array(self.audio_token_id, dtype=np.int64), name="audio_token_id_const")
 
-        _squeeze_axes = ir.Tensor(np.array([0], dtype=np.int64), name="squeeze_batch_axes")
+        _squeeze_axes = numpy_helper.from_array(np.array([0], dtype=np.int64), name="squeeze_batch_axes")
         self.make_node(
             "Constant", inputs=[], outputs=["squeeze_batch_axes"], name="/embed/squeeze_batch_axes/Constant", value=_squeeze_axes
         )
         self.make_value("squeeze_batch_axes", ir.DataType.INT64, shape=[1])
 
         # Graph inputs
-        self.graph.inputs.append(self.make_value("input_ids", ir.DataType.INT64, shape=[None, None]))
-        self.graph.inputs.append(self.make_value("image_features", self.io_dtype, shape=[None, self.hidden_size]))
-        self.graph.inputs.append(self.make_value("audio_features", self.io_dtype, shape=[None, self.hidden_size]))
+        self.make_graph_input("input_ids", ir.DataType.INT64, [None, None])
+        self.make_graph_input("image_features", self.io_dtype, [None, self.hidden_size])
+        self.make_graph_input("audio_features", self.io_dtype, [None, self.hidden_size])
 
         # 1. Embed all tokens: [1, T] → [1, T, H] (float32)
         self.make_node("Gather", inputs=["embed_tokens_weight", "input_ids"], outputs=["text_embeds"], name="/embed/Gather", axis=0)
@@ -1494,9 +1487,7 @@ class Phi4MultimodalEmbeddingModel(EmbeddingModel):
         self.make_node("Unsqueeze", inputs=["scattered_2d", "squeeze_batch_axes"], outputs=["inputs_embeds"], name="/embed/Unsqueeze")
 
         # Graph output
-        self.graph.outputs.append(self.make_value("inputs_embeds", self.io_dtype, shape=[1, None, self.hidden_size]))
-
-        self.graph.sort()
+        self.make_graph_output("inputs_embeds", self.io_dtype, [1, None, self.hidden_size])
 
 
 class Phi4MultimodalTextModel(MistralModel):

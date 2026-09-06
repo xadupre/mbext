@@ -11,7 +11,7 @@ from typing import Dict, FrozenSet, List, Optional, Tuple, Union
 
 import numpy as np
 
-from modelbuilder.helpers.onnx_helper import onnx
+import onnx_light.onnx as onnx
 
 # ---------------------------------------------------------------------------
 # OnnxRuntime type-string → numpy dtype mapping
@@ -144,9 +144,9 @@ def onnx_generate(
     Example with a tiny synthetic ONNX decoder (no KV cache)::
 
         import numpy as np
-        import onnx
-        import onnx.helper as oh
-        import onnx.numpy_helper as onh
+        import onnx_light.onnx.helper as oh
+        import onnx_light.onnx.numpy_helper as onh
+        import onnx_light.onnx as onnx
         from modelbuilder.helpers.rt_helper import onnx_generate
 
         TINT64 = onnx.TensorProto.INT64

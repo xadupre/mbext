@@ -60,7 +60,7 @@ class TestHunyuanDenseV1(ExtTestCase):
     def test_hunyuan_builder_instantiation(self):
         """Smoke test: HunyuanDenseV1Model can be instantiated and overrides the
         attention_qk_rope_and_norm hook (RoPE-then-norm ordering)."""
-        import onnx_ir as ir
+        from onnx_light.onnx import TensorProto as ir
 
         from modelbuilder.builders.base import Model
         from modelbuilder.builders.hunyuan import HunyuanDenseV1Model
@@ -80,7 +80,7 @@ class TestHunyuanDenseV1(ExtTestCase):
 
     def test_hunyuan_rope_theta_dynamic_ntk_scaling(self):
         """Dynamic NTK-alpha scaling bakes the effective theta into config.rope_theta."""
-        import onnx_ir as ir
+        from onnx_light.onnx import TensorProto as ir
 
         from modelbuilder.builders.hunyuan import HunyuanDenseV1Model
 

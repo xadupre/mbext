@@ -9,19 +9,24 @@ import tempfile
 import unittest
 
 import numpy as np
-import onnx_ir as ir
+import onnx_light.onnx.helper as onnx_helper
+import onnx_light.onnx.numpy_helper as numpy_helper
+from onnx_light.onnx import TensorProto
 
 from modelbuilder.ext_test_case import ExtTestCase
 from modelbuilder.quant_stats import compute_weight_statistics, save_weight_statistics
 
 
-def _make_model_with_matmul(weight: np.ndarray, node_name: str = "/mm/MatMul", op_type: str = "MatMul") -> ir.Model:
-    weight_value = ir.Value(name="weight", const_value=ir.tensor(weight, name="weight"))
-    x = ir.Value(name="x", type=ir.TensorType(ir.DataType.FLOAT), shape=ir.Shape([1, weight.shape[0]]))
-    y = ir.Value(name="y")
-    node = ir.Node("", op_type, inputs=[x, weight_value], outputs=[y], name=node_name)
-    graph = ir.Graph(inputs=[x], outputs=[y], nodes=[node], initializers=[weight_value], opset_imports={"": 21}, name="g")
-    return ir.Model(graph, ir_version=10)
+def _make_model_with_matmul(weight: np.ndarray, node_name: str = "/mm/MatMul", op_type: str = "MatMul"):
+    node = onnx_helper.make_node(op_type, ["x", "weight"], ["y"], name=node_name)
+    graph = onnx_helper.make_graph(
+        [node],
+        "g",
+        [onnx_helper.make_tensor_value_info("x", TensorProto.FLOAT, [1, weight.shape[0]])],
+        [onnx_helper.make_tensor_value_info("y", TensorProto.FLOAT, [1, weight.shape[1]])],
+        [numpy_helper.from_array(weight, name="weight")],
+    )
+    return onnx_helper.make_model(graph, ir_version=10, opset_imports=[onnx_helper.make_opsetid("", 21)])
 
 
 class TestQuantStats(ExtTestCase):
