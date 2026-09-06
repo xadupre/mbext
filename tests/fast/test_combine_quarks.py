@@ -6,8 +6,8 @@
 import unittest
 from types import SimpleNamespace
 
-from modelbuilder import ir
 import torch
+from onnx_light.onnx import TensorProto as ir
 
 from modelbuilder.ext_test_case import ExtTestCase, hide_stdout
 

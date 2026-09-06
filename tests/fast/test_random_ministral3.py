@@ -821,7 +821,7 @@ class TestMinistral3(ExtTestCase):
            ``image_features`` with the expected shape
            ``[num_merged_patches, text_hidden_size]``.
         """
-        from modelbuilder.helpers.onnx_helper import onnx
+        import onnx_light.onnx as onnx
         import torch
         from transformers import Mistral3ForConditionalGeneration
 
@@ -1006,7 +1006,7 @@ class TestMinistral3(ExtTestCase):
         contain a ``/vision/projector/linear_1/Add`` node, confirming that the
         bias branch was executed.
         """
-        from modelbuilder.helpers.onnx_helper import onnx
+        import onnx_light.onnx as onnx
         import torch
         from unittest.mock import patch
         from transformers import Mistral3ForConditionalGeneration

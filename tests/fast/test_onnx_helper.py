@@ -10,6 +10,10 @@ Tests for :mod:`modelbuilder.helpers.onnx_helper`.
 import unittest
 from unittest import mock
 
+import numpy as np
+import torch
+from onnx_light.onnx import TensorProto
+
 from modelbuilder.ext_test_case import ExtTestCase
 
 
@@ -32,23 +36,12 @@ class TestOnnxHelper(ExtTestCase):
 
         self.assertTrue(callable(ReferenceEvaluator))
 
-    def test_onnxruntime_quantization_uses_onnx_light(self):
-        import sys
+    def test_torch_tensor_conversion(self):
+        from modelbuilder.helpers.onnx_helper import from_torch_dtype, torch_tensor_to_numpy
 
-        from modelbuilder import ir
-        from modelbuilder.helpers import onnx_helper
-
-        onnx_helper.enable_onnxruntime_quantization()
-        self.assertIs(sys.modules["onnx"], onnx_helper.onnx)
-        self.assertIs(sys.modules["onnx_ir"], ir)
-        graph = onnx_helper.onnx.GraphProto()
-        node = graph.node.add()
-        graph.node.remove(node)
-        graph.node.insert(0, onnx_helper.onnx.NodeProto())
-        self.assertEqual(len(graph.node), 1)
-        from onnxruntime.quantization.matmul_nbits_quantizer import MatMulNBitsQuantizer
-
-        self.assertTrue(callable(MatMulNBitsQuantizer))
+        tensor = torch.arange(4, dtype=torch.float32).reshape(2, 2)
+        self.assertEqual(from_torch_dtype(tensor.dtype), TensorProto.FLOAT)
+        self.assertEqualArray(torch_tensor_to_numpy(tensor), np.arange(4, dtype=np.float32).reshape(2, 2))
 
     def test_get_default_onnx_opset_returns_positive_int(self):
         from modelbuilder.helpers import onnx_helper

@@ -7,7 +7,7 @@ import json
 import os
 
 import torch
-from .. import ir
+from onnx_light.onnx import TensorProto as ir
 
 from .base import Model
 

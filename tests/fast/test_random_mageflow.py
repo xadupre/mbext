@@ -91,7 +91,7 @@ class TestRandomMageFlow(ExtTestCase):
 
     def test_mageflow_builder_instantiation(self):
         """Smoke test: MageFlowModel builds as a Qwen3-style decoder with QK-norm."""
-        from modelbuilder import ir
+        from onnx_light.onnx import TensorProto as ir
 
         from modelbuilder.builders.mageflow import MageFlowModel
         from modelbuilder.builders.qwen import Qwen3Model

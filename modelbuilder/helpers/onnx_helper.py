@@ -3,25 +3,17 @@
 # Licensed under the MIT License.  See License.txt in the project root for
 # license information.
 # --------------------------------------------------------------------------
-"""
-Resolves the :mod:`onnx` module, backed by ``onnx-light``.
+"""Small helpers around the native :mod:`onnx_light.onnx` APIs."""
 
-mbext only depends on ``onnx-light``: the lightweight :mod:`onnx_light.onnx`
-module implements the same Python API as the :mod:`onnx` package, so the rest
-of the code uses the exported ``onnx`` object transparently::
+from __future__ import annotations
 
-    from modelbuilder.helpers.onnx_helper import onnx
+from typing import Any
 
-    TensorProto = onnx.TensorProto
-"""
+import ml_dtypes
+import numpy as np
+import onnx_light.onnx as onnx
+import torch
 
-import sys
-
-import onnx_light.onnx as onnx  # noqa: F401
-
-# ``onnx_light.onnx`` does not import its submodules automatically while the
-# ``onnx`` package does. They are imported here so that ``onnx.checker``,
-# ``onnx.helper``, ... are available on the exported module.
 import onnx_light.onnx.checker  # noqa: F401,E402
 import onnx_light.onnx.external_data_helper  # noqa: F401,E402
 import onnx_light.onnx.helper  # noqa: F401,E402
@@ -30,65 +22,75 @@ import onnx_light.onnx.onnx_pb  # noqa: F401,E402
 import onnx_light.onnx.reference  # noqa: F401,E402
 import onnx_light.onnx.shape_inference  # noqa: F401,E402
 
+_TORCH_DTYPE_TO_ONNX: dict[torch.dtype, int] = {
+    torch.bfloat16: onnx.TensorProto.BFLOAT16,
+    torch.bool: onnx.TensorProto.BOOL,
+    torch.complex128: onnx.TensorProto.COMPLEX128,
+    torch.complex64: onnx.TensorProto.COMPLEX64,
+    torch.float16: onnx.TensorProto.FLOAT16,
+    torch.float32: onnx.TensorProto.FLOAT,
+    torch.float64: onnx.TensorProto.DOUBLE,
+    torch.float8_e4m3fn: onnx.TensorProto.FLOAT8E4M3FN,
+    torch.float8_e4m3fnuz: onnx.TensorProto.FLOAT8E4M3FNUZ,
+    torch.float8_e5m2: onnx.TensorProto.FLOAT8E5M2,
+    torch.float8_e5m2fnuz: onnx.TensorProto.FLOAT8E5M2FNUZ,
+    torch.int16: onnx.TensorProto.INT16,
+    torch.int32: onnx.TensorProto.INT32,
+    torch.int64: onnx.TensorProto.INT64,
+    torch.int8: onnx.TensorProto.INT8,
+    torch.uint8: onnx.TensorProto.UINT8,
+    torch.uint16: onnx.TensorProto.UINT16,
+    torch.uint32: onnx.TensorProto.UINT32,
+    torch.uint64: onnx.TensorProto.UINT64,
+}
+if hasattr(torch, "float8_e8m0fnu"):
+    _TORCH_DTYPE_TO_ONNX[torch.float8_e8m0fnu] = onnx.TensorProto.FLOAT8E8M0
+if hasattr(torch, "int2"):
+    _TORCH_DTYPE_TO_ONNX[torch.int2] = onnx.TensorProto.INT2
+if hasattr(torch, "uint2"):
+    _TORCH_DTYPE_TO_ONNX[torch.uint2] = onnx.TensorProto.UINT2
 
-def _add_repeated_field_compatibility() -> None:
-    """Add protobuf-style mutation methods missing from onnx-light fields."""
-
-    def deepcopy(self, memo):
-        copied = type(self)()
-        copied.ParseFromString(self.SerializeToString())
-        memo[id(self)] = copied
-        return copied
-
-    def remove(self, value) -> None:
-        values = list(self)
-        for index, item in enumerate(values):
-            if item is value or item == value:
-                self.clear()
-                self.extend(values[:index])
-                self.extend(values[index + 1 :])
-                return
-        raise ValueError(f"{value!r} is not in the repeated field")
-
-    def insert(self, index, value) -> None:
-        values = list(self)
-        values.insert(index, value)
-        self.clear()
-        self.extend(values)
-
-    graph = onnx.GraphProto()
-    if not hasattr(onnx.Message, "__deepcopy__"):
-        onnx.Message.__deepcopy__ = deepcopy
-    for field in (graph.node, graph.input, graph.output, graph.initializer):
-        cls = type(field)
-        if not hasattr(cls, "remove"):
-            cls.remove = remove
-        if not hasattr(cls, "insert"):
-            cls.insert = insert
+_ONNX_DTYPE_TO_TORCH = {onnx_dtype: torch_dtype for torch_dtype, onnx_dtype in _TORCH_DTYPE_TO_ONNX.items()}
+_SPECIAL_NUMPY_DTYPES: dict[int, Any] = {
+    onnx.TensorProto.BFLOAT16: ml_dtypes.bfloat16,
+    onnx.TensorProto.FLOAT8E4M3FN: ml_dtypes.float8_e4m3fn,
+    onnx.TensorProto.FLOAT8E4M3FNUZ: ml_dtypes.float8_e4m3fnuz,
+    onnx.TensorProto.FLOAT8E5M2: ml_dtypes.float8_e5m2,
+    onnx.TensorProto.FLOAT8E5M2FNUZ: ml_dtypes.float8_e5m2fnuz,
+}
+if hasattr(ml_dtypes, "float8_e8m0fnu"):
+    _SPECIAL_NUMPY_DTYPES[onnx.TensorProto.FLOAT8E8M0] = ml_dtypes.float8_e8m0fnu
+if hasattr(ml_dtypes, "int2"):
+    _SPECIAL_NUMPY_DTYPES[onnx.TensorProto.INT2] = ml_dtypes.int2
+if hasattr(ml_dtypes, "uint2"):
+    _SPECIAL_NUMPY_DTYPES[onnx.TensorProto.UINT2] = ml_dtypes.uint2
 
 
-def enable_onnxruntime_quantization() -> None:
-    """Expose onnx-light compatibility modules required by ORT quantization.
+def from_torch_dtype(dtype: torch.dtype) -> int:
+    """Convert a torch dtype to an ONNX TensorProto data type."""
+    try:
+        return _TORCH_DTYPE_TO_ONNX[dtype]
+    except KeyError:
+        raise TypeError(f"Unsupported torch dtype {dtype!r}.") from None
 
-    ``onnxruntime.quantization`` imports the legacy module names even though it
-    only needs APIs implemented by onnx-light and :mod:`modelbuilder.ir`.
-    Registering these aliases keeps quantization usable without installing
-    either legacy package.
-    """
-    from modelbuilder import ir
 
-    _add_repeated_field_compatibility()
-    modules = {
-        "onnx": onnx,
-        "onnx.external_data_helper": onnx.external_data_helper,
-        "onnx.helper": onnx.helper,
-        "onnx.numpy_helper": onnx.numpy_helper,
-        "onnx.onnx_pb": onnx.onnx_pb,
-        "onnx.reference": onnx.reference,
-        "onnx.shape_inference": onnx.shape_inference,
-        "onnx_ir": ir,
-    }
-    sys.modules.update(modules)
+def to_torch_dtype(dtype: int) -> torch.dtype:
+    """Convert an ONNX TensorProto data type to a torch dtype."""
+    try:
+        return _ONNX_DTYPE_TO_TORCH[int(dtype)]
+    except KeyError:
+        raise TypeError(f"Unsupported ONNX tensor data type {dtype!r}.") from None
+
+
+def torch_tensor_to_numpy(tensor: torch.Tensor) -> np.ndarray:
+    """Return a NumPy view with an ONNX-compatible dtype."""
+    tensor = tensor.detach().cpu().contiguous()
+    onnx_dtype = from_torch_dtype(tensor.dtype)
+    if onnx_dtype == onnx.TensorProto.BFLOAT16:
+        return tensor.view(torch.uint16).numpy(force=True).view(ml_dtypes.bfloat16)
+    if onnx_dtype in _SPECIAL_NUMPY_DTYPES:
+        return tensor.view(torch.uint8).numpy(force=True).view(_SPECIAL_NUMPY_DTYPES[onnx_dtype])
+    return tensor.numpy(force=True)
 
 
 #: Opset used when the maximum opset supported by ``onnxruntime`` cannot be

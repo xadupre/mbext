@@ -9,9 +9,11 @@ Tests for the dtype/token helpers in :mod:`modelbuilder.builder`.
 
 import unittest
 
-from modelbuilder import ir
+import torch
+from onnx_light.onnx import TensorProto as ir
 
 from modelbuilder.builder import parse_hf_token, set_io_dtype, set_onnx_dtype
+from modelbuilder.builders.base import Model
 from modelbuilder.ext_test_case import ExtTestCase
 
 
@@ -77,6 +79,36 @@ class TestSetOnnxDtype(ExtTestCase):
     def test_unknown_precision_raises(self):
         with self.assertRaises(KeyError):
             set_onnx_dtype("int3", {})
+
+
+class TestSourceWeightRelease(ExtTestCase):
+    def test_releases_unique_module_parameters(self):
+        holder = Model.__new__(Model)
+        holder.weights = torch.nn.Sequential(torch.nn.Linear(8, 4), torch.nn.Linear(4, 2))
+        holder._initialize_source_tensor_tracking()
+
+        first = holder.weights[0]
+        second = holder.weights[1]
+        holder._release_source_module(first)
+
+        self.assertEqual(first.weight.numel(), 0)
+        self.assertEqual(first.bias.numel(), 0)
+        self.assertGreater(second.weight.numel(), 0)
+
+    def test_keeps_tied_parameter_until_final_alias(self):
+        holder = Model.__new__(Model)
+        holder.weights = torch.nn.Module()
+        holder.weights.embedding = torch.nn.Embedding(8, 4)
+        holder.weights.lm_head = torch.nn.Linear(4, 8, bias=False)
+        holder.weights.lm_head.weight = holder.weights.embedding.weight
+        holder._initialize_source_tensor_tracking()
+
+        tied_weight = holder.weights.embedding.weight
+        holder._release_source_module(holder.weights.embedding)
+        self.assertEqual(tied_weight.numel(), 32)
+
+        holder._release_source_module(holder.weights.lm_head)
+        self.assertEqual(tied_weight.numel(), 0)
 
 
 if __name__ == "__main__":

@@ -15,7 +15,8 @@ They are written to a separate file next to the ONNX model.
 import json
 
 import numpy as np
-from . import ir
+import onnx_light.onnx.numpy_helper as numpy_helper
+from onnx_light.onnx import AttributeProto, GraphProto, ModelProto
 from scipy import stats
 
 # Quantiles reported for every weight tensor.
@@ -63,7 +64,18 @@ def _tensor_statistics(name: str, array: np.ndarray, quantiles=DEFAULT_QUANTILES
     }
 
 
-def compute_weight_statistics(model: ir.Model, op_types=("MatMul",), nodes_to_exclude=()) -> list[dict]:
+def _iter_graph_nodes(graph: GraphProto):
+    for node in graph.node:
+        yield graph, node
+        for attribute in node.attribute:
+            if attribute.type == AttributeProto.GRAPH:
+                yield from _iter_graph_nodes(attribute.g)
+            elif attribute.type == AttributeProto.GRAPHS:
+                for subgraph in attribute.graphs:
+                    yield from _iter_graph_nodes(subgraph)
+
+
+def compute_weight_statistics(model: ModelProto, op_types=("MatMul",), nodes_to_exclude=()) -> list[dict]:
     """Compute distribution statistics for every quantized weight tensor.
 
     Only the initializer inputs of the nodes whose ``op_type`` is in ``op_types``
@@ -73,26 +85,19 @@ def compute_weight_statistics(model: ir.Model, op_types=("MatMul",), nodes_to_ex
     """
     op_types = set(op_types)
     nodes_to_exclude = set(nodes_to_exclude)
-    initializers = model.graph.initializers
-
     stats_list = []
     seen = set()
-    for node in model.graph.all_nodes():
+    for graph, node in _iter_graph_nodes(model.graph):
         if node.op_type not in op_types:
             continue
         if node.name in nodes_to_exclude:
             continue
-        for value in node.inputs:
-            if value is None:
-                continue
-            name = value.name
-            if name is None or name in seen or name not in initializers:
-                continue
-            const_value = initializers[name].const_value
-            if const_value is None:
+        initializers = {tensor.name: tensor for tensor in graph.initializer}
+        for name in node.input:
+            if not name or name in seen or name not in initializers:
                 continue
             seen.add(name)
-            array = np.asarray(const_value.numpy())
+            array = np.asarray(numpy_helper.to_array(initializers[name]))
             if not np.issubdtype(array.dtype, np.floating):
                 array = array.astype(np.float64)
             stats_list.append(_tensor_statistics(name, array))
@@ -100,7 +105,7 @@ def compute_weight_statistics(model: ir.Model, op_types=("MatMul",), nodes_to_ex
     return stats_list
 
 
-def save_weight_statistics(model: ir.Model, path: str, op_types=("MatMul",), nodes_to_exclude=()) -> list[dict]:
+def save_weight_statistics(model: ModelProto, path: str, op_types=("MatMul",), nodes_to_exclude=()) -> list[dict]:
     """Compute and write weight statistics to ``path`` as JSON."""
     stats_list = compute_weight_statistics(model, op_types=op_types, nodes_to_exclude=nodes_to_exclude)
     with open(path, "w", encoding="utf-8") as f:

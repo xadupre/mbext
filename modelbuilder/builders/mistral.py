@@ -7,8 +7,8 @@ import copy
 import json
 import os
 
-from .. import ir
 import torch
+from onnx_light.onnx import TensorProto as ir
 
 from .base import Model
 from .base_embedding import EmbeddingModel
@@ -144,7 +144,7 @@ class Ministral3TextModel(MistralModel):
 
 
 class Ministral3VisionEncoderModel(VisionEncoderModel):
-    """Direct ``modelbuilder.ir`` graph builder for the Pixtral vision encoder + multimodal projector.
+    """Direct onnx-light graph builder for the Pixtral vision encoder and projector.
 
     Builds the ONNX graph manually (analogous to other model builders in this
     codebase) rather than going through :func:`torch.onnx.export`.
@@ -477,8 +477,7 @@ class Ministral3VisionEncoderModel(VisionEncoderModel):
         proj = hf_model.model.multi_modal_projector  # Mistral3MultiModalProjector
 
         # Graph input
-        pixel_values_in = self.make_value("pixel_values", self.io_dtype, shape=[1, self.num_channels, self.image_size, self.image_size])
-        self.graph.inputs.append(pixel_values_in)
+        self.make_graph_input("pixel_values", self.io_dtype, [1, self.num_channels, self.image_size, self.image_size])
 
         # Patch embedding
         x = self._build_patch_embedding(vt)
@@ -495,10 +494,7 @@ class Ministral3VisionEncoderModel(VisionEncoderModel):
 
         # Graph output (rename via Identity so the output has the clean name)
         self.make_node("Identity", inputs=[image_features], outputs=["image_features"], name="/vision/output/Identity")
-        out_val = self.make_value("image_features", self.io_dtype, shape=[self.n_merged_patches, self.text_hidden_size])
-        self.graph.outputs.append(out_val)
-
-        self.graph.sort()
+        self.make_graph_output("image_features", self.io_dtype, [self.n_merged_patches, self.text_hidden_size])
 
 
 class Ministral3EmbeddingModel(EmbeddingModel):

@@ -229,7 +229,7 @@ class TestRandomQwen3_5(ExtTestCase):
         fallbacks for both ops so inference also runs on standard
         ``onnxruntime``.
         """
-        from modelbuilder.helpers.onnx_helper import onnx
+        import onnx_light.onnx as onnx
 
         config = _make_qwen3_5_config(["full_attention", "linear_attention"])
         model, output_dir = self._build_and_save_model(config, "fp32", "cpu")
@@ -268,7 +268,7 @@ class TestRandomQwen3_5(ExtTestCase):
     @hide_stdout()
     def test_qwen3_5_fp16_cpu_hybrid_build(self):
         """fp16 variant of :meth:`test_qwen3_5_fp32_cpu_hybrid_build`."""
-        from modelbuilder.helpers.onnx_helper import onnx
+        import onnx_light.onnx as onnx
 
         config = _make_qwen3_5_config(["full_attention", "linear_attention"])
         model, output_dir = self._build_and_save_model(config, "fp16", "cpu")
@@ -303,7 +303,7 @@ class TestRandomQwen3_5(ExtTestCase):
         kernel loses precision across the 36+ Qwen3.5 layers), so this test is
         skipped there.
         """
-        from modelbuilder.helpers.onnx_helper import onnx
+        import onnx_light.onnx as onnx
         import onnxruntime as ort
 
         ort_ver = tuple(int(x) for x in ort.__version__.split(".")[:2])
@@ -359,7 +359,7 @@ class TestRandomQwen3_5(ExtTestCase):
         per Q/K head per linear-attention layer and drops the +eps fallback
         (q/k come from RMSNorm+Proj so magnitudes far exceed 1e-6).
         """
-        from modelbuilder.helpers.onnx_helper import onnx
+        import onnx_light.onnx as onnx
 
         config = _make_qwen3_5_config(["full_attention", "linear_attention"])
         _, output_dir = self._build_and_save_model(config, "fp32", "cpu")

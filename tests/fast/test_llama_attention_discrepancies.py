@@ -7,7 +7,7 @@ import os
 import unittest
 
 import numpy as np
-from modelbuilder import ir
+from onnx_light.onnx import TensorProto as ir
 
 from modelbuilder.builders.llama import LlamaModel
 from modelbuilder.ext_test_case import ExtTestCase, hide_stdout, requires_transformers
@@ -49,24 +49,21 @@ class _AttentionOnlyLlamaModel(LlamaModel):
     """
 
     def make_inputs_and_outputs(self):
-        g_inputs = self.model.graph.inputs
-        g_outputs = self.model.graph.outputs
-
         # Input: hidden_states (output of LayerNorm in the full pipeline)
-        g_inputs.append(self.make_value("hidden_states", dtype=self.io_dtype, shape=["batch_size", "sequence_length", self.hidden_size]))
+        self.make_graph_input("hidden_states", self.io_dtype, ["batch_size", "sequence_length", self.hidden_size])
         # Input: attention_mask needed to compute seqlens_k / total_seq_len
-        g_inputs.append(self.make_value("attention_mask", dtype=ir.DataType.INT64, shape=["batch_size", "total_sequence_length"]))
+        self.make_graph_input("attention_mask", ir.DataType.INT64, ["batch_size", "total_sequence_length"])
         # Input: past KV cache for layer 0
         kv_shape = ["batch_size", self.num_kv_heads, "past_sequence_length", self.head_size]
-        g_inputs.append(self.make_value("past_key_values.0.key", dtype=self.io_dtype, shape=kv_shape))
-        g_inputs.append(self.make_value("past_key_values.0.value", dtype=self.io_dtype, shape=kv_shape))
+        self.make_graph_input("past_key_values.0.key", self.io_dtype, kv_shape)
+        self.make_graph_input("past_key_values.0.value", self.io_dtype, kv_shape)
 
         # Output: attention output (before residual connection)
-        g_outputs.append(self.make_value("attn_output", dtype=self.io_dtype, shape=["batch_size", "sequence_length", self.hidden_size]))
+        self.make_graph_output("attn_output", self.io_dtype, ["batch_size", "sequence_length", self.hidden_size])
         # Output: updated KV cache
         kv_out_shape = ["batch_size", self.num_kv_heads, "total_sequence_length", self.head_size]
-        g_outputs.append(self.make_value("present.0.key", dtype=self.io_dtype, shape=kv_out_shape))
-        g_outputs.append(self.make_value("present.0.value", dtype=self.io_dtype, shape=kv_out_shape))
+        self.make_graph_output("present.0.key", self.io_dtype, kv_out_shape)
+        self.make_graph_output("present.0.value", self.io_dtype, kv_out_shape)
 
     def build_attention_model(self, attn_module, out_dir):
         """Build and save an attention-only ONNX model.

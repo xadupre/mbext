@@ -3,8 +3,8 @@
 # Licensed under the MIT License.  See License.txt in the project root for
 # license information.
 # --------------------------------------------------------------------------
-from .. import ir
 import torch
+from onnx_light.onnx import TensorProto as ir
 
 from .base import Model
 

@@ -6,8 +6,8 @@
 import json
 import os
 
-from .. import ir
 import torch
+from onnx_light.onnx import TensorProto as ir
 
 from .llama import LlamaModel
 
