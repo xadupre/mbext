@@ -256,12 +256,41 @@ def create_model(model_name, input_path, output_dir, precision, execution_provid
     private_builder = load_private_model_builder(private) if private else None
 
     # Load model config
-    extra_kwargs = {} if os.path.isdir(input_path) else {"cache_dir": cache_dir}
     hf_name = input_path if os.path.isdir(input_path) else model_name
     hf_token = parse_hf_token(extra_options.get("hf_token", "true"))
     hf_remote = extra_options.get("hf_remote", True)
+    if extra_options.get("reuse_downloaded_weights", False):
+        if precision in INT_PRECISION_BITS:
+            raise ValueError("reuse_downloaded_weights is only supported for float models.")
+        if os.path.isdir(input_path):
+            source_model_path = os.path.abspath(input_path)
+        else:
+            from huggingface_hub import snapshot_download
 
-    config = AutoConfig.from_pretrained(hf_name, token=hf_token, trust_remote_code=hf_remote, **extra_kwargs)
+            source_model_path = snapshot_download(repo_id=model_name, local_dir=os.path.join(output_dir, ".weights"), token=hf_token)
+        source_model_path = os.path.abspath(source_model_path)
+        output_path = os.path.abspath(output_dir)
+        if os.path.commonpath((source_model_path, output_path)) != output_path:
+            raise ValueError(
+                "reuse_downloaded_weights requires the source checkpoint to be inside the output directory. "
+                "Use --model_name to download it there automatically."
+            )
+        linked_shards = [
+            filename
+            for filename in os.listdir(source_model_path)
+            if filename.endswith(".safetensors") and os.path.islink(os.path.join(source_model_path, filename))
+        ]
+        if linked_shards:
+            raise ValueError("reuse_downloaded_weights requires regular safetensors files, not symbolic links.")
+        extra_options["_source_model_path"] = source_model_path
+        extra_options["_external_data_base_dir"] = output_path
+        config_source = source_model_path
+        extra_kwargs = {}
+    else:
+        config_source = hf_name
+        extra_kwargs = {} if os.path.isdir(input_path) else {"cache_dir": cache_dir}
+
+    config = AutoConfig.from_pretrained(config_source, token=hf_token, trust_remote_code=hf_remote, **extra_kwargs)
     if "adapter_path" in extra_options:
         from peft import PeftConfig
 
@@ -669,6 +698,16 @@ def get_args():
     )
 
     parser.add_argument(
+        "--reuse_downloaded_weights",
+        action="store_true",
+        help=textwrap.dedent("""\
+            Reference float weights directly from the downloaded safetensors checkpoint instead of copying them
+            into the ONNX external data file. Hugging Face checkpoint shards are downloaded under the output
+            directory so ONNX Runtime can load them directly.
+            """),
+    )
+
+    parser.add_argument(
         "--private",
         required=False,
         default=None,
@@ -813,4 +852,6 @@ if __name__ == "__main__":
             extra_options["onnx_opset"] = args.onnx_opset
         if args.private:
             extra_options["private"] = args.private
+        if args.reuse_downloaded_weights:
+            extra_options["reuse_downloaded_weights"] = True
         create_model(args.model_name, args.input, args.output, args.precision, args.execution_provider, args.cache_dir, **extra_options)
