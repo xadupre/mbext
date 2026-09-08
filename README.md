@@ -57,7 +57,7 @@ The arguments are:
 - ``-e/--execution_provider``: execution provider to target (``cpu`` here).
 - ``-c/--cache_dir``: cache directory for Hugging Face files and temporary ONNX
   external data files.
-- ``--reuse_downloaded_weights``: for float models stored as safetensors, make the
+- ``-r/--reuse-weights``: for float models stored as safetensors, make the
   ONNX initializers reference the downloaded checkpoint bytes directly. The
   checkpoint is downloaded once under ``<output>/.weights`` and remains there as
   the ONNX model's external data.
@@ -72,7 +72,7 @@ python -m modelbuilder.builder \
     -p fp16 \
     -e cuda \
     -c cache_dir \
-    --reuse_downloaded_weights
+    --reuse-weights
 ```
 
 The option is limited to floating-point exports because quantization changes the

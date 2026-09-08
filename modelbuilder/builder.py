@@ -261,7 +261,7 @@ def create_model(model_name, input_path, output_dir, precision, execution_provid
     hf_remote = extra_options.get("hf_remote", True)
     if extra_options.get("reuse_downloaded_weights", False):
         if precision in INT_PRECISION_BITS:
-            raise ValueError("reuse_downloaded_weights is only supported for float models.")
+            raise ValueError("--reuse-weights is only supported for float models.")
         if os.path.isdir(input_path):
             source_model_path = os.path.abspath(input_path)
         else:
@@ -272,7 +272,7 @@ def create_model(model_name, input_path, output_dir, precision, execution_provid
         output_path = os.path.abspath(output_dir)
         if os.path.commonpath((source_model_path, output_path)) != output_path:
             raise ValueError(
-                "reuse_downloaded_weights requires the source checkpoint to be inside the output directory. "
+                "--reuse-weights requires the source checkpoint to be inside the output directory. "
                 "Use --model_name to download it there automatically."
             )
         linked_shards = [
@@ -281,7 +281,7 @@ def create_model(model_name, input_path, output_dir, precision, execution_provid
             if filename.endswith(".safetensors") and os.path.islink(os.path.join(source_model_path, filename))
         ]
         if linked_shards:
-            raise ValueError("reuse_downloaded_weights requires regular safetensors files, not symbolic links.")
+            raise ValueError("--reuse-weights requires regular safetensors files, not symbolic links.")
         extra_options["_source_model_path"] = source_model_path
         extra_options["_external_data_base_dir"] = output_path
         config_source = source_model_path
@@ -698,7 +698,9 @@ def get_args():
     )
 
     parser.add_argument(
-        "--reuse_downloaded_weights",
+        "-r",
+        "--reuse-weights",
+        dest="reuse_downloaded_weights",
         action="store_true",
         help=textwrap.dedent("""\
             Reference float weights directly from the downloaded safetensors checkpoint instead of copying them
