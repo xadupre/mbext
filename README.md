@@ -57,6 +57,33 @@ The arguments are:
 - ``-e/--execution_provider``: execution provider to target (``cpu`` here).
 - ``-c/--cache_dir``: cache directory for Hugging Face files and temporary ONNX
   external data files.
+- ``-r/--reuse-weights``: for float models stored as safetensors, make the
+  ONNX initializers reference the downloaded checkpoint bytes directly. The
+  checkpoint is downloaded once under ``<output>/.weights`` and remains there as
+  the ONNX model's external data.
+
+For example, this exports an FP16 model without creating a second copy of its
+downloaded weights:
+
+```bash
+python -m modelbuilder.builder \
+    -m Qwen/Qwen3-8B \
+    -o qwen3-8b-cuda-fp16 \
+    -p fp16 \
+    -e cuda \
+    -c cache_dir \
+    --reuse-weights
+```
+
+The option is limited to floating-point exports because quantization changes the
+weight representation. Initializers which the builder derives rather than reads
+directly from the checkpoint continue to use `model.onnx.data`. With ``--input``,
+the local checkpoint must already be inside the output directory; ``--model_name``
+handles that layout automatically.
+
+When the checkpoint dtype differs from the requested ONNX dtype, the model uses
+ONNX ``Cast`` nodes so the checkpoint bytes can still be reused. This avoids a
+second on-disk copy; ONNX Runtime may materialize the converted values in memory.
 
 ## Custom model in a separate file
 

@@ -7,12 +7,15 @@
 Tests for the dtype/token helpers in :mod:`modelbuilder.builder`.
 """
 
+import os
 import unittest
 
 import torch
+from onnx_light.onnx import load
+from onnx_light.onnx.numpy_helper import to_array
 from onnx_light.onnx import TensorProto as ir
 
-from modelbuilder.builder import parse_hf_token, set_io_dtype, set_onnx_dtype
+from modelbuilder.builder import create_model, parse_hf_token, set_io_dtype, set_onnx_dtype
 from modelbuilder.builders.base import Model
 from modelbuilder.ext_test_case import ExtTestCase
 
@@ -109,6 +112,56 @@ class TestSourceWeightRelease(ExtTestCase):
 
         holder._release_source_module(holder.weights.lm_head)
         self.assertEqual(tied_weight.numel(), 0)
+
+
+class TestReuseDownloadedWeights(ExtTestCase):
+    def test_reuses_safetensors_checkpoint(self):
+        from transformers import AutoModelForCausalLM, LlamaConfig
+
+        config = LlamaConfig(
+            architectures=["LlamaForCausalLM"],
+            hidden_size=16,
+            intermediate_size=24,
+            max_position_embeddings=16,
+            num_attention_heads=2,
+            num_hidden_layers=1,
+            num_key_value_heads=1,
+            tie_word_embeddings=True,
+            vocab_size=32,
+        )
+        model = AutoModelForCausalLM.from_config(config)
+        output_dir, cache_dir = self.get_dirs("test_reuse_downloaded_weights")
+        model_dir = os.path.join(output_dir, ".weights")
+        os.makedirs(model_dir)
+        model.save_pretrained(model_dir)
+        self.make_word_level_tokenizer().save_pretrained(model_dir)
+
+        create_model(
+            model_name=None,
+            input_path=model_dir,
+            output_dir=output_dir,
+            precision="fp16",
+            execution_provider="cpu",
+            cache_dir=cache_dir,
+            reuse_downloaded_weights=True,
+        )
+
+        model_proto = load(os.path.join(output_dir, "model.onnx"), load_external_data=False)
+        external_locations = {
+            entry.value for initializer in model_proto.graph.initializer for entry in initializer.external_data if entry.key == "location"
+        }
+        self.assertIn(os.path.join(".weights", "model.safetensors"), external_locations)
+        self.assertFalse(os.path.exists(os.path.join(output_dir, "model.safetensors")))
+        model_with_weights = load(os.path.join(output_dir, "model.onnx"))
+        embedding = next(
+            initializer for initializer in model_with_weights.graph.initializer if initializer.name == "model.embed_tokens.weight.source"
+        )
+        self.assertEqualArray(to_array(embedding, output_dir), model.model.embed_tokens.weight.detach().numpy())
+        self.assertIn(
+            "model.embed_tokens.weight",
+            {output for node in model_with_weights.graph.node if node.op_type == "Cast" for output in node.output},
+        )
+        self._check_with_ort(os.path.join(output_dir, "model.onnx"), cpu=True)
 
 
 if __name__ == "__main__":

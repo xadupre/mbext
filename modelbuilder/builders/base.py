@@ -11,8 +11,10 @@ from __future__ import annotations
 import ast
 import json
 import os
+import struct
 from collections import Counter
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 
 import numpy as np
 import onnx_light.onnx.helper as onnx_helper
@@ -26,6 +28,33 @@ from transformers import AutoConfig, AutoModelForCausalLM, AutoModelForSpeechSeq
 from ..helpers.onnx_helper import get_default_onnx_opset, onnx, to_torch_dtype, torch_tensor_to_numpy
 from ..helpers.quantization import quantize_matmul_nbits
 from .local_functions import LocalFunctionsMixin, normalize_function_opsets
+
+
+@dataclass(frozen=True)
+class SourceTensor:
+    path: str
+    location: str
+    offset: int
+    length: int
+    dtype: int
+    shape: tuple[int, ...]
+
+
+_SAFETENSORS_ONNX_DTYPES = {
+    "BOOL": TensorProto.BOOL,
+    "F16": TensorProto.FLOAT16,
+    "F32": TensorProto.FLOAT,
+    "F64": TensorProto.DOUBLE,
+    "BF16": TensorProto.BFLOAT16,
+    "I8": TensorProto.INT8,
+    "I16": TensorProto.INT16,
+    "I32": TensorProto.INT32,
+    "I64": TensorProto.INT64,
+    "U8": TensorProto.UINT8,
+    "U16": TensorProto.UINT16,
+    "U32": TensorProto.UINT32,
+    "U64": TensorProto.UINT64,
+}
 
 
 def parse_hf_token(hf_token):
@@ -107,6 +136,13 @@ class Model(LocalFunctionsMixin):
         self.hf_token = parse_hf_token(extra_options.get("hf_token", "true"))
         self.hf_remote = extra_options.get("hf_remote", True)
         self.extra_options = extra_options
+        self.reuse_downloaded_weights = extra_options.get("reuse_downloaded_weights", False)
+        if self.reuse_downloaded_weights:
+            self.extra_options["disable_qkv_fusion"] = True
+        self.source_model_path = extra_options.get("_source_model_path")
+        self.external_data_base_dir = extra_options.get("_external_data_base_dir")
+        self._source_tensors_by_data_ptr: dict[int, SourceTensor] = {}
+        self._used_source_weight_files: set[str] = set()
 
         # States for building the model
         onnx_opset = int(extra_options.get("onnx_opset", get_default_onnx_opset()))
@@ -622,7 +658,7 @@ class Model(LocalFunctionsMixin):
                 # GQA + Rot.Emb. does not require `position_ids` as input
                 del self.input_names["position_ids"]
 
-        elif self.is_packed_attn_supported():
+        elif self.is_packed_attn_supported() and not self.reuse_downloaded_weights:
             # Change model settings for packed Attention
             self.attention_attrs["op_type"] = "Attention"
             self.attention_attrs["use_matmul_in_attn"] = True
@@ -896,15 +932,20 @@ class Model(LocalFunctionsMixin):
             print(f"Overwriting {data_path}")
             os.remove(data_path)
 
+        self._validate_source_weight_files(out_dir)
         with tqdm(total=len(model.graph.initializer), desc="Saving initializers") as pbar:
-            onnx.save_model(
-                model,
-                out_path,
-                save_as_external_data=True,
-                all_tensors_to_one_file=True,
-                location=os.path.basename(data_path),
-                size_threshold=1024,
-            )
+            if self.reuse_downloaded_weights:
+                self._externalize_generated_initializers(model, data_path)
+                onnx.save_model(model, out_path)
+            else:
+                onnx.save_model(
+                    model,
+                    out_path,
+                    save_as_external_data=True,
+                    all_tensors_to_one_file=True,
+                    location=os.path.basename(data_path),
+                    size_threshold=1024,
+                )
             pbar.update(len(model.graph.initializer))
 
         # Delete temporary cache dir if empty
@@ -941,8 +982,52 @@ class Model(LocalFunctionsMixin):
         with open(settings_path, "w") as f:
             json.dump(settings, f, indent=4)
 
+    def _make_external_initializer(self, tensor: torch.Tensor, name: str, to: int | None) -> bool:
+        source = self._source_tensors_by_data_ptr.get(tensor.data_ptr())
+        if source is None or tensor.numel() != int(np.prod(source.shape)):
+            return False
+
+        source_stride = tuple(np.cumprod((1, *reversed(source.shape)))[:-1][::-1])
+        tensor_stride = tuple(tensor.stride())
+        transpose = len(source.shape) == 2 and tuple(tensor.shape) == source.shape[::-1] and tensor_stride == source_stride[::-1]
+        direct = tuple(tensor.shape) == source.shape and tensor_stride == source_stride
+        if not direct and not transpose:
+            return False
+
+        target_dtype = int(source.dtype if to is None else to)
+        cast = target_dtype != int(source.dtype)
+        source_name = name if not transpose and not cast else f"{name}.source"
+        tensor_proto = TensorProto()
+        tensor_proto.name = source_name
+        tensor_proto.data_type = int(source.dtype)
+        tensor_proto.dims.extend(source.shape)
+        tensor_proto.data_location = TensorProto.EXTERNAL
+        for key, value in (("location", source.location), ("offset", str(source.offset)), ("length", str(source.length))):
+            entry = tensor_proto.external_data.add()
+            entry.key = key
+            entry.value = value
+        self.graph.make_initializer(tensor_proto)
+        self._used_source_weight_files.add(source.path)
+        self.make_value(source_name, source.dtype, source.shape)
+
+        value_name = source_name
+        value_shape = source.shape
+        if transpose:
+            value_name = name if not cast else f"{name}.transposed"
+            value_shape = source.shape[::-1]
+            self.make_node("Transpose", [source_name], [value_name], name=f"/modelbuilder/external/{name}/Transpose", perm=[1, 0])
+            self.make_value(value_name, source.dtype, value_shape)
+        if cast:
+            self.make_node("Cast", [value_name], [name], name=f"/modelbuilder/external/{name}/Cast", to=target_dtype)
+            self.make_value(name, target_dtype, value_shape)
+
+        self._initializer_names.add(name)
+        return True
+
     def make_initializer(self, tensor: torch.Tensor | np.ndarray, /, name: str, to: int | None = None):
         if name in self._initializer_names:
+            return
+        if self.reuse_downloaded_weights and isinstance(tensor, torch.Tensor) and self._make_external_initializer(tensor, name, to):
             return
         if to is not None:
             if isinstance(tensor, torch.Tensor):
@@ -1050,14 +1135,94 @@ class Model(LocalFunctionsMixin):
         self._source_buffer_uses = Counter()
         if not isinstance(self.weights, torch.nn.Module):
             return
-        for _, parameter in self.weights.named_parameters(remove_duplicate=False):
+        source_tensors = self._read_safetensors_metadata() if getattr(self, "reuse_downloaded_weights", False) else {}
+        parameter_names: dict[int, list[str]] = {}
+        for name, parameter in self.weights.named_parameters(remove_duplicate=False):
             key = id(parameter)
             self._source_parameters[key] = parameter
             self._source_parameter_uses[key] += 1
+            parameter_names.setdefault(key, []).append(name)
+        for key, names in parameter_names.items():
+            parameter = self._source_parameters[key]
+            source = next((source_tensors[name] for name in names if name in source_tensors), None)
+            if source is not None and tuple(parameter.shape) == source.shape:
+                self._source_tensors_by_data_ptr[parameter.data_ptr()] = source
         for _, buffer in self.weights.named_buffers(remove_duplicate=False):
             key = id(buffer)
             self._source_buffers[key] = buffer
             self._source_buffer_uses[key] += 1
+
+    def _read_safetensors_metadata(self) -> dict[str, SourceTensor]:
+        if not self.source_model_path:
+            raise ValueError("The source model directory is required to reuse downloaded weights.")
+        if not self.external_data_base_dir:
+            raise ValueError("The ONNX output directory is required to reuse downloaded weights.")
+
+        source_tensors = {}
+        safetensor_paths = sorted(
+            os.path.join(self.source_model_path, filename)
+            for filename in os.listdir(self.source_model_path)
+            if filename.endswith(".safetensors")
+        )
+        if not safetensor_paths:
+            raise ValueError(f"No safetensors checkpoint was found in {self.source_model_path!r}.")
+
+        for path in safetensor_paths:
+            with open(path, "rb") as f:
+                header_length_bytes = f.read(8)
+                if len(header_length_bytes) != 8:
+                    raise ValueError(f"Invalid safetensors header in {path!r}.")
+                header_length = struct.unpack("<Q", header_length_bytes)[0]
+                header = json.loads(f.read(header_length))
+            data_start = 8 + header_length
+            for name, metadata in header.items():
+                if name == "__metadata__":
+                    continue
+                dtype = _SAFETENSORS_ONNX_DTYPES.get(metadata["dtype"])
+                if dtype is None:
+                    continue
+                start, end = metadata["data_offsets"]
+                source_tensors[name] = SourceTensor(
+                    path=os.path.abspath(path),
+                    location=os.path.relpath(path, self.external_data_base_dir),
+                    offset=data_start + start,
+                    length=end - start,
+                    dtype=int(dtype),
+                    shape=tuple(metadata["shape"]),
+                )
+        return source_tensors
+
+    def _validate_source_weight_files(self, out_dir: str) -> None:
+        output_path = os.path.realpath(out_dir)
+        for source_path in self._used_source_weight_files:
+            resolved_source_path = os.path.realpath(source_path)
+            if os.path.commonpath((resolved_source_path, output_path)) != output_path:
+                raise ValueError(f"Source weight {source_path!r} is outside the ONNX output directory.")
+            if os.path.islink(source_path):
+                raise ValueError(f"Source weight {source_path!r} is a symbolic link.")
+
+    @staticmethod
+    def _externalize_generated_initializers(model: ModelProto, data_path: str) -> None:
+        offset = 0
+        data_file = None
+        try:
+            for initializer in model.graph.initializer:
+                if initializer.data_location == TensorProto.EXTERNAL or len(initializer.raw_data) < 1024:
+                    continue
+                if data_file is None:
+                    data_file = open(data_path, "wb")
+                raw_data = bytes(initializer.raw_data)
+                data_file.write(raw_data)
+                initializer.raw_data = b""
+                initializer.data_location = TensorProto.EXTERNAL
+                for key, value in (("location", os.path.basename(data_path)), ("offset", str(offset)), ("length", str(len(raw_data)))):
+                    entry = initializer.external_data.add()
+                    entry.key = key
+                    entry.value = value
+                offset += len(raw_data)
+        finally:
+            if data_file is not None:
+                data_file.close()
 
     def _release_source_module(self, module) -> None:
         """Release a converted module's tensors after their final alias is used."""
@@ -1070,6 +1235,7 @@ class Model(LocalFunctionsMixin):
             self._source_parameter_uses[key] = remaining
             if remaining <= 0:
                 parameter = self._source_parameters.pop(key, module_parameters[key])
+                getattr(self, "_source_tensors_by_data_ptr", {}).pop(parameter.data_ptr(), None)
                 parameter.grad = None
                 parameter.data = torch.empty(0, dtype=parameter.dtype, device="cpu")
 
@@ -1687,7 +1853,7 @@ class Model(LocalFunctionsMixin):
                 quantize_axis=1,
             )
         # Use Transpose + Gather for tied embeddings for float embedding layers
-        elif self.shared_embeddings and self.unquantized_lm_head:
+        elif self.shared_embeddings and self.unquantized_lm_head and not self.reuse_downloaded_weights:
             transpose_name = f"{basename}/Transpose"
             transpose_output = f"{transpose_name}/output_0"
             self.make_transpose(
@@ -1746,7 +1912,10 @@ class Model(LocalFunctionsMixin):
 
         # Create weight and bias tensors
         weight = f"model.layers.{layer_id}.{location}_layernorm.weight"
-        self.make_initializer(layernorm.weight + self.layernorm_attrs["add_offset"], weight, to=new_io_dtype)
+        layernorm_weight = (
+            layernorm.weight if self.layernorm_attrs["add_offset"] == 0 else layernorm.weight + self.layernorm_attrs["add_offset"]
+        )
+        self.make_initializer(layernorm_weight, weight, to=new_io_dtype)
         bias = f"model.layers.{layer_id}.{location}_layernorm.bias"
         if not simple:
             self.make_initializer(layernorm.bias, bias, to=new_io_dtype)
@@ -1801,7 +1970,10 @@ class Model(LocalFunctionsMixin):
 
         # Create weight and bias tensors
         weight = f"model.layers.{layer_id}.{location}_layernorm.weight"
-        self.make_initializer(layernorm.weight + self.layernorm_attrs["add_offset"], weight, to=new_io_dtype)
+        layernorm_weight = (
+            layernorm.weight if self.layernorm_attrs["add_offset"] == 0 else layernorm.weight + self.layernorm_attrs["add_offset"]
+        )
+        self.make_initializer(layernorm_weight, weight, to=new_io_dtype)
         bias = f"model.layers.{layer_id}.{location}_layernorm.bias"
         if not simple:
             self.make_initializer(layernorm.bias, bias, to=new_io_dtype)
@@ -2443,7 +2615,12 @@ class Model(LocalFunctionsMixin):
         q_layernorm_name = f"/model/layers.{layer_id}/attn/q_norm/SimplifiedLayerNormalization"
         q_weight_name = f"model.layers.{layer_id}.attn.q_norm.layernorm.weight"
         q_layernorm_output = f"{q_layernorm_name}/output_0"
-        self.make_initializer(attention.q_norm.weight + self.layernorm_attrs["add_offset"], q_weight_name, to=new_io_dtype)
+        q_norm_weight = (
+            attention.q_norm.weight
+            if self.layernorm_attrs["add_offset"] == 0
+            else attention.q_norm.weight + self.layernorm_attrs["add_offset"]
+        )
+        self.make_initializer(q_norm_weight, q_weight_name, to=new_io_dtype)
 
         # Create Cast nodes for inputs and outputs if old_dtype != new_dtype
         q_layernorm_inputs = [q_reshape_1_output, q_weight_name]
@@ -2484,7 +2661,12 @@ class Model(LocalFunctionsMixin):
         k_layernorm_name = f"/model/layers.{layer_id}/attn/k_norm/SimplifiedLayerNormalization"
         k_weight_name = f"model.layers.{layer_id}.attn.k_norm.layernorm.weight"
         k_layernorm_output = f"{k_layernorm_name}/output_0"
-        self.make_initializer(attention.k_norm.weight + self.layernorm_attrs["add_offset"], k_weight_name, to=new_io_dtype)
+        k_norm_weight = (
+            attention.k_norm.weight
+            if self.layernorm_attrs["add_offset"] == 0
+            else attention.k_norm.weight + self.layernorm_attrs["add_offset"]
+        )
+        self.make_initializer(k_norm_weight, k_weight_name, to=new_io_dtype)
 
         # Create Cast nodes for inputs and outputs if old_dtype != new_dtype
         k_layernorm_inputs = [k_reshape_1_output, k_weight_name]
