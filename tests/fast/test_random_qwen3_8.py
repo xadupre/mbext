@@ -95,14 +95,17 @@ class TestRandomQwen3_8(ExtTestCase):
                 ternary = (grouped / safe_scales).round().clamp(-1, 1) * scales
                 weight.copy_(ternary.reshape(weight.shape[0], -1)[:, : weight.shape[1]])
 
-    def _build_multimodal_model(self, ternary=False):
+    def _build_multimodal_model(self, ternary=False, precision=None):
         import torch
         from transformers import Qwen2VLImageProcessor, Qwen3VLProcessor, Qwen3VLVideoProcessor, Qwen3_5ForConditionalGeneration
 
         from modelbuilder.builder import create_model
 
         config = _make_qwen3_8_config()
+        if precision is None:
+            precision = "int2" if ternary else "fp32"
         prefix = "test_random_ternary_bonsai_multimodal" if ternary else "test_random_qwen3_8_multimodal"
+        prefix = f"{prefix}_{precision}"
         model_dir = self.get_model_dir(prefix)
         output_dir, cache_dir = self.get_dirs(prefix)
 
@@ -133,11 +136,11 @@ class TestRandomQwen3_8(ExtTestCase):
             model_name=TERNARY_BONSAI_MODEL_NAME if ternary else QWEN3_8_MODEL_NAME,
             input_path=model_dir,
             output_dir=output_dir,
-            precision="int2" if ternary else "fp32",
+            precision=precision,
             execution_provider="cpu",
             cache_dir=cache_dir,
             multimodal=True,
-            int4_algo_config="ternary" if ternary else "default",
+            int4_algo_config="ternary" if ternary and precision == "int2" else "default",
         )
         return config, model, output_dir
 
@@ -198,12 +201,11 @@ class TestRandomQwen3_8(ExtTestCase):
         expected_embeds[0, 1:-1] = image_features
         np.testing.assert_allclose(inputs_embeds, expected_embeds, atol=1e-6, rtol=1e-6)
 
-    @hide_stdout()
-    def test_ternary_bonsai_int2_onnxruntime(self):
+    def _check_quantized_multimodal_model(self, precision, ternary=False):
         import onnx_light.onnx as onnx
         import torch
 
-        config, model, output_dir = self._build_multimodal_model(ternary=True)
+        config, model, output_dir = self._build_multimodal_model(ternary=ternary, precision=precision)
         text_proto = onnx.load(os.path.join(output_dir, "model.onnx"), load_external_data=False)
         vision_proto = onnx.load(os.path.join(output_dir, "vision.onnx"), load_external_data=False)
         embedding_proto = onnx.load(os.path.join(output_dir, "embedding.onnx"), load_external_data=False)
@@ -223,12 +225,15 @@ class TestRandomQwen3_8(ExtTestCase):
             if attribute.name == "bits"
         }
         embedding_nodes = [node for node in embedding_proto.graph.node if node.op_type == "GatherBlockQuantized"]
-        self.assertEqual(text_bits, {2})
-        self.assertEqual(vision_bits, {4})
-        self.assertEqual(len(embedding_nodes), 1)
-        embedding_attributes = {attribute.name: attribute.i for attribute in embedding_nodes[0].attribute}
-        self.assertEqual(embedding_attributes["bits"], 2)
-        self.assertEqual(embedding_attributes["block_size"], 128)
+        exact_ternary = ternary and precision == "int2"
+        bits = int(precision[3:])
+        self.assertEqual(text_bits, {2} if exact_ternary else {bits, 8})
+        self.assertEqual(vision_bits, {4} if exact_ternary else {bits})
+        self.assertEqual(len(embedding_nodes), 1 if exact_ternary else 0)
+        if exact_ternary:
+            embedding_attributes = {attribute.name: attribute.i for attribute in embedding_nodes[0].attribute}
+            self.assertEqual(embedding_attributes["bits"], 2)
+            self.assertEqual(embedding_attributes["block_size"], 128)
 
         text_session = self.check_ort(os.path.join(output_dir, "model.onnx"))
         self.check_ort(os.path.join(output_dir, "vision.onnx"))
@@ -267,7 +272,8 @@ class TestRandomQwen3_8(ExtTestCase):
                 )
         text_input_names = {value.name for value in text_session.get_inputs()}
         actual_logits, *_ = text_session.run(None, {name: value for name, value in text_inputs.items() if name in text_input_names})
-        np.testing.assert_allclose(actual_logits, expected_logits, rtol=2e-2, atol=2e-2)
+        atol = 2e-2 if exact_ternary else {"int4": 0.15 if ternary else 0.1, "int2": 0.4}[precision]
+        np.testing.assert_allclose(actual_logits, expected_logits, rtol=2e-2, atol=atol)
 
         embedding_session = self.check_ort(os.path.join(output_dir, "embedding.onnx"))
         input_ids = np.array([[5, config.image_token_id, 6]], dtype=np.int64)
@@ -277,6 +283,22 @@ class TestRandomQwen3_8(ExtTestCase):
             expected = model.model.language_model.embed_tokens(torch.from_numpy(input_ids)).numpy()
         expected[0, 1] = image_features[0]
         np.testing.assert_allclose(actual, expected, rtol=1e-6, atol=1e-6)
+
+    @hide_stdout()
+    def test_qwen3_8_int4_onnxruntime(self):
+        self._check_quantized_multimodal_model("int4")
+
+    @hide_stdout()
+    def test_qwen3_8_int2_onnxruntime(self):
+        self._check_quantized_multimodal_model("int2")
+
+    @hide_stdout()
+    def test_ternary_bonsai_int4_onnxruntime(self):
+        self._check_quantized_multimodal_model("int4", ternary=True)
+
+    @hide_stdout()
+    def test_ternary_bonsai_int2_onnxruntime(self):
+        self._check_quantized_multimodal_model("int2", ternary=True)
 
     @hide_stdout()
     @requires_genai("0.16", "Qwen3.5 hybrid states require ONNX Runtime GenAI 0.16 or newer.")
