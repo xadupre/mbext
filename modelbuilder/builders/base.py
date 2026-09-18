@@ -814,6 +814,7 @@ class Model(LocalFunctionsMixin):
         print(f"Saving GenAI config in {out_dir}")
         with open(os.path.join(out_dir, "genai_config.json"), "w") as f:
             json.dump(genai_config, f, indent=4)
+        return genai_config
 
     def make_key_value_cache_names(self, layer_id):
         """

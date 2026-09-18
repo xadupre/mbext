@@ -1650,11 +1650,7 @@ class Qwen25OmniConditionalGenerationModel(Model):
 
     def make_genai_config(self, model_name_or_path, extra_kwargs, out_dir):
         # Write the text model genai_config.json first, then extend it.
-        self.text_model.make_genai_config(model_name_or_path, extra_kwargs, out_dir)
-
-        config_path = os.path.join(out_dir, "genai_config.json")
-        with open(config_path) as f:
-            genai_config = json.load(f)
+        genai_config = self.text_model.make_genai_config(model_name_or_path, extra_kwargs, out_dir)
 
         spatial_merge_size = self.vision_encoder.vision_config.spatial_merge_size
 
@@ -1685,8 +1681,10 @@ class Qwen25OmniConditionalGenerationModel(Model):
             "outputs": {"inputs_embeds": "inputs_embeds"},
         }
 
+        config_path = os.path.join(out_dir, "genai_config.json")
         with open(config_path, "w") as f:
             json.dump(genai_config, f, indent=4)
+        return genai_config
 
     def save_processing(self, model_name_or_path, extra_kwargs, out_dir):
         self.text_model.save_processing(model_name_or_path, extra_kwargs, out_dir)
@@ -2989,15 +2987,14 @@ class Qwen35TextModel(Model):
         self.output_names["present_conv"] = "present.%d.conv_state"
         self.output_names["present_recurrent"] = "present.%d.recurrent_state"
 
-        super().make_genai_config(out_dir, {}, out_dir)
-        config_path = os.path.join(out_dir, "genai_config.json")
-        with open(config_path) as file:
-            genai_config = json.load(file)
+        genai_config = super().make_genai_config(out_dir, {}, out_dir)
         decoder = genai_config["model"]["decoder"]
-        decoder["inputs"]["past_conv_names"] = self.input_names["past_conv"]
-        decoder["inputs"]["past_recurrent_names"] = self.input_names["past_recurrent"]
-        decoder["outputs"]["present_conv_names"] = self.output_names["present_conv"]
-        decoder["outputs"]["present_recurrent_names"] = self.output_names["present_recurrent"]
+        if "linear_attention" in self.layer_types:
+            decoder["inputs"]["past_conv_names"] = self.input_names["past_conv"]
+            decoder["inputs"]["past_recurrent_names"] = self.input_names["past_recurrent"]
+            decoder["outputs"]["present_conv_names"] = self.output_names["present_conv"]
+            decoder["outputs"]["present_recurrent_names"] = self.output_names["present_recurrent"]
+        config_path = os.path.join(out_dir, "genai_config.json")
         with open(config_path, "w") as file:
             json.dump(genai_config, file, indent=4)
 
@@ -3011,6 +3008,7 @@ class Qwen35TextModel(Model):
         del self.output_names["present.value"]
         del self.output_names["present_conv"]
         del self.output_names["present_recurrent"]
+        return genai_config
 
 
 class Qwen35VisionEncoderModel(Qwen25OmniVisionEncoderModel):
@@ -3283,10 +3281,7 @@ class Qwen35ConditionalGenerationModel(Model):
         self.text_model.save_model(out_dir)
 
     def make_genai_config(self, model_name_or_path, extra_kwargs, out_dir):
-        self.text_model.make_genai_config(model_name_or_path, extra_kwargs, out_dir)
-        config_path = os.path.join(out_dir, "genai_config.json")
-        with open(config_path) as file:
-            genai_config = json.load(file)
+        genai_config = self.text_model.make_genai_config(model_name_or_path, extra_kwargs, out_dir)
 
         vision_config = self.vision_encoder.vision_config
         genai_config["model"]["type"] = "qwen3_5"
@@ -3307,8 +3302,10 @@ class Qwen35ConditionalGenerationModel(Model):
         genai_config["model"]["image_token_id"] = self.embedding_model.image_token_id
         genai_config["model"]["video_token_id"] = self.video_token_id
         genai_config["model"]["vision_start_token_id"] = self.vision_start_token_id
+        config_path = os.path.join(out_dir, "genai_config.json")
         with open(config_path, "w") as file:
             json.dump(genai_config, file, indent=4)
+        return genai_config
 
     def save_processing(self, model_name_or_path, extra_kwargs, out_dir):
         from transformers import AutoProcessor
