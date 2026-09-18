@@ -6,8 +6,8 @@
 
 
 import copy
-import json
 import os
+import shutil
 
 import numpy as np
 import onnx_light.onnx.numpy_helper as numpy_helper
@@ -739,8 +739,8 @@ class Qwen25OmniThinkerModel(Qwen25VLTextModel):
             src, token=self.hf_token, trust_remote_code=self.hf_remote, **extra_kwargs
         )
 
-    def make_genai_config(self, model_name_or_path, extra_kwargs, out_dir):
-        """Generate genai_config.json for the thinker (text-only) decoder.
+    def create_genai_config(self, model_name_or_path, extra_kwargs, out_dir):
+        """Create the GenAI configuration for the thinker text decoder.
 
         Flattens ``bos_token_id``, ``eos_token_id``, and ``pad_token_id``
         from the nested text config onto the top-level HF config before
@@ -762,7 +762,7 @@ class Qwen25OmniThinkerModel(Qwen25VLTextModel):
                 setattr(hf_config, attr, val)
         hf_config.save_pretrained(out_dir)
 
-        super().make_genai_config(out_dir, {}, out_dir)
+        return super().create_genai_config(out_dir, {}, out_dir)
 
 
 class Qwen25OmniVisionEncoderModel(VisionEncoderModel):
@@ -1649,12 +1649,7 @@ class Qwen25OmniConditionalGenerationModel(Model):
         self.text_model.save_model(out_dir)
 
     def make_genai_config(self, model_name_or_path, extra_kwargs, out_dir):
-        # Write the text model genai_config.json first, then extend it.
-        self.text_model.make_genai_config(model_name_or_path, extra_kwargs, out_dir)
-
-        config_path = os.path.join(out_dir, "genai_config.json")
-        with open(config_path) as f:
-            genai_config = json.load(f)
+        genai_config = self.text_model.create_genai_config(model_name_or_path, extra_kwargs, out_dir)
 
         spatial_merge_size = self.vision_encoder.vision_config.spatial_merge_size
 
@@ -1685,8 +1680,7 @@ class Qwen25OmniConditionalGenerationModel(Model):
             "outputs": {"inputs_embeds": "inputs_embeds"},
         }
 
-        with open(config_path, "w") as f:
-            json.dump(genai_config, f, indent=4)
+        self.text_model.save_genai_config(genai_config, out_dir)
 
     def save_processing(self, model_name_or_path, extra_kwargs, out_dir):
         self.text_model.save_processing(model_name_or_path, extra_kwargs, out_dir)
@@ -2956,8 +2950,8 @@ class Qwen35TextModel(Model):
     def has_lm_head(self, module):
         return hasattr(self.weights, "lm_head") and module is self.weights.lm_head
 
-    def make_genai_config(self, model_name_or_path, extra_kwargs, out_dir):
-        """Generate genai_config.json for the decoder (text-only) model.
+    def create_genai_config(self, model_name_or_path, extra_kwargs, out_dir):
+        """Create the GenAI configuration for the text-only decoder.
 
         Temporarily adjusts attributes so the base class produces the correct
         config for Qwen3.5's hybrid architecture (sparse KV cache, nested
@@ -2989,17 +2983,7 @@ class Qwen35TextModel(Model):
         self.output_names["present_conv"] = "present.%d.conv_state"
         self.output_names["present_recurrent"] = "present.%d.recurrent_state"
 
-        super().make_genai_config(out_dir, {}, out_dir)
-        config_path = os.path.join(out_dir, "genai_config.json")
-        with open(config_path) as file:
-            genai_config = json.load(file)
-        decoder = genai_config["model"]["decoder"]
-        decoder["inputs"]["past_conv_names"] = self.input_names["past_conv"]
-        decoder["inputs"]["past_recurrent_names"] = self.input_names["past_recurrent"]
-        decoder["outputs"]["present_conv_names"] = self.output_names["present_conv"]
-        decoder["outputs"]["present_recurrent_names"] = self.output_names["present_recurrent"]
-        with open(config_path, "w") as file:
-            json.dump(genai_config, file, indent=4)
+        genai_config = super().create_genai_config(out_dir, {}, out_dir)
 
         # Restore
         self.num_layers = saved["num_layers"]
@@ -3011,6 +2995,7 @@ class Qwen35TextModel(Model):
         del self.output_names["present.value"]
         del self.output_names["present_conv"]
         del self.output_names["present_recurrent"]
+        return genai_config
 
 
 class Qwen35VisionEncoderModel(Qwen25OmniVisionEncoderModel):
@@ -3283,10 +3268,7 @@ class Qwen35ConditionalGenerationModel(Model):
         self.text_model.save_model(out_dir)
 
     def make_genai_config(self, model_name_or_path, extra_kwargs, out_dir):
-        self.text_model.make_genai_config(model_name_or_path, extra_kwargs, out_dir)
-        config_path = os.path.join(out_dir, "genai_config.json")
-        with open(config_path) as file:
-            genai_config = json.load(file)
+        genai_config = self.text_model.create_genai_config(model_name_or_path, extra_kwargs, out_dir)
 
         vision_config = self.vision_encoder.vision_config
         genai_config["model"]["type"] = "qwen3_5"
@@ -3307,8 +3289,7 @@ class Qwen35ConditionalGenerationModel(Model):
         genai_config["model"]["image_token_id"] = self.embedding_model.image_token_id
         genai_config["model"]["video_token_id"] = self.video_token_id
         genai_config["model"]["vision_start_token_id"] = self.vision_start_token_id
-        with open(config_path, "w") as file:
-            json.dump(genai_config, file, indent=4)
+        self.text_model.save_genai_config(genai_config, out_dir)
 
     def save_processing(self, model_name_or_path, extra_kwargs, out_dir):
         from transformers import AutoProcessor
@@ -3319,10 +3300,7 @@ class Qwen35ConditionalGenerationModel(Model):
         processor.save_pretrained(out_dir)
         processor_path = os.path.join(out_dir, "preprocessor_config.json")
         if os.path.exists(processor_path):
-            with open(processor_path) as file:
-                processor_config = json.load(file)
-            with open(os.path.join(out_dir, "processor_config.json"), "w") as file:
-                json.dump(processor_config, file, indent=4)
+            shutil.copyfile(processor_path, os.path.join(out_dir, "processor_config.json"))
 
 
 class Qwen35CausalLMModel(Qwen35TextModel):
