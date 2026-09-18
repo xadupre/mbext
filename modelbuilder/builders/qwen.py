@@ -2983,21 +2983,14 @@ class Qwen35TextModel(Model):
         has_linear_attention = "linear_attention" in self.layer_types
         self.output_names["present.key"] = "present.%d.key"
         self.output_names["present.value"] = "present.%d.value"
-        hybrid_names = (
-            (
-                ("input_names", "past_conv", "past_key_values.%d.conv_state"),
-                ("input_names", "past_recurrent", "past_key_values.%d.recurrent_state"),
-                ("output_names", "present_conv", "present.%d.conv_state"),
-                ("output_names", "present_recurrent", "present.%d.recurrent_state"),
-            )
-            if has_linear_attention
-            else ()
-        )
-        for attr, key, value in hybrid_names:
-            getattr(self, attr)[key] = value
+        if has_linear_attention:
+            self.input_names["past_conv"] = "past_key_values.%d.conv_state"
+            self.input_names["past_recurrent"] = "past_key_values.%d.recurrent_state"
+            self.output_names["present_conv"] = "present.%d.conv_state"
+            self.output_names["present_recurrent"] = "present.%d.recurrent_state"
 
         genai_config = super().make_genai_config(out_dir, {}, out_dir)
-        if hybrid_names:
+        if has_linear_attention:
             decoder = genai_config["model"]["decoder"]
             decoder["inputs"]["past_conv_names"] = self.input_names["past_conv"]
             decoder["inputs"]["past_recurrent_names"] = self.input_names["past_recurrent"]
@@ -3013,8 +3006,11 @@ class Qwen35TextModel(Model):
         del self.input_names["past_key_values.value"]
         del self.output_names["present.key"]
         del self.output_names["present.value"]
-        for attr, key, _ in hybrid_names:
-            del getattr(self, attr)[key]
+        if has_linear_attention:
+            del self.input_names["past_conv"]
+            del self.input_names["past_recurrent"]
+            del self.output_names["present_conv"]
+            del self.output_names["present_recurrent"]
         return genai_config
 
 
