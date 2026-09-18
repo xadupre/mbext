@@ -124,6 +124,26 @@ def _quantize_k(weight, bits, block_size):
     return (quantized.astype(np.uint8), scales.reshape(columns, blocks), zero_points.reshape(columns, blocks))
 
 
+def _quantize_ternary(weight, bits, block_size):
+    if bits != 2:
+        raise ValueError(f"Ternary quantization requires 2 bits, not {bits}.")
+    columns = weight.shape[1]
+    blocks = weight.shape[0] // block_size
+    values = weight.T.reshape(-1, block_size).astype(np.float32)
+    scales = np.max(np.abs(values), axis=1, keepdims=True)
+    safe_scales = np.where(scales == 0, 1.0, scales)
+    levels = np.rint(values / safe_scales)
+    reconstructed = levels * scales
+    if not np.allclose(values, reconstructed, rtol=1e-3, atol=1e-6):
+        error = float(np.max(np.abs(values - reconstructed)))
+        raise ValueError(
+            "Ternary quantization requires every group to contain only " f"{{-scale, 0, +scale}} values; maximum error is {error}."
+        )
+    quantized = (levels + 1).astype(np.uint8)
+    zero_points = np.ones((columns, blocks), dtype=np.uint8)
+    return quantized, scales.reshape(columns, blocks), zero_points
+
+
 def _pack_groupwise(quantized, bits, columns, blocks, block_size):
     if bits == 8:
         packed = quantized
@@ -145,6 +165,20 @@ def _pack_zero_points(zero_points, bits, columns, blocks):
     for index in range(pack):
         packed |= padded[:, index::pack] << (index * bits)
     return packed
+
+
+def quantize_ternary_groupwise(weight, block_size):
+    """Pack a ``[K, N]`` ternary matrix for 2-bit ``MatMulNBits``."""
+    if weight.ndim != 2:
+        raise ValueError(f"Ternary quantization expects a matrix, not shape {weight.shape}.")
+    rows, columns = weight.shape
+    blocks = math.ceil(rows / block_size)
+    padded_rows = blocks * block_size
+    padded = np.pad(weight, ((0, padded_rows - rows), (0, 0))) if padded_rows != rows else weight
+    quantized, scales, zero_points = _quantize_ternary(padded, 2, block_size)
+    packed = _pack_groupwise(quantized, 2, columns, blocks, block_size)
+    packed_zero_points = _pack_zero_points(zero_points, 2, columns, blocks)
+    return packed, scales, packed_zero_points
 
 
 def _make_raw_tensor(name, data_type, dims, array):
@@ -297,10 +331,13 @@ def _quantize_graph(
                 elif algorithm == "rtn":
                     quantized, scales, zero_points = _quantize_rtn(padded, node_bits, block_size, is_symmetric)
                     packed = _pack_groupwise(quantized, node_bits, columns, blocks, block_size)
+                elif algorithm == "ternary":
+                    quantized, scales, zero_points = _quantize_ternary(padded, node_bits, block_size)
+                    packed = _pack_groupwise(quantized, node_bits, columns, blocks, block_size)
                 else:
                     packed, scales, zero_points = _default_quantize(weight, node_bits, block_size, is_symmetric, False)
 
-                grouped_name = algorithm in {"rtn", "k_quant"}
+                grouped_name = algorithm in {"rtn", "k_quant", "ternary"}
                 quant_base = f"{source_name}_Q{node_bits}G{block_size}" if grouped_name else f"{source_name}_Q{node_bits}"
                 scales_base = f"{source_name}_scale" if grouped_name else f"{source_name}_scales"
                 quant_name = claim_name(quant_base, config)
@@ -312,7 +349,7 @@ def _quantize_graph(
                         numpy_helper.from_array(scales.astype(scales_dtype), name=scales_name),
                     ]
                 )
-                if zero_points is not None and (not is_symmetric or algorithm == "k_quant"):
+                if zero_points is not None and (not is_symmetric or algorithm in {"k_quant", "ternary"}):
                     zero_base = f"{source_name}_zp" if grouped_name else f"{source_name}_zero_points"
                     zero_name = claim_name(zero_base, config)
                     packed_zero_points = _pack_zero_points(zero_points, node_bits, columns, blocks) if grouped_name else zero_points

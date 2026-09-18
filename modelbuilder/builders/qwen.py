@@ -2065,14 +2065,15 @@ class Qwen35TextModel(Model):
         # Linear attention recurrence accumulates errors across the full sequence,
         # unlike softmax attention which normalizes per-step.
         int8_nodes = {}
-        for i, lt in enumerate(self.layer_types):
-            if lt == "linear_attention":
-                # All linear attention projections: INT8
-                for proj in ("in_proj_a", "in_proj_b", "in_proj_qkv", "in_proj_z", "out_proj"):
-                    int8_nodes[f"/model/layers.{i}/linear_attn/{proj}/MatMul"] = {"bits": 8}
-                # MLP projections in linear attention layers: INT8
-                for proj in ("gate_proj", "up_proj", "down_proj"):
-                    int8_nodes[f"/model/layers.{i}/mlp/{proj}/MatMul"] = {"bits": 8}
+        if self.quant_attrs["int4"]["algo_config"]["algorithm"] != "ternary":
+            for i, lt in enumerate(self.layer_types):
+                if lt == "linear_attention":
+                    # All linear attention projections: INT8
+                    for proj in ("in_proj_a", "in_proj_b", "in_proj_qkv", "in_proj_z", "out_proj"):
+                        int8_nodes[f"/model/layers.{i}/linear_attn/{proj}/MatMul"] = {"bits": 8}
+                    # MLP projections in linear attention layers: INT8
+                    for proj in ("gate_proj", "up_proj", "down_proj"):
+                        int8_nodes[f"/model/layers.{i}/mlp/{proj}/MatMul"] = {"bits": 8}
 
         if int8_nodes:
             algo_config = self.quant_attrs["int4"].get("algo_config")
@@ -3259,7 +3260,12 @@ class Qwen35ConditionalGenerationModel(Model):
         self.image_token_id = config.image_token_id
         self.video_token_id = config.video_token_id
         self.vision_start_token_id = config.vision_start_token_id
-        self.vision_encoder = Qwen35VisionEncoderModel(config, io_dtype, onnx_dtype, ep, cache_dir, extra_options)
+        vision_options = dict(extra_options)
+        if extra_options.get("int4_algo_config") == "ternary":
+            vision_options["int4_algo_config"] = "rtn"
+            vision_options["int4_bits"] = 4
+            vision_options["int4_block_size"] = extra_options.get("vision_int4_block_size", 32)
+        self.vision_encoder = Qwen35VisionEncoderModel(config, io_dtype, onnx_dtype, ep, cache_dir, vision_options)
         embedding_options = dict(extra_options)
         embedding_options["image_token_id"] = self.image_token_id
         embedding_config = copy.deepcopy(config.text_config)

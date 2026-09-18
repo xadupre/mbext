@@ -12,6 +12,7 @@ import numpy as np
 from modelbuilder.ext_test_case import ExtTestCase, hide_stdout, requires_transformers
 
 QWEN3_8_MODEL_NAME = "Qwen/Qwen3.8-27B"
+TERNARY_BONSAI_MODEL_NAME = "prism-ml/Ternary-Bonsai-27B-unpacked"
 
 
 def _make_qwen3_8_config():
@@ -77,20 +78,39 @@ def _make_qwen3_8_config():
 
 @requires_transformers("5")
 class TestRandomQwen3_8(ExtTestCase):
-    def _build_multimodal_model(self):
+    @staticmethod
+    def _ternarize_language_weights(model):
+        import torch
+
+        with torch.no_grad():
+            for name, module in model.named_modules():
+                if name.startswith("model.visual") or not isinstance(module, (torch.nn.Embedding, torch.nn.Linear)):
+                    continue
+                weight = module.weight
+                padded_width = ((weight.shape[1] + 127) // 128) * 128
+                padded = torch.nn.functional.pad(weight, (0, padded_width - weight.shape[1]))
+                grouped = padded.reshape(weight.shape[0], -1, 128)
+                scales = grouped.abs().amax(dim=-1, keepdim=True)
+                safe_scales = torch.where(scales == 0, 1, scales)
+                ternary = (grouped / safe_scales).round().clamp(-1, 1) * scales
+                weight.copy_(ternary.reshape(weight.shape[0], -1)[:, : weight.shape[1]])
+
+    def _build_multimodal_model(self, ternary=False):
         import torch
         from transformers import Qwen2VLImageProcessor, Qwen3VLProcessor, Qwen3VLVideoProcessor, Qwen3_5ForConditionalGeneration
 
         from modelbuilder.builder import create_model
 
         config = _make_qwen3_8_config()
-        prefix = "test_random_qwen3_8_multimodal"
+        prefix = "test_random_ternary_bonsai_multimodal" if ternary else "test_random_qwen3_8_multimodal"
         model_dir = self.get_model_dir(prefix)
         output_dir, cache_dir = self.get_dirs(prefix)
 
         torch.manual_seed(42)
         model = Qwen3_5ForConditionalGeneration(config)
         model.eval()
+        if ternary:
+            self._ternarize_language_weights(model)
         model.save_pretrained(model_dir)
 
         tokenizer = self.make_word_level_tokenizer()
@@ -110,13 +130,14 @@ class TestRandomQwen3_8(ExtTestCase):
         processor.save_pretrained(model_dir)
 
         create_model(
-            model_name=QWEN3_8_MODEL_NAME,
+            model_name=TERNARY_BONSAI_MODEL_NAME if ternary else QWEN3_8_MODEL_NAME,
             input_path=model_dir,
             output_dir=output_dir,
-            precision="fp32",
+            precision="int2" if ternary else "fp32",
             execution_provider="cpu",
             cache_dir=cache_dir,
             multimodal=True,
+            int4_algo_config="ternary" if ternary else "default",
         )
         return config, model, output_dir
 
@@ -174,6 +195,49 @@ class TestRandomQwen3_8(ExtTestCase):
             expected_embeds = model.model.language_model.embed_tokens(torch.from_numpy(input_ids)).numpy()
         expected_embeds[0, 1:-1] = image_features
         np.testing.assert_allclose(inputs_embeds, expected_embeds, atol=1e-6, rtol=1e-6)
+
+    @hide_stdout()
+    def test_ternary_bonsai_int2_conversion(self):
+        import onnx_light.onnx as onnx
+        import torch
+
+        config, model, output_dir = self._build_multimodal_model(ternary=True)
+        text_proto = onnx.load(os.path.join(output_dir, "model.onnx"), load_external_data=False)
+        vision_proto = onnx.load(os.path.join(output_dir, "vision.onnx"), load_external_data=False)
+        embedding_proto = onnx.load(os.path.join(output_dir, "embedding.onnx"), load_external_data=False)
+
+        text_bits = {
+            attribute.i
+            for node in text_proto.graph.node
+            if node.op_type == "MatMulNBits"
+            for attribute in node.attribute
+            if attribute.name == "bits"
+        }
+        vision_bits = {
+            attribute.i
+            for node in vision_proto.graph.node
+            if node.op_type == "MatMulNBits"
+            for attribute in node.attribute
+            if attribute.name == "bits"
+        }
+        embedding_nodes = [node for node in embedding_proto.graph.node if node.op_type == "GatherBlockQuantized"]
+        self.assertEqual(text_bits, {2})
+        self.assertEqual(vision_bits, {4})
+        self.assertEqual(len(embedding_nodes), 1)
+        embedding_attributes = {attribute.name: attribute.i for attribute in embedding_nodes[0].attribute}
+        self.assertEqual(embedding_attributes["bits"], 2)
+        self.assertEqual(embedding_attributes["block_size"], 128)
+
+        self.check_ort(os.path.join(output_dir, "model.onnx"))
+        self.check_ort(os.path.join(output_dir, "vision.onnx"))
+        embedding_session = self.check_ort(os.path.join(output_dir, "embedding.onnx"))
+        input_ids = np.array([[5, config.image_token_id, 6]], dtype=np.int64)
+        image_features = np.arange(config.text_config.hidden_size, dtype=np.float32).reshape(1, -1)
+        (actual,) = embedding_session.run(None, {"image_features": image_features, "input_ids": input_ids})
+        with torch.no_grad():
+            expected = model.model.language_model.embed_tokens(torch.from_numpy(input_ids)).numpy()
+        expected[0, 1] = image_features[0]
+        np.testing.assert_allclose(actual, expected, rtol=1e-6, atol=1e-6)
 
 
 if __name__ == "__main__":

@@ -8,6 +8,7 @@ import numpy as np
 import onnx_light.onnx.numpy_helper as numpy_helper
 from onnx_light.onnx import TensorProto
 
+from ..helpers.quantization import quantize_ternary_groupwise
 from .base import Model
 
 
@@ -53,8 +54,24 @@ class EmbeddingModel(Model):
         hf_model.eval()
         embed_weight = self.get_embed_weight(hf_model)
 
-        # Initialisers.
-        self.make_initializer(embed_weight, name="embed_tokens_weight")
+        ternary = self.quant_attrs["int4"]["algo_config"]["algorithm"] == "ternary"
+        if ternary:
+            bits = self.quant_attrs["int4"]["bits"]
+            block_size = self.quant_attrs["int4"]["qdq_block_size"]
+            if bits != 2:
+                raise ValueError(f"Ternary embedding quantization requires 2 bits, not {bits}.")
+            if embed_weight.shape[1] % block_size:
+                raise ValueError(
+                    "Ternary embedding width must be divisible by the block size: "
+                    f"{embed_weight.shape[1]} is not divisible by {block_size}."
+                )
+            packed, scales, zero_points = quantize_ternary_groupwise(embed_weight.T, block_size)
+            packed_width = embed_weight.shape[1] * bits // 8
+            self.make_initializer(packed.reshape(embed_weight.shape[0], packed_width), name="embed_tokens_weight")
+            self.make_initializer(scales, name="embed_tokens_scales")
+            self.make_initializer(zero_points, name="embed_tokens_zero_points")
+        else:
+            self.make_initializer(embed_weight, name="embed_tokens_weight")
         self.make_initializer(np.array(self.image_token_id, dtype=np.int64), name="image_token_id_const")
         # Use a Constant node (always inline) rather than an initializer so that
         # shape inference can read the axes value even when external data is used.
@@ -71,8 +88,21 @@ class EmbeddingModel(Model):
         # encoder output (float16 for fp16 models, float32 for fp32/int4).
         self.make_graph_input("image_features", self.io_dtype, [None, self.hidden_size])
 
-        # 1. Embed all tokens: input_ids [1, T] -> text_embeds [1, T, H] (fp32, weights are float32)
-        self.make_node("Gather", inputs=["embed_tokens_weight", "input_ids"], outputs=["text_embeds"], name="/embed/Gather", axis=0)
+        # 1. Embed all tokens: input_ids [1, T] -> text_embeds [1, T, H].
+        if ternary:
+            self.make_node(
+                "GatherBlockQuantized",
+                inputs=["embed_tokens_weight", "input_ids", "embed_tokens_scales", "embed_tokens_zero_points"],
+                outputs=["text_embeds"],
+                name="/embed/GatherBlockQuantized",
+                domain="com.microsoft",
+                bits=bits,
+                block_size=block_size,
+                gather_axis=0,
+                quantize_axis=1,
+            )
+        else:
+            self.make_node("Gather", inputs=["embed_tokens_weight", "input_ids"], outputs=["text_embeds"], name="/embed/Gather", axis=0)
         # 2. Squeeze batch dim for easier indexing: [1, T, H] → [T, H] (still fp32)
         self.make_node("Squeeze", inputs=["text_embeds", "squeeze_batch_axes"], outputs=["text_2d_fp32"], name="/embed/Squeeze_3d")
         # 3. Cast text embeddings from float32 to io_dtype so that ScatterND

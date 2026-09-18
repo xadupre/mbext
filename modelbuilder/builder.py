@@ -753,7 +753,7 @@ def get_args():
                     1 is fp32.
                     Default is 4 for the CPU EP and 0 for non-CPU EPs.
                 int4_block_size = 16/32/64/128/256: Specify the block size for int4 quantization (MatMulNBits).
-                    Default value is 32.
+                    Default value is 32, or 128 for ternary quantization.
                 qmoe_block_size = 16/32/64/128/256: Specify the block size for QMoE expert weights quantization.
                     Default is 128 for trt-rtx, 32 for others. Supported EPs: cpu, webgpu, trt-rtx.
                 int4_is_symmetric = Quantize the weights symmetrically. Default is true.
@@ -774,10 +774,11 @@ def get_args():
                     std, quantiles) as well as the Kolmogorov-Smirnov distance to a fitted normal distribution.
                     Statistics are computed on the float weights, before quantization.
                 int4_algo_config = Method for int4 quantization. Default is 'default'.
-                    Currently supported options are: 'default', 'rtn', 'rtn_last', 'k_quant', 'k_quant_mixed', 'k_quant_last'.
+                    Currently supported options are: 'default', 'rtn', 'rtn_last', 'ternary', 'k_quant', 'k_quant_mixed', 'k_quant_last'.
                     default = algo_config passed to MatMulNBitsQuantizer is None. Quantizer uses default RTN algorithm. All MatMuls are quantized as int4.(different node naming conventions to `rtn`)
                     rtn = RTN algorithm for int4 quantization.
                     rtn_last = RTN algorithm where only the last MatMul (/lm_head/MatMul) is quantized as int8. Other MatMuls are quantized as int4.
+                    ternary = Exact INT2 group quantization for unpacked weights containing only {-scale, 0, +scale}.
                     k_quant = k_quant algorithm for int4 quantization.
                     k_quant_mixed = k_quant algorithm with mixed precision (int4 + int8).
                     k_quant_last = k_quant algorithm where only the last MatMul (/lm_head/MatMul) is quantized as int8. Other MatMuls are quantized as int4.
