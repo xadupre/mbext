@@ -27,6 +27,7 @@ class TestCheckExtraOptions(ExtTestCase):
         "hf_remote",
         "disable_qkv_fusion",
         "prune_lm_head",
+        "use_3d_position_ids",
         "int4_quantize_moe_router",
     ]
 

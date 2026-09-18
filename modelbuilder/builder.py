@@ -44,6 +44,7 @@ def check_extra_options(kv_pairs, execution_provider):
         "disable_qkv_fusion",
         "prune_lm_head",
         "multimodal",
+        "use_3d_position_ids",
         "int4_quantize_moe_router",
         "quant_weight_stats",
     ]
@@ -808,6 +809,9 @@ def get_args():
                 include_hidden_states = Include hidden states as output from your ONNX model.
                     Use this option when you want to have the hidden states as an output from your ONNX model.
                     In addition to `logits`, you will have `hidden_states` as an output to your ONNX model.
+                use_3d_position_ids = Accept native [3, batch, sequence] position IDs for Qwen2.5-Omni. Default is false.
+                    Use with direct ONNX Runtime multimodal inference to preserve temporal/spatial mRoPE.
+                    ORT-GenAI callers should keep the default 2-D position IDs.
                 enable_cuda_graph = Enable CUDA graph capture during inference. Default is false.
                     If enabled, all nodes being placed on the CUDA EP is the prerequisite for the CUDA graph to be used correctly.
                     It is not guaranteed that CUDA graph be enabled as it depends on the model and the graph structure.

@@ -23,6 +23,7 @@ from .base_vision import VisionEncoderModel
 # Default token IDs for Qwen2.5-Omni; overridden by values from the HF config when available.
 _QWEN25OMNI_DEFAULT_IMAGE_TOKEN_ID = 151655
 _QWEN25OMNI_DEFAULT_AUDIO_TOKEN_ID = 151646
+_QWEN25OMNI_DEFAULT_VIDEO_TOKEN_ID = 151656
 
 
 class QwenModel(Model):
@@ -718,10 +719,9 @@ class Qwen25OmniThinkerModel(Qwen25VLTextModel):
         # ORT-GenAI uses for this mRoPE model family.
         self.model_type = "Qwen2_5_VLForConditionalGeneration"
 
-        # The thinker is exported as a standalone text decoder and driven by
-        # ORT-GenAI, which feeds 2D [B, S] position_ids.  Declare a 2D input
-        # and expand it to 3D inside the graph for the mRoPE subgraph.
-        self.expand_position_ids = True
+        # ORT-GenAI feeds 2D [B, S] position_ids. Direct multimodal callers can
+        # opt into native [3, B, S] positions to preserve temporal/spatial mRoPE.
+        self.expand_position_ids = not extra_options.get("use_3d_position_ids", False)
 
     def load_weights(self, input_path):
         # For quantized models or GGUF use the base class logic.
@@ -778,7 +778,13 @@ class Qwen25OmniVisionEncoderModel(VisionEncoderModel):
         ``in_feat_dim = in_channels * temporal_patch_size * patch_size * patch_size``.
     rotary_pos_emb : float32 [n_patches, head_dim // 2]
         Pre-computed 2-D rotary position embeddings computed by the processor
-        from ``image_grid_thw``.
+        from ``image_grid_thw`` or ``video_grid_thw``.
+    frame_ids, window_ids : int64 [n_patches], optional
+        Frame and spatial-window membership in processor patch order. Attention
+        is restricted to equal IDs. Defaults to a single frame/window for
+        compatibility with existing single-image callers. Use
+        :func:`modelbuilder.helpers.vision_helper.prepare_qwen25_omni_vision_inputs`
+        for videos, multiple images, or images spanning multiple windows.
 
     Outputs
     -------
@@ -953,8 +959,8 @@ class Qwen25OmniVisionEncoderModel(VisionEncoderModel):
         # V is not rotated; reshape directly from [n, d] to [1, n, d].
         v_mha = self.make_reshape(f"{b}/v_mha_reshape", [v, [1, -1, d]], self.io_dtype, [1, n, d])
 
-        # Fused MultiHeadAttention (full attention, no causal mask): [1, n, d] → [1, n, d].
-        attn_out = self.make_vis_mha(b, q_mha, k_mha, v_mha, nh, float(hd**-0.5), [1, n, d])
+        mask = "/vision/frame_ids/mask" if layer_id in self.vision_config.fullatt_block_indexes else "/vision/window_ids/mask"
+        attn_out = self.make_vis_mha(b, q_mha, k_mha, v_mha, nh, float(hd**-0.5), [1, n, d], add_qk_name=mask)
 
         # Reshape back to [n, d] for the O projection.
         attn_flat = self.make_reshape(f"{b}/attn_flat", [attn_out, [-1, d]], self.io_dtype, [n, d])
@@ -1047,6 +1053,15 @@ class Qwen25OmniVisionEncoderModel(VisionEncoderModel):
     # Main entry point
     # ------------------------------------------------------------------
 
+    def to_model_proto(self):
+        model = super().to_model_proto()
+        # GraphBuilder requires unique names; ONNX permits initializers sharing
+        # input names to supply overridable defaults.
+        for value in model.graph.input:
+            if value.name in {"frame_ids", "window_ids"}:
+                model.graph.initializer.append(numpy_helper.from_array(np.array([0], dtype=np.int64), name=value.name))
+        return model
+
     def make_model(self, input_path):
         """Load HF weights and build the vision encoder ONNX graph."""
         hf_model = self.load_hf_model(input_path)
@@ -1057,6 +1072,24 @@ class Qwen25OmniVisionEncoderModel(VisionEncoderModel):
         self.make_graph_input("pixel_values", ir.DataType.FLOAT, [None, self.in_feat_dim])
         # rotary_pos_emb is always float32 (computed by the image processor).
         self.make_graph_input("rotary_pos_emb", ir.DataType.FLOAT, [None, self.vis_head_dim // 2])
+
+        # Keep processor patch order: membership masks are equivalent to HF's
+        # window permutation, segmented attention, and inverse permutation.
+        self.make_initializer(np.array([0, 1], dtype=np.int64), "/vision/mask_axes")
+        self.make_initializer(np.array([1], dtype=np.int64), "/vision/column_axis")
+        self.make_initializer(np.array(0, dtype=np.float32), "/vision/mask_zero", to=self.io_dtype)
+        self.make_initializer(np.array(-np.inf, dtype=np.float32), "/vision/mask_min", to=self.io_dtype)
+        patch_shape = "/vision/patch_shape"
+        self.make_node("Shape", ["pixel_values"], [patch_shape], name="/vision/Shape", start=0, end=1)
+        for ids in ("frame_ids", "window_ids"):
+            self.make_graph_input(ids, ir.DataType.INT64, [None])
+            b = f"/vision/{ids}"
+            self.make_node("Expand", [ids, patch_shape], [f"{b}/expanded"], name=f"{b}/Expand")
+            column = f"{b}/column"
+            self.make_node("Unsqueeze", [f"{b}/expanded", "/vision/column_axis"], [column], name=f"{b}/Column")
+            self.make_node("Equal", [column, f"{b}/expanded"], [f"{b}/equal"], name=f"{b}/Equal")
+            self.make_node("Where", [f"{b}/equal", "/vision/mask_zero", "/vision/mask_min"], [f"{b}/bias"], name=f"{b}/Where")
+            self.make_node("Unsqueeze", [f"{b}/bias", "/vision/mask_axes"], [f"{b}/mask"], name=f"{b}/Unsqueeze")
 
         # --- Patch embedding: Linear [n_patches, in_feat_dim] → [n_patches, hidden_size] ---
         pv_cast = "pixel_values"
@@ -1483,16 +1516,17 @@ class Qwen25OmniAudioEncoderModel(AudioEncoderModel):
 class Qwen25OmniEmbeddingModel(EmbeddingModel):
     """ONNX embedding model for the Qwen2.5-Omni ``phi3v``-style multimodal pipeline.
 
-    Extends the base ScatterND embedding graph to handle both image and audio
-    token placeholders.  Image features are scattered at ``image_token_id``
-    positions; audio features are scattered at ``audio_token_id`` positions.
+    Extends the base ScatterND embedding graph to handle image, video and audio
+    token placeholders. The shared vision encoder's features are supplied in
+    ``image_features``, in the order image/video placeholders occur in the prompt.
+    Audio features are scattered at ``audio_token_id`` positions.
 
     Graph (2-D ``input_ids [1, T]`` from ORT-GenAI's ``EmbeddingState``)::
 
         text_embeds   = Gather(embed_tokens_weight, input_ids)   # [1, T, H]
         text_2d       = Squeeze(text_embeds, [0])                # [T, H]
         flat_ids      = Squeeze(input_ids, [0])                  # [T]
-        is_img        = Equal(flat_ids, image_token_id_const)    # [T] bool
+        is_img        = image or video placeholder              # [T] bool
         img_pos       = NonZero(is_img)                          # [1, N_img]
         img_pos_idx   = Transpose(img_pos, [1, 0])               # [N_img, 1]
         scattered_img = ScatterND(text_2d, img_pos_idx,
@@ -1508,6 +1542,7 @@ class Qwen25OmniEmbeddingModel(EmbeddingModel):
     def __init__(self, config, io_dtype, onnx_dtype, ep, cache_dir, extra_options):
         super().__init__(config, io_dtype, onnx_dtype, ep, cache_dir, extra_options)
         self.audio_token_id = extra_options.get("audio_token_id", _QWEN25OMNI_DEFAULT_AUDIO_TOKEN_ID)
+        self.video_token_id = extra_options.get("video_token_id", _QWEN25OMNI_DEFAULT_VIDEO_TOKEN_ID)
 
     def load_hf_model(self, input_path):
         from transformers import Qwen2_5OmniThinkerForConditionalGeneration
@@ -1531,6 +1566,7 @@ class Qwen25OmniEmbeddingModel(EmbeddingModel):
         self.make_initializer(embed_weight, name="embed_tokens_weight")
         self.make_initializer(np.array(self.image_token_id, dtype=np.int64), name="image_token_id_const")
         self.make_initializer(np.array(self.audio_token_id, dtype=np.int64), name="audio_token_id_const")
+        self.make_initializer(np.array(self.video_token_id, dtype=np.int64), name="video_token_id_const")
 
         _squeeze_axes = numpy_helper.from_array(np.array([0], dtype=np.int64), name="squeeze_batch_axes")
         self.make_node(
@@ -1552,8 +1588,10 @@ class Qwen25OmniEmbeddingModel(EmbeddingModel):
         # 4. Flatten input_ids: [1, T] → [T]
         self.make_node("Squeeze", inputs=["input_ids", "squeeze_batch_axes"], outputs=["flat_ids"], name="/embed/Squeeze_ids")
 
-        # 5. Scatter image features at image_token_id positions
-        self.make_node("Equal", inputs=["flat_ids", "image_token_id_const"], outputs=["is_image"], name="/embed/Equal_img")
+        # 5. Scatter shared vision features at image/video token positions.
+        self.make_node("Equal", inputs=["flat_ids", "image_token_id_const"], outputs=["is_image_only"], name="/embed/Equal_img")
+        self.make_node("Equal", inputs=["flat_ids", "video_token_id_const"], outputs=["is_video"], name="/embed/Equal_vid")
+        self.make_node("Or", inputs=["is_image_only", "is_video"], outputs=["is_image"], name="/embed/Or_visual")
         self.make_node("NonZero", inputs=["is_image"], outputs=["img_pos"], name="/embed/NonZero_img")
         self.make_node("Transpose", inputs=["img_pos"], outputs=["img_pos_idx"], name="/embed/Transpose_img", perm=[1, 0])
         self.make_node(
@@ -1586,7 +1624,7 @@ class Qwen25OmniConditionalGenerationModel(Model):
 
     * ``vision_encoder.onnx`` – Qwen2.5-Omni vision tower + patch merger.
     * ``audio_encoder.onnx`` – Qwen2.5-Omni audio tower (Conv1d + transformer + projection).
-    * ``embedding.onnx`` – token-embedding table + image/audio feature scatter.
+    * ``embedding.onnx`` – token-embedding table + image/video/audio feature scatter.
     * ``model.onnx`` – Qwen2.5-Omni thinker text decoder.
     * ``genai_config.json`` – ``phi3v``-type VLM config for ORT-GenAI.
     """
@@ -1613,14 +1651,16 @@ class Qwen25OmniConditionalGenerationModel(Model):
                 if not hasattr(text_obj_config, key) or getattr(text_obj_config, key) is None:
                     setattr(text_obj_config, key, getattr(text_config, key))
 
-        # image_token_id and audio_token_id are stored at the top-level config.
+        # Modality token IDs are stored at the top-level thinker config.
         image_token_id = getattr(config, "image_token_id", getattr(config, "image_token_index", _QWEN25OMNI_DEFAULT_IMAGE_TOKEN_ID))
         audio_token_id = getattr(config, "audio_token_id", getattr(config, "audio_token_index", _QWEN25OMNI_DEFAULT_AUDIO_TOKEN_ID))
+        video_token_id = getattr(config, "video_token_id", getattr(config, "video_token_index", _QWEN25OMNI_DEFAULT_VIDEO_TOKEN_ID))
 
         # --- Embedding model (always float32 for the embedding table) ---
         embed_extra_options = dict(extra_options)
         embed_extra_options["image_token_id"] = image_token_id
         embed_extra_options["audio_token_id"] = audio_token_id
+        embed_extra_options["video_token_id"] = video_token_id
         self.embedding_model = Qwen25OmniEmbeddingModel(text_obj_config, io_dtype, ir.DataType.FLOAT, ep, cache_dir, embed_extra_options)
 
         # --- Thinker (text decoder) ---
