@@ -2991,15 +2991,15 @@ class Qwen35TextModel(Model):
             self.output_names["present_recurrent"] = "present.%d.recurrent_state"
 
         genai_config = super().make_genai_config(out_dir, {}, out_dir)
-        decoder = genai_config["model"]["decoder"]
         if has_linear_attention:
+            decoder = genai_config["model"]["decoder"]
             decoder["inputs"]["past_conv_names"] = self.input_names["past_conv"]
             decoder["inputs"]["past_recurrent_names"] = self.input_names["past_recurrent"]
             decoder["outputs"]["present_conv_names"] = self.output_names["present_conv"]
             decoder["outputs"]["present_recurrent_names"] = self.output_names["present_recurrent"]
-        config_path = os.path.join(out_dir, "genai_config.json")
-        with open(config_path, "w") as file:
-            json.dump(genai_config, file, indent=4)
+            config_path = os.path.join(out_dir, "genai_config.json")
+            with open(config_path, "w") as file:
+                json.dump(genai_config, file, indent=4)
 
         # Restore
         self.num_layers = saved["num_layers"]
