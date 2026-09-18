@@ -703,7 +703,8 @@ class Model(LocalFunctionsMixin):
         search["past_present_share_buffer"] = False if "config_only" in extra_options else past_present_share_buffer
         return search
 
-    def make_genai_config(self, model_name_or_path, extra_kwargs, out_dir):
+    def create_genai_config(self, model_name_or_path, extra_kwargs, out_dir):
+        """Create the ONNX Runtime GenAI configuration dictionary."""
         # Create config with attributes from config.json and generation_config.json (if latter file exists)
         config = AutoConfig.from_pretrained(model_name_or_path, token=self.hf_token, trust_remote_code=self.hf_remote, **extra_kwargs)
         try:
@@ -741,6 +742,10 @@ class Model(LocalFunctionsMixin):
             inputs["past_key_names"] = "past_key_values.%d.key"
         if "past_key_values.value" in self.input_names:
             inputs["past_value_names"] = "past_key_values.%d.value"
+        if "past_conv" in self.input_names:
+            inputs["past_conv_names"] = self.input_names["past_conv"]
+        if "past_recurrent" in self.input_names:
+            inputs["past_recurrent_names"] = self.input_names["past_recurrent"]
 
         # Create outputs dict
         outputs = {}
@@ -750,6 +755,10 @@ class Model(LocalFunctionsMixin):
             outputs["present_key_names"] = "present.%d.key"
         if "present.value" in self.output_names:
             outputs["present_value_names"] = "present.%d.value"
+        if "present_conv" in self.output_names:
+            outputs["present_conv_names"] = self.output_names["present_conv"]
+        if "present_recurrent" in self.output_names:
+            outputs["present_recurrent_names"] = self.output_names["present_recurrent"]
 
         bos_token_id = getattr(config, "bos_token_id", None)
         if bos_token_id is None:
@@ -811,9 +820,19 @@ class Model(LocalFunctionsMixin):
             ep_options = {ep_name: self.ep_attrs[self.ep]}
             genai_config["model"]["decoder"]["session_options"]["provider_options"].append(ep_options)
 
+        return genai_config
+
+    def save_genai_config(self, genai_config, out_dir):
+        """Write an ONNX Runtime GenAI configuration dictionary."""
         print(f"Saving GenAI config in {out_dir}")
         with open(os.path.join(out_dir, "genai_config.json"), "w") as f:
             json.dump(genai_config, f, indent=4)
+        return genai_config
+
+    def make_genai_config(self, model_name_or_path, extra_kwargs, out_dir):
+        """Create and save the ONNX Runtime GenAI configuration."""
+        genai_config = self.create_genai_config(model_name_or_path, extra_kwargs, out_dir)
+        return self.save_genai_config(genai_config, out_dir)
 
     def make_key_value_cache_names(self, layer_id):
         """
