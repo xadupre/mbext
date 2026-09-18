@@ -827,11 +827,12 @@ class Model(LocalFunctionsMixin):
         print(f"Saving GenAI config in {out_dir}")
         with open(os.path.join(out_dir, "genai_config.json"), "w") as f:
             json.dump(genai_config, f, indent=4)
+        return genai_config
 
     def make_genai_config(self, model_name_or_path, extra_kwargs, out_dir):
         """Create and save the ONNX Runtime GenAI configuration."""
         genai_config = self.create_genai_config(model_name_or_path, extra_kwargs, out_dir)
-        self.save_genai_config(genai_config, out_dir)
+        return self.save_genai_config(genai_config, out_dir)
 
     def make_key_value_cache_names(self, layer_id):
         """

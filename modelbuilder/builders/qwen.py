@@ -1680,7 +1680,7 @@ class Qwen25OmniConditionalGenerationModel(Model):
             "outputs": {"inputs_embeds": "inputs_embeds"},
         }
 
-        self.text_model.save_genai_config(genai_config, out_dir)
+        return self.text_model.save_genai_config(genai_config, out_dir)
 
     def save_processing(self, model_name_or_path, extra_kwargs, out_dir):
         self.text_model.save_processing(model_name_or_path, extra_kwargs, out_dir)
@@ -2976,12 +2976,14 @@ class Qwen35TextModel(Model):
         self.num_layers = self.layer_types.count("full_attention")
         self.input_names["past_key_values.key"] = "past_key_values.%d.key"
         self.input_names["past_key_values.value"] = "past_key_values.%d.value"
-        self.input_names["past_conv"] = "past_key_values.%d.conv_state"
-        self.input_names["past_recurrent"] = "past_key_values.%d.recurrent_state"
+        has_linear_attention = "linear_attention" in self.layer_types
         self.output_names["present.key"] = "present.%d.key"
         self.output_names["present.value"] = "present.%d.value"
-        self.output_names["present_conv"] = "present.%d.conv_state"
-        self.output_names["present_recurrent"] = "present.%d.recurrent_state"
+        if has_linear_attention:
+            self.input_names["past_conv"] = "past_key_values.%d.conv_state"
+            self.input_names["past_recurrent"] = "past_key_values.%d.recurrent_state"
+            self.output_names["present_conv"] = "present.%d.conv_state"
+            self.output_names["present_recurrent"] = "present.%d.recurrent_state"
 
         genai_config = super().create_genai_config(out_dir, {}, out_dir)
 
@@ -2989,12 +2991,13 @@ class Qwen35TextModel(Model):
         self.num_layers = saved["num_layers"]
         del self.input_names["past_key_values.key"]
         del self.input_names["past_key_values.value"]
-        del self.input_names["past_conv"]
-        del self.input_names["past_recurrent"]
         del self.output_names["present.key"]
         del self.output_names["present.value"]
-        del self.output_names["present_conv"]
-        del self.output_names["present_recurrent"]
+        if has_linear_attention:
+            del self.input_names["past_conv"]
+            del self.input_names["past_recurrent"]
+            del self.output_names["present_conv"]
+            del self.output_names["present_recurrent"]
         return genai_config
 
 
@@ -3289,7 +3292,7 @@ class Qwen35ConditionalGenerationModel(Model):
         genai_config["model"]["image_token_id"] = self.embedding_model.image_token_id
         genai_config["model"]["video_token_id"] = self.video_token_id
         genai_config["model"]["vision_start_token_id"] = self.vision_start_token_id
-        self.text_model.save_genai_config(genai_config, out_dir)
+        return self.text_model.save_genai_config(genai_config, out_dir)
 
     def save_processing(self, model_name_or_path, extra_kwargs, out_dir):
         from transformers import AutoProcessor

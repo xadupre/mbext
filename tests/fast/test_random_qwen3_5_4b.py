@@ -362,6 +362,11 @@ class TestRandomQwen3_5_4B(ExtTestCase):
         with open(genai_cfg_path) as f:
             genai_cfg = json.load(f)
         self.assertEqual(genai_cfg["model"]["type"], "qwen3_5_text")
+        decoder = genai_cfg["model"]["decoder"]
+        self.assertNotIn("past_conv_names", decoder["inputs"])
+        self.assertNotIn("past_recurrent_names", decoder["inputs"])
+        self.assertNotIn("present_conv_names", decoder["outputs"])
+        self.assertNotIn("present_recurrent_names", decoder["outputs"])
 
     # ------------------------------------------------------------------ #
     # Discrepancy: HF PyTorch vs ONNX Runtime CPU                         #
