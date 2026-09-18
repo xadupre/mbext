@@ -9,7 +9,7 @@ import unittest
 
 import numpy as np
 
-from modelbuilder.ext_test_case import ExtTestCase, hide_stdout, requires_transformers
+from modelbuilder.ext_test_case import ExtTestCase, hide_stdout, requires_genai, requires_transformers
 
 QWEN3_8_MODEL_NAME = "Qwen/Qwen3.8-27B"
 TERNARY_BONSAI_MODEL_NAME = "prism-ml/Ternary-Bonsai-27B-unpacked"
@@ -38,7 +38,7 @@ def _make_qwen3_8_config():
         layer_types=["linear_attention", "linear_attention", "linear_attention", "full_attention"],
         linear_conv_kernel_dim=4,
         linear_key_head_dim=16,
-        linear_num_key_heads=2,
+        linear_num_key_heads=1,
         linear_num_value_heads=3,
         linear_value_head_dim=16,
         max_position_embeddings=256,
@@ -197,7 +197,7 @@ class TestRandomQwen3_8(ExtTestCase):
         np.testing.assert_allclose(inputs_embeds, expected_embeds, atol=1e-6, rtol=1e-6)
 
     @hide_stdout()
-    def test_ternary_bonsai_int2_conversion(self):
+    def test_ternary_bonsai_int2_onnxruntime(self):
         import onnx_light.onnx as onnx
         import torch
 
@@ -228,8 +228,45 @@ class TestRandomQwen3_8(ExtTestCase):
         self.assertEqual(embedding_attributes["bits"], 2)
         self.assertEqual(embedding_attributes["block_size"], 128)
 
-        self.check_ort(os.path.join(output_dir, "model.onnx"))
+        text_session = self.check_ort(os.path.join(output_dir, "model.onnx"))
         self.check_ort(os.path.join(output_dir, "vision.onnx"))
+
+        input_ids = torch.tensor([[5, 6, 7]], dtype=torch.int64)
+        with torch.no_grad():
+            inputs_embeds = model.model.language_model.embed_tokens(input_ids).numpy()
+            expected_logits = model(input_ids=input_ids, use_cache=False).logits.numpy()
+        sequence_length = input_ids.shape[1]
+        positions = np.arange(sequence_length, dtype=np.int64)
+        text_inputs = {
+            "inputs_embeds": inputs_embeds,
+            "attention_mask": np.ones((1, sequence_length), dtype=np.int64),
+            "position_ids": np.stack([positions, positions, positions], axis=0)[:, np.newaxis, :],
+        }
+        text_config = config.text_config
+        conv_width = (
+            text_config.linear_num_key_heads * text_config.linear_key_head_dim * 2
+            + text_config.linear_num_value_heads * text_config.linear_value_head_dim
+        )
+        for layer_id, layer_type in enumerate(text_config.layer_types):
+            if layer_type == "full_attention":
+                text_inputs[f"past_key_values.{layer_id}.key"] = np.zeros(
+                    (1, text_config.num_key_value_heads, 0, text_config.head_dim), dtype=np.float32
+                )
+                text_inputs[f"past_key_values.{layer_id}.value"] = np.zeros(
+                    (1, text_config.num_key_value_heads, 0, text_config.head_dim), dtype=np.float32
+                )
+            else:
+                text_inputs[f"past_key_values.{layer_id}.conv_state"] = np.zeros(
+                    (1, conv_width, text_config.linear_conv_kernel_dim - 1), dtype=np.float32
+                )
+                text_inputs[f"past_key_values.{layer_id}.recurrent_state"] = np.zeros(
+                    (1, text_config.linear_num_value_heads, text_config.linear_key_head_dim, text_config.linear_value_head_dim),
+                    dtype=np.float32,
+                )
+        text_input_names = {value.name for value in text_session.get_inputs()}
+        actual_logits, *_ = text_session.run(None, {name: value for name, value in text_inputs.items() if name in text_input_names})
+        np.testing.assert_allclose(actual_logits, expected_logits, rtol=2e-2, atol=2e-2)
+
         embedding_session = self.check_ort(os.path.join(output_dir, "embedding.onnx"))
         input_ids = np.array([[5, config.image_token_id, 6]], dtype=np.int64)
         image_features = np.arange(config.text_config.hidden_size, dtype=np.float32).reshape(1, -1)
@@ -238,6 +275,25 @@ class TestRandomQwen3_8(ExtTestCase):
             expected = model.model.language_model.embed_tokens(torch.from_numpy(input_ids)).numpy()
         expected[0, 1] = image_features[0]
         np.testing.assert_allclose(actual, expected, rtol=1e-6, atol=1e-6)
+
+    @hide_stdout()
+    @requires_genai("0.16", "Qwen3.5 hybrid states require ONNX Runtime GenAI 0.16 or newer.")
+    def test_ternary_bonsai_int2_genai_generation(self):
+        import onnxruntime_genai as og
+        import torch
+
+        _, model, output_dir = self._build_multimodal_model(ternary=True)
+        prompt = np.array([5, 6, 7], dtype=np.int64)
+        with torch.no_grad():
+            expected_token = int(model(input_ids=torch.from_numpy(prompt[np.newaxis, :]), use_cache=False).logits[0, -1].argmax())
+
+        genai_model = og.Model(output_dir)
+        params = og.GeneratorParams(genai_model)
+        params.set_search_options(do_sample=False, max_length=len(prompt) + 1, temperature=1.0, top_k=1)
+        generator = og.Generator(genai_model, params)
+        generator.append_tokens(prompt)
+        generator.generate_next_token()
+        self.assertEqual(int(generator.get_next_tokens()[0]), expected_token)
 
 
 if __name__ == "__main__":
