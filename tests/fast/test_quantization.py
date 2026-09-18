@@ -94,6 +94,54 @@ class TestQuantization(ExtTestCase):
                 self.assertIn("G32", model.graph.initializer[0].name)
                 self._check_runtime(model, weight)
 
+    def test_ternary_int2_is_exact(self):
+        import onnxruntime as ort
+
+        rows, columns, block_size = 256, 4, 128
+        model, _ = _make_matmul_model(rows=rows, columns=columns)
+        levels = (np.arange(columns * rows, dtype=np.int64).reshape(columns, rows) % 3) - 1
+        group_scales = np.array([[0.25, 0.5], [0.75, 1.0], [1.25, 1.5], [1.75, 2.0]], dtype=np.float32)
+        weight = (levels.reshape(columns, 2, block_size) * group_scales[:, :, np.newaxis]).reshape(columns, rows).T.astype(np.float32)
+        model.graph.initializer.clear()
+        model.graph.initializer.append(numpy_helper.from_array(weight, name="weight"))
+
+        quantize_matmul_nbits(
+            model,
+            bits=2,
+            block_size=block_size,
+            is_symmetric=True,
+            accuracy_level=0,
+            nodes_to_exclude=[],
+            op_types_to_quantize=["MatMul"],
+            use_qdq=False,
+            algorithm_config={"algorithm": "ternary", "customized_weight_config": {}},
+        )
+
+        node = model.graph.node[0]
+        self.assertEqual(node.op_type, "MatMulNBits")
+        self.assertEqual(len(node.input), 4)
+        attributes = {attribute.name: attribute.i for attribute in node.attribute}
+        self.assertEqual(attributes["bits"], 2)
+        self.assertEqual(attributes["block_size"], block_size)
+        values = np.arange(2 * rows, dtype=np.float32).reshape(2, rows) / rows
+        actual = ort.InferenceSession(model.SerializeToString(), providers=["CPUExecutionProvider"]).run(None, {"x": values})[0]
+        np.testing.assert_allclose(actual, values @ weight, rtol=1e-6, atol=1e-5)
+
+    def test_ternary_rejects_non_ternary_weights(self):
+        model, _ = _make_matmul_model(rows=128)
+        with self.assertRaisesRegex(ValueError, "only.*-scale, 0, \\+scale"):
+            quantize_matmul_nbits(
+                model,
+                bits=2,
+                block_size=128,
+                is_symmetric=True,
+                accuracy_level=0,
+                nodes_to_exclude=[],
+                op_types_to_quantize=["MatMul"],
+                use_qdq=False,
+                algorithm_config={"algorithm": "ternary", "customized_weight_config": {}},
+            )
+
     def test_rtn_and_k_quant_multi_block_scale_shape(self):
         for algorithm in ("rtn", "k_quant"):
             with self.subTest(algorithm=algorithm):

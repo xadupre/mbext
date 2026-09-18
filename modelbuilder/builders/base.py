@@ -408,8 +408,9 @@ class Model(LocalFunctionsMixin):
             self.lm_head_attrs["mask"] = dummy_tokens_mask
 
         # Quantization-specific variables (INT4, INT8, etc.)
-        int4_algo_config = self.make_int4_algo_config(extra_options.get("int4_algo_config", "default"))
-        self.int4_block_size = extra_options.get("int4_block_size", 32)
+        quant_method = extra_options.get("int4_algo_config", "default")
+        int4_algo_config = self.make_int4_algo_config(quant_method)
+        self.int4_block_size = extra_options.get("int4_block_size", 128 if quant_method == "ternary" else 32)
 
         # CPU, CUDA, WebGPU, and TRT-RTX support block-wise quantization for QMoE.
         # TRT-RTX defaults to 128; others default to 32 for consistency with MatMulNBits.
@@ -869,6 +870,9 @@ class Model(LocalFunctionsMixin):
             algorithm = "rtn"
             if quant_method == "rtn_last":
                 customized_weight_config["/lm_head/MatMul"] = {"bits": 8}
+
+        elif quant_method == "ternary":
+            algorithm = "ternary"
 
         elif quant_method in {"k_quant", "k_quant_mixed", "k_quant_last"}:
             algorithm = "k_quant"
