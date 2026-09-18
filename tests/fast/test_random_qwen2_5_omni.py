@@ -3,6 +3,7 @@
 # Licensed under the MIT License.  See License.txt in the project root for
 # license information.
 # --------------------------------------------------------------------------
+import json
 import os
 import unittest
 
@@ -176,6 +177,216 @@ class TestRandomQwen25Omni(ExtTestCase):
         self.run_genai_generation_test(
             output_dir, model=None, vocab_size=config.text_config.vocab_size, eos_token_id=config.text_config.eos_token_id
         )
+
+
+@requires_transformers("5")
+class TestRandomQwen25OmniVideo(ExtTestCase):
+    def common_video(self, precision, genai=False):
+        import torch
+        from transformers import Qwen2_5OmniThinkerForConditionalGeneration
+
+        from modelbuilder.builder import create_model
+        from modelbuilder.helpers.vision_helper import prepare_qwen25_omni_vision_inputs
+
+        config = _make_qwen25_omni_thinker_config()
+        config.text_config.vocab_size = 160
+        config.image_token_id = 120
+        config.video_token_id = 121
+        config.audio_token_id = 122
+        config.vision_start_token_id = 123
+        config.vision_end_token_id = 124
+        vc = config.vision_config
+        vc.depth = 2
+        vc.fullatt_block_indexes = [1]
+        vc.patch_size = 2
+        vc.window_size = 8
+        prefix = f"test_qwen25omni_video_{precision}{'_genai' if genai else ''}"
+        model_dir = self.get_model_dir(prefix)
+        output_dir, cache_dir = self.get_dirs(prefix)
+        torch.manual_seed(42)
+        model = Qwen2_5OmniThinkerForConditionalGeneration(config).eval()
+        model.save_pretrained(model_dir)
+        self.make_word_level_tokenizer().save_pretrained(model_dir)
+        create_model(
+            model_name=QWEN2_5_OMNI_MODEL_NAME,
+            input_path=model_dir,
+            output_dir=output_dir,
+            precision=precision,
+            execution_provider="cpu",
+            cache_dir=cache_dir,
+            multimodal=True,
+            use_3d_position_ids=True,
+        )
+        self.check_phi3v_genai_config(output_dir, has_speech=True, speech_filename="audio_encoder.onnx")
+        vision = self.check_ort(os.path.join(output_dir, "vision_encoder.onnx"))
+        embedding = self.check_ort(os.path.join(output_dir, "embedding.onnx"))
+        decoder = self.check_ort(os.path.join(output_dir, "model.onnx"))
+        dtype = np.float16 if precision == "fp16" else np.float32
+        atol = 1e-2 if precision == "fp16" else 1e-4
+        in_dim = vc.in_channels * vc.temporal_patch_size * vc.patch_size**2
+
+        # Dynamic grids exercise multiple frames, partial windows, and multiple
+        # videos/images. Both local and full-attention layers must stay isolated.
+        for grids in ([[1, 4, 4]], [[2, 6, 8]], [[3, 4, 6], [1, 4, 4], [2, 4, 6]]):
+            with self.subTest(grids=grids):
+                grid = torch.tensor(grids, dtype=torch.int64)
+                pixels = torch.randn(int(grid.prod(dim=1).sum()), in_dim)
+                feeds = prepare_qwen25_omni_vision_inputs(pixels.numpy(), grid.numpy(), vc)
+                with torch.no_grad():
+                    pt_features = model.visual(pixels, grid_thw=grid).pooler_output.numpy()
+                    pt_rotary = model.visual.rot_pos_emb(grid).numpy()
+                self.assertEqual(feeds["frame_ids"].dtype, np.int64)
+                np.testing.assert_allclose(feeds["rotary_pos_emb"], pt_rotary, atol=1e-6)
+                features = vision.run(None, feeds)[0]
+                np.testing.assert_allclose(features, pt_features, atol=atol)
+
+        # Text-only, individual modalities, and interleaved video/image/audio.
+        for tokens in ([1, 2], [1, 120, 2], [1, 121, 121, 2], [1, 122, 2], [1, 121, 120, 122, 121, 2]):
+            with self.subTest(tokens=tokens):
+                ids = np.array([tokens], dtype=np.int64)
+                visual_mask = (ids[0] == 120) | (ids[0] == 121)
+                audio_mask = ids[0] == 122
+                visual_features = features[: visual_mask.sum()]
+                audio_features = np.ones((audio_mask.sum(), 256), dtype=dtype)
+                feeds = {"input_ids": ids, "image_features": visual_features, "audio_features": audio_features}
+                actual = embedding.run(None, feeds)[0]
+                with torch.no_grad():
+                    expected = model.model.embed_tokens(torch.from_numpy(ids)).numpy().astype(dtype)
+                expected[0, visual_mask] = visual_features
+                expected[0, audio_mask] = audio_features
+                np.testing.assert_allclose(actual, expected, atol=atol)
+
+        # Video-conditioned logits with temporal/spatial mRoPE positions from HF.
+        grid = torch.tensor([[2, 6, 8]], dtype=torch.int64)
+        pixels = torch.randn(int(grid.prod()), in_dim)
+        video_features = vision.run(None, prepare_qwen25_omni_vision_inputs(pixels.numpy(), grid.numpy(), vc))[0]
+        ids = torch.tensor([[1, 123] + [121] * len(video_features) + [124, 10]])
+        positions, rope_deltas = model.get_rope_index(ids, video_grid_thw=grid, second_per_grids=torch.tensor([1.0]))
+        self.assertFalse(torch.equal(positions[0], positions[1]))
+        embeds = embedding.run(
+            None, {"input_ids": ids.numpy(), "image_features": video_features, "audio_features": np.empty((0, 256), dtype=dtype)}
+        )[0]
+        with torch.no_grad():
+            pt_embeds = model.model.embed_tokens(ids)
+            pt_embeds[ids == 121] = model.visual(pixels, grid_thw=grid).pooler_output
+            pt_output = model(inputs_embeds=pt_embeds, position_ids=positions, use_cache=True)
+        feeds = {
+            "inputs_embeds": embeds,
+            "attention_mask": np.ones(ids.shape, dtype=np.int64),
+            "position_ids": positions.numpy(),
+            "past_key_values.0.key": np.zeros((1, 2, 0, 64), dtype=dtype),
+            "past_key_values.0.value": np.zeros((1, 2, 0, 64), dtype=dtype),
+        }
+        outputs = decoder.run(None, feeds)
+        np.testing.assert_allclose(outputs[0], pt_output.logits.numpy(), atol=atol)
+
+        # Continue with a text token, reusing the video-conditioned KV cache.
+        next_id = torch.tensor([[10]])
+        next_positions = (ids.shape[1] + rope_deltas).unsqueeze(0).expand(3, 1, 1)
+        with torch.no_grad():
+            next_embeds = model.model.embed_tokens(next_id)
+            expected = model(
+                inputs_embeds=next_embeds, position_ids=next_positions, past_key_values=pt_output.past_key_values, use_cache=True
+            ).logits.numpy()
+        feeds.update(
+            inputs_embeds=next_embeds.numpy().astype(dtype),
+            attention_mask=np.ones((1, ids.shape[1] + 1), dtype=np.int64),
+            position_ids=next_positions.numpy(),
+        )
+        feeds["past_key_values.0.key"] = outputs[1]
+        feeds["past_key_values.0.value"] = outputs[2]
+        np.testing.assert_allclose(decoder.run(None, feeds)[0], expected, atol=atol)
+
+        if genai:
+            import onnxruntime_genai as og
+
+            # Qwen-VL supplies 3-D positions for video-only Omni prompts. The
+            # default phi3v configuration deliberately retains its 2-D contract.
+            og_config = og.Config(output_dir)
+            og_config.overlay(
+                json.dumps(
+                    {
+                        "model": {
+                            "type": "qwen2_5_vl",
+                            "image_token_id": config.image_token_id,
+                            "video_token_id": config.video_token_id,
+                            "vision_start_token_id": config.vision_start_token_id,
+                            "vision": {"tokens_per_second": config.position_id_per_seconds},
+                        }
+                    }
+                )
+            )
+            og_model = og.Model(og_config)
+            params = og.GeneratorParams(og_model)
+            max_new_tokens = 3
+            params.set_search_options(do_sample=False, max_length=ids.shape[1] + max_new_tokens, min_length=ids.shape[1] + max_new_tokens)
+            generator = og.Generator(og_model, params)
+            named_tensors = og.NamedTensors()
+            for name, value in prepare_qwen25_omni_vision_inputs(pixels.numpy(), grid.numpy(), vc).items():
+                named_tensors[name] = value
+            named_tensors["num_image_tokens"] = np.array([len(video_features)], dtype=np.int64)
+            named_tensors["video_grid_thw"] = grid.numpy()
+            named_tensors["second_per_grid_ts"] = np.array([1.0], dtype=np.float32)
+            generator.set_inputs(named_tensors)
+            generator.append_tokens(ids.numpy())
+            np.testing.assert_array_equal(generator.get_input("position_ids"), positions.numpy())
+            np.testing.assert_allclose(generator.get_input("inputs_embeds"), embeds, atol=atol)
+            with torch.no_grad():
+                reference = model(inputs_embeds=pt_embeds, position_ids=positions, use_cache=True)
+            generated = []
+            for step in range(max_new_tokens):
+                self.assertFalse(generator.is_done())
+                logits = generator.get_logits().reshape(-1)
+                expected_logits = reference.logits[0, -1].numpy()
+                np.testing.assert_allclose(logits, expected_logits, atol=atol)
+                expected_logits = expected_logits.copy()
+                expected_logits[config.text_config.eos_token_id] = -np.inf
+                expected_token = int(expected_logits.argmax())
+                generator.generate_next_token()
+                token = int(generator.get_next_tokens()[0])
+                generated.append(token)
+                self.assertEqual(token, expected_token)
+                if step + 1 < max_new_tokens:
+                    next_positions = (ids.shape[1] + step + rope_deltas).unsqueeze(0).expand(3, 1, 1)
+                    with torch.no_grad():
+                        reference = model(
+                            input_ids=torch.tensor([[token]]),
+                            position_ids=next_positions,
+                            past_key_values=reference.past_key_values,
+                            use_cache=True,
+                        )
+            self.assertTrue(generator.is_done())
+            self.assertEqual(len(generated), max_new_tokens)
+            self.assertEqual(generator.get_sequence(0).tolist(), ids[0].tolist() + generated)
+
+    @hide_stdout()
+    def test_video_fp32_cpu(self):
+        self.common_video("fp32")
+
+    @hide_stdout()
+    def test_video_fp16_cpu(self):
+        self.common_video("fp16")
+
+    @hide_stdout()
+    @requires_genai("0.15.2")
+    def test_video_fp32_cpu_genai(self):
+        self.common_video("fp32", genai=True)
+
+    @hide_stdout()
+    @requires_genai("0.15.2")
+    def test_video_fp16_cpu_genai(self):
+        self.common_video("fp16", genai=True)
+
+    def test_invalid_vision_inputs(self):
+        from modelbuilder.helpers.vision_helper import prepare_qwen25_omni_vision_inputs
+
+        vc = _make_qwen25_omni_thinker_config().vision_config
+        pixels = np.zeros((16, vc.in_channels * vc.temporal_patch_size * vc.patch_size**2), dtype=np.float32)
+        for grid in ([], [1, 4, 4], [[0, 4, 4]], [[1, 3, 4]], [[1.5, 4, 4]], [[1, 4, 4, 4]]):
+            with self.subTest(grid=grid), self.assertRaises(ValueError):
+                prepare_qwen25_omni_vision_inputs(pixels, grid, vc)
+        with self.assertRaises(ValueError):
+            prepare_qwen25_omni_vision_inputs(pixels[:1], [[1, 4, 4]], vc)
 
 
 @requires_transformers("5")
