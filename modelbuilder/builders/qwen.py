@@ -785,6 +785,8 @@ class Qwen25OmniVisionEncoderModel(VisionEncoderModel):
         compatibility with existing single-image callers. Use
         :func:`modelbuilder.helpers.vision_helper.prepare_qwen25_omni_vision_inputs`
         for videos, multiple images, or images spanning multiple windows.
+        Required when exporting with ``use_3d_position_ids=True`` so GenAI
+        forwards these inputs instead of ignoring overridable initializers.
 
     Outputs
     -------
@@ -1058,7 +1060,7 @@ class Qwen25OmniVisionEncoderModel(VisionEncoderModel):
         # GraphBuilder requires unique names; ONNX permits initializers sharing
         # input names to supply overridable defaults.
         for value in model.graph.input:
-            if value.name in {"frame_ids", "window_ids"}:
+            if value.name in {"frame_ids", "window_ids"} and not self.extra_options.get("use_3d_position_ids", False):
                 model.graph.initializer.append(numpy_helper.from_array(np.array([0], dtype=np.int64), name=value.name))
         return model
 

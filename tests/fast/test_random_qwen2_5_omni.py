@@ -3,6 +3,7 @@
 # Licensed under the MIT License.  See License.txt in the project root for
 # license information.
 # --------------------------------------------------------------------------
+import json
 import os
 import unittest
 
@@ -180,7 +181,7 @@ class TestRandomQwen25Omni(ExtTestCase):
 
 @requires_transformers("5")
 class TestRandomQwen25OmniVideo(ExtTestCase):
-    def common_video(self, precision):
+    def common_video(self, precision, genai=False):
         import torch
         from transformers import Qwen2_5OmniThinkerForConditionalGeneration
 
@@ -199,7 +200,7 @@ class TestRandomQwen25OmniVideo(ExtTestCase):
         vc.fullatt_block_indexes = [1]
         vc.patch_size = 2
         vc.window_size = 8
-        prefix = f"test_qwen25omni_video_{precision}"
+        prefix = f"test_qwen25omni_video_{precision}{'_genai' if genai else ''}"
         model_dir = self.get_model_dir(prefix)
         output_dir, cache_dir = self.get_dirs(prefix)
         torch.manual_seed(42)
@@ -256,10 +257,10 @@ class TestRandomQwen25OmniVideo(ExtTestCase):
                 np.testing.assert_allclose(actual, expected, atol=atol)
 
         # Video-conditioned logits with temporal/spatial mRoPE positions from HF.
-        grid = torch.tensor([[2, 4, 4]], dtype=torch.int64)
-        pixels = torch.randn(32, in_dim)
+        grid = torch.tensor([[2, 6, 8]], dtype=torch.int64)
+        pixels = torch.randn(int(grid.prod()), in_dim)
         video_features = vision.run(None, prepare_qwen25_omni_vision_inputs(pixels.numpy(), grid.numpy(), vc))[0]
-        ids = torch.tensor([[1, 123] + [121] * len(video_features) + [124, 2]])
+        ids = torch.tensor([[1, 123] + [121] * len(video_features) + [124, 10]])
         positions, rope_deltas = model.get_rope_index(ids, video_grid_thw=grid, second_per_grids=torch.tensor([1.0]))
         self.assertFalse(torch.equal(positions[0], positions[1]))
         embeds = embedding.run(
@@ -296,6 +297,68 @@ class TestRandomQwen25OmniVideo(ExtTestCase):
         feeds["past_key_values.0.value"] = outputs[2]
         np.testing.assert_allclose(decoder.run(None, feeds)[0], expected, atol=atol)
 
+        if genai:
+            import onnxruntime_genai as og
+
+            # Qwen-VL supplies 3-D positions for video-only Omni prompts. The
+            # default phi3v configuration deliberately retains its 2-D contract.
+            og_config = og.Config(output_dir)
+            og_config.overlay(
+                json.dumps(
+                    {
+                        "model": {
+                            "type": "qwen2_5_vl",
+                            "image_token_id": config.image_token_id,
+                            "video_token_id": config.video_token_id,
+                            "vision_start_token_id": config.vision_start_token_id,
+                            "vision": {"tokens_per_second": config.position_id_per_seconds},
+                        }
+                    }
+                )
+            )
+            og_model = og.Model(og_config)
+            params = og.GeneratorParams(og_model)
+            max_new_tokens = 3
+            params.set_search_options(do_sample=False, max_length=ids.shape[1] + max_new_tokens, min_length=ids.shape[1] + max_new_tokens)
+            generator = og.Generator(og_model, params)
+            named_tensors = og.NamedTensors()
+            for name, value in prepare_qwen25_omni_vision_inputs(pixels.numpy(), grid.numpy(), vc).items():
+                named_tensors[name] = value
+            named_tensors["num_image_tokens"] = np.array([len(video_features)], dtype=np.int64)
+            named_tensors["video_grid_thw"] = grid.numpy()
+            named_tensors["second_per_grid_ts"] = np.array([1.0], dtype=np.float32)
+            generator.set_inputs(named_tensors)
+            generator.append_tokens(ids.numpy())
+            np.testing.assert_array_equal(generator.get_input("position_ids"), positions.numpy())
+            np.testing.assert_allclose(generator.get_input("inputs_embeds"), embeds, atol=atol)
+            with torch.no_grad():
+                reference = model(inputs_embeds=pt_embeds, position_ids=positions, use_cache=True)
+            generated = []
+            for step in range(max_new_tokens):
+                self.assertFalse(generator.is_done())
+                logits = generator.get_logits().reshape(-1)
+                expected_logits = reference.logits[0, -1].numpy()
+                np.testing.assert_allclose(logits, expected_logits, atol=atol)
+                expected_logits = expected_logits.copy()
+                expected_logits[config.text_config.eos_token_id] = -np.inf
+                expected_token = int(expected_logits.argmax())
+                generator.generate_next_token()
+                token = int(generator.get_next_tokens()[0])
+                generated.append(token)
+                self.assertEqual(token, expected_token)
+                if step + 1 < max_new_tokens:
+                    next_positions = (ids.shape[1] + step + rope_deltas).unsqueeze(0).expand(3, 1, 1)
+                    with torch.no_grad():
+                        reference = model(
+                            input_ids=torch.tensor([[token]]),
+                            position_ids=next_positions,
+                            past_key_values=reference.past_key_values,
+                            use_cache=True,
+                        )
+            self.assertTrue(generator.is_done())
+            self.assertEqual(len(generated), max_new_tokens)
+            self.assertEqual(generator.get_sequence(0).tolist(), ids[0].tolist() + generated)
+
     @hide_stdout()
     def test_video_fp32_cpu(self):
         self.common_video("fp32")
@@ -303,6 +366,16 @@ class TestRandomQwen25OmniVideo(ExtTestCase):
     @hide_stdout()
     def test_video_fp16_cpu(self):
         self.common_video("fp16")
+
+    @hide_stdout()
+    @requires_genai("0.15.2")
+    def test_video_fp32_cpu_genai(self):
+        self.common_video("fp32", genai=True)
+
+    @hide_stdout()
+    @requires_genai("0.15.2")
+    def test_video_fp16_cpu_genai(self):
+        self.common_video("fp16", genai=True)
 
     def test_invalid_vision_inputs(self):
         from modelbuilder.helpers.vision_helper import prepare_qwen25_omni_vision_inputs

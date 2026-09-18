@@ -23,6 +23,8 @@ ONNX Runtime inference with multimodal temporal/spatial positions, also set
 ``use_3d_position_ids=True`` (CLI:
 ``--extra_options multimodal=true use_3d_position_ids=true``).
 The default decoder still accepts 2-D position IDs for existing callers.
+With the 3-D option, vision ``frame_ids`` and ``window_ids`` are required
+inputs; without it, they retain their single-frame/window defaults.
 
 The Hugging Face processor supplies ``pixel_values_videos`` and
 ``video_grid_thw``. Prepare the vision feeds as follows:
@@ -55,10 +57,59 @@ the thinker's ``get_rope_index`` with the original grids, video timing
 (``second_per_grids``), and any audio metadata. Subsequent decoding positions
 must account for the returned RoPE deltas.
 
-This video path uses direct ONNX Runtime sessions. The existing ``phi3v``
-ORT-GenAI configuration cannot supply vision rotary embeddings, frame/window
-IDs, or Omni's video timing; automatic video processing through ORT-GenAI
-is not supported. No unsupported video fields are added to its configuration.
+ONNX Runtime GenAI video generation
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Video-only prompts can also run through ONNX Runtime GenAI 0.15.2 or later
+with explicit preprocessing. Export with ``use_3d_position_ids=True`` and
+overlay the default ``phi3v`` configuration with Qwen-VL position handling:
+
+.. code-block:: python
+
+    import json
+    import numpy as np
+    import onnxruntime_genai as og
+
+    config = og.Config(output_dir)
+    config.overlay(json.dumps({
+        "model": {
+            "type": "qwen2_5_vl",
+            "image_token_id": thinker_config.image_token_id,
+            "video_token_id": thinker_config.video_token_id,
+            "vision_start_token_id": thinker_config.vision_start_token_id,
+            "vision": {"tokens_per_second": thinker_config.position_id_per_seconds},
+        }
+    }))
+    model = og.Model(config)
+    params = og.GeneratorParams(model)
+    params.set_search_options(do_sample=False, max_length=input_ids.size + 3)
+    generator = og.Generator(model, params)
+    tensors = og.NamedTensors()
+    for name, value in feeds.items():
+        tensors[name] = value
+    merge = thinker_config.vision_config.spatial_merge_size
+    tensors["num_image_tokens"] = np.array(
+        [np.prod(video_grid_thw, axis=1).sum() // merge**2], dtype=np.int64
+    )
+    tensors["video_grid_thw"] = np.asarray(video_grid_thw, dtype=np.int64)
+    tensors["second_per_grid_ts"] = np.asarray(second_per_grids, dtype=np.float32)
+    generator.set_inputs(tensors)
+    generator.append_tokens(input_ids)
+    while not generator.is_done():
+        generator.generate_next_token()
+
+GenAI runs the vision encoder, embedding model, and cached decoder; it does
+not merely consume externally computed logits. The native 3-D export makes
+frame/window inputs required because GenAI does not forward overridable
+initializer inputs. The fp32/fp16 ``test_video_*_cpu_genai`` tests compare
+positions, embeddings, logits, and generated tokens against PyTorch.
+
+This explicit-input setup does not provide automatic raw-video processing
+or Omni audio/video interleaving. GenAI's Qwen-VL positions round temporal
+coordinates whereas Omni truncates them; use timings for which
+``second_per_grids * position_id_per_seconds`` is integral for parity.
+Use direct ONNX Runtime and Omni's ``get_rope_index`` for other timings or
+audio/video interleaving. The default ``phi3v`` configuration is unchanged.
 
 Adding a new architecture
 -------------------------
