@@ -704,6 +704,7 @@ class Model(LocalFunctionsMixin):
         return search
 
     def make_genai_config(self, model_name_or_path, extra_kwargs, out_dir):
+        """Create ``genai_config.json`` and return the generated config."""
         # Create config with attributes from config.json and generation_config.json (if latter file exists)
         config = AutoConfig.from_pretrained(model_name_or_path, token=self.hf_token, trust_remote_code=self.hf_remote, **extra_kwargs)
         try:

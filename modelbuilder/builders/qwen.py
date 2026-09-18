@@ -2980,16 +2980,19 @@ class Qwen35TextModel(Model):
         self.num_layers = self.layer_types.count("full_attention")
         self.input_names["past_key_values.key"] = "past_key_values.%d.key"
         self.input_names["past_key_values.value"] = "past_key_values.%d.value"
-        self.input_names["past_conv"] = "past_key_values.%d.conv_state"
-        self.input_names["past_recurrent"] = "past_key_values.%d.recurrent_state"
+        has_linear_attention = "linear_attention" in self.layer_types
+        if has_linear_attention:
+            self.input_names["past_conv"] = "past_key_values.%d.conv_state"
+            self.input_names["past_recurrent"] = "past_key_values.%d.recurrent_state"
         self.output_names["present.key"] = "present.%d.key"
         self.output_names["present.value"] = "present.%d.value"
-        self.output_names["present_conv"] = "present.%d.conv_state"
-        self.output_names["present_recurrent"] = "present.%d.recurrent_state"
+        if has_linear_attention:
+            self.output_names["present_conv"] = "present.%d.conv_state"
+            self.output_names["present_recurrent"] = "present.%d.recurrent_state"
 
         genai_config = super().make_genai_config(out_dir, {}, out_dir)
         decoder = genai_config["model"]["decoder"]
-        if "linear_attention" in self.layer_types:
+        if has_linear_attention:
             decoder["inputs"]["past_conv_names"] = self.input_names["past_conv"]
             decoder["inputs"]["past_recurrent_names"] = self.input_names["past_recurrent"]
             decoder["outputs"]["present_conv_names"] = self.output_names["present_conv"]
@@ -3002,12 +3005,14 @@ class Qwen35TextModel(Model):
         self.num_layers = saved["num_layers"]
         del self.input_names["past_key_values.key"]
         del self.input_names["past_key_values.value"]
-        del self.input_names["past_conv"]
-        del self.input_names["past_recurrent"]
+        if has_linear_attention:
+            del self.input_names["past_conv"]
+            del self.input_names["past_recurrent"]
         del self.output_names["present.key"]
         del self.output_names["present.value"]
-        del self.output_names["present_conv"]
-        del self.output_names["present_recurrent"]
+        if has_linear_attention:
+            del self.output_names["present_conv"]
+            del self.output_names["present_recurrent"]
         return genai_config
 
 
