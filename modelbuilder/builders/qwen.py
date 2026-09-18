@@ -2953,6 +2953,9 @@ class Qwen35TextModel(Model):
             self.model_name_or_path, cache_dir=self.cache_dir, token=self.hf_token, trust_remote_code=self.hf_remote
         )
 
+    def has_lm_head(self, module):
+        return hasattr(self.weights, "lm_head") and module is self.weights.lm_head
+
     def make_genai_config(self, model_name_or_path, extra_kwargs, out_dir):
         """Generate genai_config.json for the decoder (text-only) model.
 
@@ -2976,20 +2979,350 @@ class Qwen35TextModel(Model):
         # is already set in ``__init__`` (and may have been overridden by a
         # subclass such as ``Qwen35MoeTextModel``).
         saved = {"num_layers": self.num_layers}
-        self.num_layers = len(self.layer_types)
+        self.num_layers = self.layer_types.count("full_attention")
         self.input_names["past_key_values.key"] = "past_key_values.%d.key"
         self.input_names["past_key_values.value"] = "past_key_values.%d.value"
+        self.input_names["past_conv"] = "past_key_values.%d.conv_state"
+        self.input_names["past_recurrent"] = "past_key_values.%d.recurrent_state"
         self.output_names["present.key"] = "present.%d.key"
         self.output_names["present.value"] = "present.%d.value"
+        self.output_names["present_conv"] = "present.%d.conv_state"
+        self.output_names["present_recurrent"] = "present.%d.recurrent_state"
 
         super().make_genai_config(out_dir, {}, out_dir)
+        config_path = os.path.join(out_dir, "genai_config.json")
+        with open(config_path) as file:
+            genai_config = json.load(file)
+        decoder = genai_config["model"]["decoder"]
+        decoder["inputs"]["past_conv_names"] = self.input_names["past_conv"]
+        decoder["inputs"]["past_recurrent_names"] = self.input_names["past_recurrent"]
+        decoder["outputs"]["present_conv_names"] = self.output_names["present_conv"]
+        decoder["outputs"]["present_recurrent_names"] = self.output_names["present_recurrent"]
+        with open(config_path, "w") as file:
+            json.dump(genai_config, file, indent=4)
 
         # Restore
         self.num_layers = saved["num_layers"]
         del self.input_names["past_key_values.key"]
         del self.input_names["past_key_values.value"]
+        del self.input_names["past_conv"]
+        del self.input_names["past_recurrent"]
         del self.output_names["present.key"]
         del self.output_names["present.value"]
+        del self.output_names["present_conv"]
+        del self.output_names["present_recurrent"]
+
+
+class Qwen35VisionEncoderModel(Qwen25OmniVisionEncoderModel):
+    """ONNX graph builder for the Qwen3.5/Qwen3.8 vision encoder."""
+
+    FILENAME = "vision.onnx"
+
+    def __init__(self, config, io_dtype, onnx_dtype, ep, cache_dir, extra_options):
+        super().__init__(config, io_dtype, onnx_dtype, ep, cache_dir, extra_options)
+        self.filename = self.FILENAME
+        self.graph.name = "qwen35_vision_encoder"
+
+    def load_hf_model(self, input_path):
+        from transformers import Qwen3_5ForConditionalGeneration
+
+        src = input_path if os.path.isdir(input_path) else self.model_name_or_path
+        extra_kwargs = {} if os.path.isdir(input_path) else {"cache_dir": self.cache_dir}
+        return Qwen3_5ForConditionalGeneration.from_pretrained(src, token=self.hf_token, trust_remote_code=self.hf_remote, **extra_kwargs)
+
+    def _make_scalar_grid_inputs(self):
+        axes = "/vision/grid/scalar_axes"
+        self.make_initializer(np.array([0], dtype=np.int64), axes)
+        values = []
+        for index, label in enumerate(("t", "h", "w")):
+            gathered = f"/vision/grid/{label}/Gather/output_0"
+            self.make_node(
+                "Gather", ["image_grid_thw", f"/model/constants/INT64/{index}"], [gathered], name=f"/vision/grid/{label}/Gather", axis=1
+            )
+            scalar = f"/vision/grid/{label}/Squeeze/output_0"
+            self.make_node("Squeeze", [gathered, axes], [scalar], name=f"/vision/grid/{label}/Squeeze")
+            self.make_value(scalar, ir.DataType.INT64, [])
+            values.append(scalar)
+        return values
+
+    def _make_vector(self, name, values):
+        axes = f"{name}/axes"
+        self.make_initializer(np.array([0], dtype=np.int64), axes)
+        expanded = []
+        for index, value in enumerate(values):
+            if isinstance(value, int):
+                value = f"/model/constants/INT64/{value}"
+            output = f"{name}/Unsqueeze_{index}/output_0"
+            self.make_node("Unsqueeze", [value, axes], [output], name=f"{name}/Unsqueeze_{index}")
+            expanded.append(output)
+        output = f"{name}/Concat/output_0"
+        self.make_node("Concat", expanded, [output], name=f"{name}/Concat", axis=0)
+        return output
+
+    def _reorder_spatial_merge(self, name, value, t, h, w, width):
+        merge = self.spatial_merge_size
+        h_merged = f"{name}/h_merged/output_0"
+        w_merged = f"{name}/w_merged/output_0"
+        self.make_node("Div", [h, f"/model/constants/INT64/{merge}"], [h_merged], name=f"{name}/h_merged")
+        self.make_node("Div", [w, f"/model/constants/INT64/{merge}"], [w_merged], name=f"{name}/w_merged")
+        packed_shape = self._make_vector(f"{name}/packed_shape", [t, h_merged, merge, w_merged, merge, width])
+        packed = f"{name}/packed/Reshape/output_0"
+        self.make_node("Reshape", [value, packed_shape], [packed], name=f"{name}/packed/Reshape")
+        permuted = f"{name}/packed/Transpose/output_0"
+        self.make_node("Transpose", [packed], [permuted], name=f"{name}/packed/Transpose", perm=[0, 1, 3, 2, 4, 5])
+        output = f"{name}/output/Reshape/output_0"
+        self.make_node("Reshape", [permuted, f"/model/constants/INT64/[-1, {width}]"], [output], name=f"{name}/output/Reshape")
+        return output
+
+    def _make_position_embeddings(self, vis, t, h, w):
+        grid = int(vis.num_grid_per_side)
+        weight_name = "visual.pos_embed.weight"
+        self.make_initializer(vis.pos_embed.weight, weight_name, to=self.io_dtype)
+
+        source = "/vision/position/source/Reshape/output_0"
+        self.make_node(
+            "Reshape",
+            [weight_name, f"/model/constants/INT64/[1, {grid}, {grid}, {self.vis_hidden_size}]"],
+            [source],
+            name="/vision/position/source/Reshape",
+        )
+        source_nchw = "/vision/position/source/Transpose/output_0"
+        self.make_node("Transpose", [source], [source_nchw], name="/vision/position/source/Transpose", perm=[0, 3, 1, 2])
+        sizes = self._make_vector("/vision/position/sizes", [1, self.vis_hidden_size, h, w])
+        resized = "/vision/position/Resize/output_0"
+        self.make_node(
+            "Resize",
+            [source_nchw, "", "", sizes],
+            [resized],
+            name="/vision/position/Resize",
+            coordinate_transformation_mode="align_corners",
+            mode="linear",
+        )
+        resized_nhwc = "/vision/position/Transpose/output_0"
+        self.make_node("Transpose", [resized], [resized_nhwc], name="/vision/position/Transpose", perm=[0, 2, 3, 1])
+        repeats = self._make_vector("/vision/position/repeats", [t, 1, 1, 1])
+        tiled = "/vision/position/Tile/output_0"
+        self.make_node("Tile", [resized_nhwc, repeats], [tiled], name="/vision/position/Tile")
+        return self._reorder_spatial_merge("/vision/position/reorder", tiled, t, h, w, self.vis_hidden_size)
+
+    def _make_rotary_positions(self, vis, t, h, w):
+        zero = "/model/constants/INT64/0"
+        one = "/model/constants/INT64/1"
+        h_range = "/vision/rotary/h/Range/output_0"
+        w_range = "/vision/rotary/w/Range/output_0"
+        self.make_node("Range", [zero, h, one], [h_range], name="/vision/rotary/h/Range")
+        self.make_node("Range", [zero, w, one], [w_range], name="/vision/rotary/w/Range")
+
+        axis0 = "/vision/rotary/axis0"
+        axis1 = "/vision/rotary/axis1"
+        self.make_initializer(np.array([0], dtype=np.int64), axis0)
+        self.make_initializer(np.array([1], dtype=np.int64), axis1)
+        h_column = "/vision/rotary/h/Unsqueeze/output_0"
+        w_row = "/vision/rotary/w/Unsqueeze/output_0"
+        self.make_node("Unsqueeze", [h_range, axis1], [h_column], name="/vision/rotary/h/Unsqueeze")
+        self.make_node("Unsqueeze", [w_range, axis0], [w_row], name="/vision/rotary/w/Unsqueeze")
+        hw_shape = self._make_vector("/vision/rotary/hw_shape", [h, w])
+        h_grid = "/vision/rotary/h/Expand/output_0"
+        w_grid = "/vision/rotary/w/Expand/output_0"
+        self.make_node("Expand", [h_column, hw_shape], [h_grid], name="/vision/rotary/h/Expand")
+        self.make_node("Expand", [w_row, hw_shape], [w_grid], name="/vision/rotary/w/Expand")
+        h_last = "/vision/rotary/h/last/Unsqueeze/output_0"
+        w_last = "/vision/rotary/w/last/Unsqueeze/output_0"
+        axes_last = "/vision/rotary/axes_last"
+        self.make_initializer(np.array([-1], dtype=np.int64), axes_last)
+        self.make_node("Unsqueeze", [h_grid, axes_last], [h_last], name="/vision/rotary/h/last/Unsqueeze")
+        self.make_node("Unsqueeze", [w_grid, axes_last], [w_last], name="/vision/rotary/w/last/Unsqueeze")
+        positions_hw = "/vision/rotary/Concat/output_0"
+        self.make_node("Concat", [h_last, w_last], [positions_hw], name="/vision/rotary/Concat", axis=-1)
+        positions_4d = "/vision/rotary/Unsqueeze/output_0"
+        self.make_node("Unsqueeze", [positions_hw, axis0], [positions_4d], name="/vision/rotary/Unsqueeze")
+        repeats = self._make_vector("/vision/rotary/repeats", [t, 1, 1, 1])
+        tiled = "/vision/rotary/Tile/output_0"
+        self.make_node("Tile", [positions_4d, repeats], [tiled], name="/vision/rotary/Tile")
+        ordered = self._reorder_spatial_merge("/vision/rotary/reorder", tiled, t, h, w, 2)
+        positions = "/vision/rotary/Cast/output_0"
+        self.make_node("Cast", [ordered], [positions], name="/vision/rotary/Cast", to=ir.DataType.FLOAT)
+
+        inv_freq = vis.rotary_pos_emb.inv_freq.detach().float()
+        inv_freq_name = "visual.rotary_pos_emb.inv_freq"
+        self.make_initializer(inv_freq, inv_freq_name, to=ir.DataType.FLOAT)
+        positions_3d = "/vision/rotary/positions/Unsqueeze/output_0"
+        self.make_node("Unsqueeze", [positions, axes_last], [positions_3d], name="/vision/rotary/positions/Unsqueeze")
+        frequencies = "/vision/rotary/Mul/output_0"
+        self.make_node("Mul", [positions_3d, inv_freq_name], [frequencies], name="/vision/rotary/Mul")
+        rotary_width = self.vis_head_dim // 2
+        rotary = "/vision/rotary/Reshape/output_0"
+        self.make_node("Reshape", [frequencies, f"/model/constants/INT64/[-1, {rotary_width}]"], [rotary], name="/vision/rotary/Reshape")
+        return rotary
+
+    def make_attention(self, layer_id, attention, root_input, **kwargs):
+        basename = f"/vision/layers.{layer_id}/attn"
+        qkv = self.make_vis_proj(attention.qkv, f"{basename}/qkv/MatMul", root_input)
+        q, k, v = (f"{basename}/qkv/Split/output_{index}" for index in range(3))
+        self.make_node(
+            "Split",
+            [qkv, f"/model/constants/INT64/[{self.vis_hidden_size}, {self.vis_hidden_size}, {self.vis_hidden_size}]"],
+            [q, k, v],
+            name=f"{basename}/qkv/Split",
+            axis=-1,
+        )
+        shape = [None, self.vis_num_heads, self.vis_head_dim]
+        q_heads = self.make_reshape(f"{basename}/q/Reshape", [q, [0, self.vis_num_heads, self.vis_head_dim]], self.io_dtype, shape)
+        k_heads = self.make_reshape(f"{basename}/k/Reshape", [k, [0, self.vis_num_heads, self.vis_head_dim]], self.io_dtype, shape)
+        rotary = kwargs.get("rotary_pos_emb", "rotary_pos_emb")
+        q_rope = self.make_vision_rope(f"{basename}/q_rope", q_heads, rotary, None, self.vis_head_dim)
+        k_rope = self.make_vision_rope(f"{basename}/k_rope", k_heads, rotary, None, self.vis_head_dim)
+        packed_shape = [None, None, self.vis_hidden_size]
+        q_mha = self.make_reshape(f"{basename}/q_mha/Reshape", [q_rope, self.attention_shape], self.io_dtype, packed_shape)
+        k_mha = self.make_reshape(f"{basename}/k_mha/Reshape", [k_rope, self.attention_shape], self.io_dtype, packed_shape)
+        v_mha = self.make_reshape(f"{basename}/v_mha/Reshape", [v, self.attention_shape], self.io_dtype, packed_shape)
+        attended = self.make_vis_mha(basename, q_mha, k_mha, v_mha, self.vis_num_heads, float(self.vis_head_dim**-0.5), packed_shape)
+        flat = self.make_reshape(
+            f"{basename}/output/Reshape", [attended, [-1, self.vis_hidden_size]], self.io_dtype, [None, self.vis_hidden_size]
+        )
+        self.layernorm_attrs["skip_input"] = self.make_vis_proj(attention.proj, f"{basename}/proj/MatMul", flat)
+
+    def make_layer(self, layer_id, block):
+        basename = f"/vision/layers.{layer_id}"
+        shape = [None, self.vis_hidden_size]
+        root_input = self.layernorm_attrs["root_input"]
+        norm1 = self.make_layer_norm(f"{basename}/norm1", root_input, block.norm1.weight, block.norm1.bias, shape)
+        self.make_attention(layer_id, block.attn, norm1, rotary_pos_emb=self.rotary_pos_emb_name)
+        residual1 = self.make_add(f"{basename}/residual1", [root_input, self.layernorm_attrs["skip_input"]], self.io_dtype, shape)
+        norm2 = self.make_layer_norm(f"{basename}/norm2", residual1, block.norm2.weight, block.norm2.bias, shape)
+        mlp = self.make_gelu_mlp(block.mlp.linear_fc1, block.mlp.linear_fc2, norm2, [None, self.vis_intermediate_size], f"{basename}/mlp")
+        self.make_value(mlp, self.io_dtype, shape)
+        self.layernorm_attrs["root_input"] = self.make_add(f"{basename}/residual2", [residual1, mlp], self.io_dtype, shape)
+
+    def make_patch_merger(self, merger, root_input):
+        norm = self.make_layer_norm("/vision/merger/norm", root_input, merger.norm.weight, merger.norm.bias, [None, self.vis_hidden_size])
+        merge_width = self.vis_hidden_size * self.spatial_merge_size**2
+        merged = self.make_reshape("/vision/merger/Reshape", [norm, [-1, merge_width]], self.io_dtype, [None, merge_width])
+        hidden = self.make_vis_proj(merger.linear_fc1, "/vision/merger/linear_fc1/MatMul", merged)
+        gelu = "/vision/merger/Gelu/output_0"
+        self.make_node("Gelu", [hidden], [gelu], name="/vision/merger/Gelu", domain="com.microsoft")
+        self.make_value(gelu, self.io_dtype, [None, merge_width])
+        return self.make_vis_proj(merger.linear_fc2, "/vision/merger/linear_fc2/MatMul", gelu)
+
+    def make_model(self, input_path):
+        hf_model = self.load_hf_model(input_path)
+        hf_model.eval()
+        vis = hf_model.model.visual
+
+        self.make_graph_input("pixel_values", ir.DataType.FLOAT, [None, self.in_feat_dim])
+        self.make_graph_input("image_grid_thw", ir.DataType.INT64, [1, 3])
+        t, h, w = self._make_scalar_grid_inputs()
+        self.attention_shape = self._make_vector("/vision/attention_shape", [t, -1, self.vis_hidden_size])
+        position_embeddings = self._make_position_embeddings(vis, t, h, w)
+        rotary_pos_emb = self._make_rotary_positions(vis, t, h, w)
+        self.rotary_pos_emb_name = rotary_pos_emb
+
+        pixel_values = "pixel_values"
+        if self.io_dtype != ir.DataType.FLOAT:
+            self.make_cast("/vision/pixel_values/Cast", pixel_values, self.io_dtype, [None, self.in_feat_dim])
+            pixel_values = "/vision/pixel_values/Cast/output_0"
+        patch = torch.nn.Linear(self.in_feat_dim, self.vis_hidden_size, bias=True)
+        patch.weight = torch.nn.Parameter(
+            vis.patch_embed.proj.weight.detach().reshape(self.vis_hidden_size, self.in_feat_dim), requires_grad=False
+        )
+        patch.bias = torch.nn.Parameter(vis.patch_embed.proj.bias.detach(), requires_grad=False)
+        hidden = self.make_vis_proj(patch, "/vision/patch_embed/MatMul", pixel_values)
+        self.layernorm_attrs["root_input"] = self.make_add(
+            "/vision/position/Add", [hidden, position_embeddings], self.io_dtype, [None, self.vis_hidden_size]
+        )
+        for layer_id, block in enumerate(vis.blocks):
+            self.make_layer(layer_id, block)
+
+        image_features = self.make_patch_merger(vis.merger, self.layernorm_attrs["root_input"])
+        self.make_node("Identity", [image_features], ["image_features"], name="/vision/output/Identity")
+        self.make_graph_output("image_features", self.io_dtype, [None, self.out_hidden_size])
+
+
+class Qwen35EmbeddingModel(EmbeddingModel):
+    """Embedding mixer for Qwen3.5/Qwen3.8 image features."""
+
+    def load_hf_model(self, input_path):
+        from transformers import Qwen3_5ForConditionalGeneration
+
+        src = input_path if os.path.isdir(input_path) else self.model_name_or_path
+        extra_kwargs = {} if os.path.isdir(input_path) else {"cache_dir": self.cache_dir}
+        return Qwen3_5ForConditionalGeneration.from_pretrained(src, token=self.hf_token, trust_remote_code=self.hf_remote, **extra_kwargs)
+
+    def get_embed_weight(self, hf_model):
+        return hf_model.model.language_model.embed_tokens.weight.detach().float().numpy()
+
+
+class Qwen35ConditionalGenerationModel(Model):
+    """Export the Qwen3.5/Qwen3.8 vision, embedding, and text graphs."""
+
+    def __init__(self, config, io_dtype, onnx_dtype, ep, cache_dir, extra_options):
+        self.image_token_id = config.image_token_id
+        self.video_token_id = config.video_token_id
+        self.vision_start_token_id = config.vision_start_token_id
+        self.vision_encoder = Qwen35VisionEncoderModel(config, io_dtype, onnx_dtype, ep, cache_dir, extra_options)
+        embedding_options = dict(extra_options)
+        embedding_options["image_token_id"] = self.image_token_id
+        embedding_config = copy.deepcopy(config.text_config)
+        embedding_config.architectures = config.architectures
+        self.embedding_model = Qwen35EmbeddingModel(embedding_config, io_dtype, ir.DataType.FLOAT, ep, cache_dir, embedding_options)
+        text_options = dict(extra_options)
+        text_options["exclude_embeds"] = True
+        self.text_model = Qwen35TextModel(config, io_dtype, onnx_dtype, ep, cache_dir, text_options)
+
+    def make_model(self, input_path):
+        print("Building Qwen3.5 vision encoder...")
+        self.vision_encoder.make_model(input_path)
+        print("Building Qwen3.5 embedding model...")
+        self.embedding_model.make_model(input_path)
+        print("Building Qwen3.5 text decoder...")
+        self.text_model.make_model(input_path)
+
+    def save_model(self, out_dir):
+        self.vision_encoder.save_model(out_dir)
+        self.embedding_model.save_model(out_dir)
+        self.text_model.save_model(out_dir)
+
+    def make_genai_config(self, model_name_or_path, extra_kwargs, out_dir):
+        self.text_model.make_genai_config(model_name_or_path, extra_kwargs, out_dir)
+        config_path = os.path.join(out_dir, "genai_config.json")
+        with open(config_path) as file:
+            genai_config = json.load(file)
+
+        vision_config = self.vision_encoder.vision_config
+        genai_config["model"]["type"] = "qwen3_5"
+        genai_config["model"]["vision"] = {
+            "filename": self.vision_encoder.FILENAME,
+            "config_filename": "processor_config.json",
+            "spatial_merge_size": vision_config.spatial_merge_size,
+            "tokens_per_second": 2.0,
+            "patch_size": vision_config.patch_size,
+            "inputs": {"pixel_values": "pixel_values", "image_grid_thw": "image_grid_thw"},
+            "outputs": {"image_features": "image_features"},
+        }
+        genai_config["model"]["embedding"] = {
+            "filename": self.embedding_model.FILENAME,
+            "inputs": {"input_ids": "input_ids", "image_features": "image_features"},
+            "outputs": {"inputs_embeds": "inputs_embeds"},
+        }
+        genai_config["model"]["image_token_id"] = self.embedding_model.image_token_id
+        genai_config["model"]["video_token_id"] = self.video_token_id
+        genai_config["model"]["vision_start_token_id"] = self.vision_start_token_id
+        with open(config_path, "w") as file:
+            json.dump(genai_config, file, indent=4)
+
+    def save_processing(self, model_name_or_path, extra_kwargs, out_dir):
+        from transformers import AutoProcessor
+
+        processor = AutoProcessor.from_pretrained(
+            model_name_or_path, token=self.text_model.hf_token, trust_remote_code=self.text_model.hf_remote, **extra_kwargs
+        )
+        processor.save_pretrained(out_dir)
+        processor_path = os.path.join(out_dir, "preprocessor_config.json")
+        if os.path.exists(processor_path):
+            with open(processor_path) as file:
+                processor_config = json.load(file)
+            with open(os.path.join(out_dir, "processor_config.json"), "w") as file:
+                json.dump(processor_config, file, indent=4)
 
 
 class Qwen35CausalLMModel(Qwen35TextModel):
