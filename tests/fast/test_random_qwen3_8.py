@@ -152,6 +152,8 @@ class TestRandomQwen3_8(ExtTestCase):
         self.assertEqual(decoder["num_hidden_layers"], 1)
         self.assertEqual(decoder["inputs"]["past_conv_names"], "past_key_values.%d.conv_state")
         self.assertEqual(decoder["inputs"]["past_recurrent_names"], "past_key_values.%d.recurrent_state")
+        self.assertEqual(decoder["outputs"]["present_conv_names"], "present.%d.conv_state")
+        self.assertEqual(decoder["outputs"]["present_recurrent_names"], "present.%d.recurrent_state")
 
         vision_session = self.check_ort(os.path.join(output_dir, "vision.onnx"))
         embedding_session = self.check_ort(os.path.join(output_dir, "embedding.onnx"))
