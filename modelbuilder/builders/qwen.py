@@ -2450,14 +2450,13 @@ class Qwen35TextModel(Model):
         ``Shape`` on intermediate Q/K tensors.  This avoids a data-dependency
         on Q/K computation.
 
-        The ``position_ids`` input rank depends on the model mode:
-          * text-only: ``[B, S]`` (rank 2)
-          * VL:        ``[3, B, S]`` (rank 3, mRoPE T/H/W axes)
+        ``position_ids`` has shape ``[3, B, S]`` (rank 3, mRoPE T/H/W axes)
+        for both text-only and VL models.
 
-        B*S is obtained by reshaping position_ids to ``[<lead>, -1]`` and
-        reading the inferred dimension from the shape.  This lets the runtime
-        compute the product implicitly (Reshape is metadata-only) and avoids
-        an explicit INT64 Mul that would fall back to CPU on WebGPU.
+        B*S is obtained by reshaping position_ids to ``[3, -1]`` and reading
+        the inferred dimension from the shape. This lets the runtime compute
+        the product implicitly (Reshape is metadata-only) and avoids an
+        explicit INT64 Mul that would fall back to CPU on WebGPU.
 
         Uses a fixed basename so ``make_node`` dedup ensures nodes are
         created once and reused across all layers and Q/K calls.
@@ -2465,17 +2464,10 @@ class Qwen35TextModel(Model):
         basename = "/model/attn/synthetic_pos_ids"
         pos_ids_input = self.input_names["position_ids"]
 
-        # text-only: [B, S] (rank 2); VL: [3, B, S] (rank 3).
-        if self.is_text_only:
-            in_rank = 2
-            bs_slice_start = 0
-            bs_slice_end = 2
-            flat_lead = 1
-        else:
-            in_rank = 3
-            bs_slice_start = 1
-            bs_slice_end = 3
-            flat_lead = 3
+        in_rank = 3
+        bs_slice_start = 1
+        bs_slice_end = 3
+        flat_lead = 3
 
         # Shape(position_ids) → [in_rank]
         shape_name = f"{basename}/Shape"
