@@ -953,10 +953,7 @@ class Model(LocalFunctionsMixin):
         if max_shard_size is not None and (not isinstance(max_shard_size, int) or max_shard_size <= 0):
             raise ValueError("max_shard_size must be a positive number of bytes.")
         if max_shard_size is not None:
-            for initializer in model.graph.initializer:
-                size = len(initializer.raw_data)
-                if initializer.data_location != TensorProto.EXTERNAL and size >= 1024 and size > max_shard_size:
-                    raise ValueError(f"Initializer {initializer.name!r} ({size} bytes) exceeds max_shard_size ({max_shard_size} bytes).")
+            self._validate_max_shard_size(model, max_shard_size)
         if os.path.exists(out_path):
             print(f"Overwriting {out_path}")
             os.remove(out_path)
@@ -990,12 +987,43 @@ class Model(LocalFunctionsMixin):
             os.rmdir(self.cache_dir)
 
     @staticmethod
+    def _validate_max_shard_size(model: ModelProto, max_shard_size: int) -> None:
+        def check_tensor(tensor):
+            size = len(tensor.raw_data)
+            if tensor.data_location != TensorProto.EXTERNAL and size >= 1024 and size > max_shard_size:
+                raise ValueError(f"Initializer {tensor.name!r} ({size} bytes) exceeds max_shard_size ({max_shard_size} bytes).")
+
+        def check_nodes(nodes):
+            for node in nodes:
+                for attribute in node.attribute:
+                    if attribute.HasField("t"):
+                        check_tensor(attribute.t)
+                    for tensor in attribute.tensors:
+                        check_tensor(tensor)
+                    if attribute.HasField("g"):
+                        check_graph(attribute.g)
+                    for graph in attribute.graphs:
+                        check_graph(graph)
+
+        def check_graph(graph):
+            for initializer in graph.initializer:
+                check_tensor(initializer)
+            for initializer in graph.sparse_initializer:
+                check_tensor(initializer.values)
+            check_nodes(graph.node)
+
+        check_graph(model.graph)
+        for function in model.functions:
+            check_nodes(function.node)
+
+    @staticmethod
     def _save_with_reused_weights(model: ModelProto, out_path: str, data_path: str, max_shard_size: int | None) -> None:
         generated = ModelProto()
         generated.graph.name = "generated_initializers"
         initializers = [initializer for initializer in model.graph.initializer if initializer.data_location != TensorProto.EXTERNAL]
         for initializer in initializers:
             generated.graph.initializer.add().CopyFrom(initializer)
+            initializer.raw_data = b""
         with tempfile.NamedTemporaryFile(suffix=".onnx", dir=os.path.dirname(out_path), delete=False) as temporary:
             temp_path = temporary.name
         try:
@@ -1010,11 +1038,12 @@ class Model(LocalFunctionsMixin):
             saved = onnx.load_model(temp_path, load_external_data=False)
             for initializer, externalized in zip(initializers, saved.graph.initializer):
                 if externalized.data_location == TensorProto.EXTERNAL:
-                    initializer.raw_data = b""
                     initializer.data_location = TensorProto.EXTERNAL
                     initializer.external_data.clear()
                     for entry in externalized.external_data:
                         initializer.external_data.add().CopyFrom(entry)
+                else:
+                    initializer.raw_data = externalized.raw_data
         finally:
             os.remove(temp_path)
         onnx.save_model(model, out_path)
