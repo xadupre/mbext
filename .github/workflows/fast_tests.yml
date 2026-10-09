@@ -39,13 +39,22 @@ jobs:
       matrix:
         os: ["ubuntu-latest"]
         python-version: ["3.14"]
-        transformers-version: ["5.18.0", "5.19.0"]
+        transformers-version: ["4.57", "5.6", "5.12.1", "5.15.0", "5.19.0"]
         torch:
           - version: "2.13.0"
         include:
-          - transformers-version: "5.18.0"
+          - transformers-version: "4.57"
             onnxruntime-genai-version: "0.15.1"
-            tokenizers-version: "0.23.3"
+            tokenizers-version: "0.22.2"
+          - transformers-version: "5.6"
+            onnxruntime-genai-version: "0.15.1"
+            tokenizers-version: "0.23.0rc0"
+          - transformers-version: "5.12.1"
+            onnxruntime-genai-version: "0.15.1"
+            tokenizers-version: "0.23.0rc0"
+          - transformers-version: "5.15.0"
+            onnxruntime-genai-version: "0.15.2"
+            tokenizers-version: "0.23.0rc0"
           - transformers-version: "5.19.0"
             onnxruntime-genai-version: "0.15.2"
             tokenizers-version: "0.23.3"
@@ -66,7 +75,35 @@ jobs:
         run: pip install "torch==${{ matrix.torch.version }}+cpu" torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
 
       - name: Install dependencies
+        if: matrix.transformers-version != '4.57'
         run: pip install -e ".[dev]" torch "transformers==${{ matrix.transformers-version }}" "tokenizers==${{ matrix.tokenizers-version }}" "onnxruntime-genai==${{ matrix.onnxruntime-genai-version }}"
+
+      - name: Install dependencies (transformers 4.57)
+        if: matrix.transformers-version == '4.57'
+        run: >-
+          pip install -e "."
+          torch
+          "black==26.5.1"
+          "mypy==2.3.0"
+          "onnxruntime==1.28.0"
+          "onnxruntime-genai==${{ matrix.onnxruntime-genai-version }}"
+          "openpyxl==3.1.5"
+          "pandas==3.0.5"
+          "peft==0.20.0"
+          "py-cpuinfo==9.0.0"
+          "pyrefly==1.2.0"
+          "pytest==9.1.1"
+          "pytest-cov==7.1.0"
+          "pytest-subtests==0.15.0"
+          "pytest-timeout==2.4.0"
+          "ruff==0.16.3"
+          "tabulate==0.10.0"
+          "tokenizers==${{ matrix.tokenizers-version }}"
+          "transformers==${{ matrix.transformers-version }}"
+
+      - name: Use huggingface-hub 2 with latest Transformers
+        if: matrix.transformers-version == '5.19.0'
+        run: pip install "huggingface_hub>=2.1.1"
 
       - name: pip freeze
         run: pip freeze
