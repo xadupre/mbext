@@ -538,9 +538,9 @@ class TestRandomQwen25OmniVision(ExtTestCase):
         if rot_pos_emb is not None:
             vision_inputs["rotary_pos_emb"] = rotary_pos_emb.numpy().astype(np.float32)
         else:
-            vision_inputs["rotary_pos_emb"] = prepare_qwen25_omni_vision_inputs(
-                pixel_values.numpy(), grid_thw.numpy(), vc
-            )["rotary_pos_emb"]
+            vision_inputs["rotary_pos_emb"] = prepare_qwen25_omni_vision_inputs(pixel_values.numpy(), grid_thw.numpy(), vc)[
+                "rotary_pos_emb"
+            ]
         vision_out = vision_sess.run(None, vision_inputs)
         self.assertIsNotNone(vision_out[0])
         self.assertEqual(vision_out[0].shape[0], n_merged)
