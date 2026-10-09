@@ -40,7 +40,7 @@ dev = [
     "onnxruntime-genai>=0.15.1,<=0.15.2",
     "openpyxl==3.1.5",
     "pandas==3.0.5",
-    "peft==0.20.0",
+    "peft==0.21.2",
     "py-cpuinfo==9.0.0",
     "pyrefly==1.2.0",
     "pytest==9.1.1",
