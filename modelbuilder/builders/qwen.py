@@ -2043,14 +2043,9 @@ class Qwen35TextModel(Model):
             self.layernorm_attrs["cast"]["output_0"] = True
             self.layernorm_attrs["cast"]["output_3"] = True
 
-        # Position IDs input.
-        # In text-only mode the runtime provides standard 2D [B, S] position_ids.
-        # We expand them to 3D [3, B, S] inside the graph so mRoPE works unchanged.
-        # In VL mode the pipeline provides 3D position_ids directly.
-        if self.is_text_only:
-            self.input_shapes["position_ids"] = ["batch_size", "sequence_length"]
-        else:
-            self.input_shapes["position_ids"] = [3, "batch_size", "sequence_length"]
+        # Qwen3.5 uses 3D [3, B, S] position IDs for mRoPE in both text and VL
+        # modes. ORT-GenAI supplies this shape for the qwen3_5_text model type.
+        self.input_shapes["position_ids"] = [3, "batch_size", "sequence_length"]
         self.input_names["position_ids"] = "position_ids"
 
         # mRoPE config
@@ -2182,19 +2177,6 @@ class Qwen35TextModel(Model):
         self.output_names["present.value"] = filtered_value_outputs
 
     def make_position_ids_reformatting(self):
-        if self.is_text_only:
-            # The graph input is 2D position_ids [B, S].
-            # Expand to 3D [3, B, S] for mRoPE by stacking 3 copies.
-            pos_2d = "position_ids"
-            unsq_name = "/model/position_ids_expand/Unsqueeze"
-            unsq_output = f"{unsq_name}/output_0"
-            self.make_unsqueeze(unsq_name, [pos_2d, "/model/constants/INT64/[0]"], ir.DataType.INT64, [1, "batch_size", "sequence_length"])
-            tile_name = "/model/position_ids_expand/Tile"
-            tile_output = f"{tile_name}/output_0"
-            self.make_tile(
-                tile_name, [unsq_output, "/model/constants/INT64/[3, 1, 1]"], ir.DataType.INT64, [3, "batch_size", "sequence_length"]
-            )
-            return tile_output
         return self.input_names["position_ids"]
 
     def make_preprocessing_nodes(self):
