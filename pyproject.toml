@@ -36,7 +36,7 @@ dev = [
     "black==26.5.1",
     "huggingface_hub==1.27.0",
     "mypy==2.3.0",
-    "onnxruntime==1.28.0",
+    "onnxruntime==1.30.0",
     "onnxruntime-genai<=0.17.1,>=0.17.1",
     "openpyxl==3.1.5",
     "pandas==3.0.5",
