@@ -61,6 +61,14 @@ class TestSetIoDtype(ExtTestCase):
         self.assertEqual(set_io_dtype("int4", "cuda", {}), ir.DataType.FLOAT16)
 
 
+class TestAttentionDtypes(ExtTestCase):
+    def test_cpu_bf16_supports_group_query_attention(self):
+        model = Model.__new__(Model)
+        model.ep = "cpu"
+        model.io_dtype = ir.DataType.BFLOAT16
+        self.assertTrue(model.is_gqa_supported())
+
+
 class TestSetOnnxDtype(ExtTestCase):
     def test_int4_symmetric_default(self):
         self.assertEqual(set_onnx_dtype("int4", {}), ir.DataType.INT4)

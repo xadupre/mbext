@@ -606,6 +606,7 @@ class Model(LocalFunctionsMixin):
         valid_gqa_configurations = {
             ("cpu", TensorProto.FLOAT),
             ("cpu", TensorProto.FLOAT16),
+            ("cpu", TensorProto.BFLOAT16),
             ("cuda", TensorProto.FLOAT),
             ("cuda", TensorProto.FLOAT16),
             ("cuda", TensorProto.BFLOAT16),
