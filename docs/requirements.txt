@@ -2,6 +2,6 @@
 # Install with: pip install -r docs/requirements.txt
 sphinx==9.1.0
 furo==2025.12.19
-sphinx-gallery==0.21.0
+sphinx-gallery==0.22.1
 sphinx-copybutton==0.5.2
 matplotlib==3.11.1
