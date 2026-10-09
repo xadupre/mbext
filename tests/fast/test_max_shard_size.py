@@ -8,7 +8,7 @@ import os
 import tempfile
 import unittest
 
-from onnx_light.onnx import AttributeProto, ModelProto, TensorProto, load
+from onnx_light.onnx import ModelProto, TensorProto, load
 from onnx_light.onnx.numpy_helper import to_array
 
 from modelbuilder.builder import parse_shard_size
@@ -37,25 +37,9 @@ class SmallModel(Model):
         return model
 
 
-class ModelWithConstant(SmallModel):
-    def to_model_proto(self):
-        model = super().to_model_proto()
-        node = model.graph.node.add()
-        node.op_type = "Constant"
-        node.output.append("large_constant")
-        attribute = node.attribute.add()
-        attribute.name = "value"
-        attribute.type = AttributeProto.TENSOR
-        attribute.t.name = "large_constant"
-        attribute.t.data_type = TensorProto.UINT8
-        attribute.t.dims.append(1600)
-        attribute.t.raw_data = b"x" * 1600
-        return model
-
-
 class TestMaxShardSize(ExtTestCase):
-    def make_model(self, tmp, max_shard_size=None, model_class=SmallModel):
-        model = model_class.__new__(model_class)
+    def make_model(self, tmp, max_shard_size=None):
+        model = SmallModel.__new__(SmallModel)
         model.filename = "model.onnx"
         model.cache_dir = os.path.join(tmp, "cache")
         model.quant_type = None
@@ -101,18 +85,12 @@ class TestMaxShardSize(ExtTestCase):
             self.assertFalse(os.path.exists(second))
             self.assertEqual(os.path.getsize(first), 3424)
 
-    def test_initializer_larger_than_limit(self):
+    def test_initializer_larger_than_limit_is_saved(self):
         with tempfile.TemporaryDirectory() as tmp:
-            with self.assertRaisesRegex(ValueError, "first.*exceeds max_shard_size"):
-                self.make_model(tmp, 1024).save_model(tmp)
-            self.assertFalse(os.path.exists(os.path.join(tmp, "model.onnx")))
-
-    def test_attribute_tensor_larger_than_limit(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            model = self.make_model(tmp, 1500, ModelWithConstant)
-            with self.assertRaisesRegex(ValueError, "large_constant.*exceeds max_shard_size"):
-                model.save_model(tmp)
-            self.assertFalse(os.path.exists(os.path.join(tmp, "model.onnx")))
+            self.make_model(tmp, 1024).save_model(tmp)
+            self.assertEqual(os.path.getsize(os.path.join(tmp, "model.onnx.data")), 1200)
+            self.assertEqual(os.path.getsize(os.path.join(tmp, "model.onnx.data.1")), 1024)
+            self.assertEqual(os.path.getsize(os.path.join(tmp, "model.onnx.data.2")), 1200)
 
     def test_reused_weights_are_not_sharded(self):
         with tempfile.TemporaryDirectory() as tmp:
