@@ -945,20 +945,28 @@ class Model(LocalFunctionsMixin):
         if quantizing:
             model = self.to_int4(model)
 
-        # Save ONNX model with only one external data file and delete any existing duplicate copies
+        # Save ONNX model and remove previous external data files for this model.
         out_path = os.path.join(out_dir, self.filename)
         data_path = os.path.join(out_dir, os.path.basename(out_path) + ".data")
+        max_shard_size = self.extra_options.get("max_shard_size")
+        if max_shard_size is not None and (not isinstance(max_shard_size, int) or max_shard_size <= 0):
+            raise ValueError("max_shard_size must be a positive number of bytes.")
         if os.path.exists(out_path):
             print(f"Overwriting {out_path}")
             os.remove(out_path)
-        if os.path.exists(data_path):
-            print(f"Overwriting {data_path}")
-            os.remove(data_path)
+        for name in os.listdir(out_dir):
+            if name == os.path.basename(data_path) or (
+                name.startswith(os.path.basename(data_path) + ".") and name[len(os.path.basename(data_path)) + 1 :].isdigit()
+            ):
+                path = os.path.join(out_dir, name)
+                if os.path.isfile(path):
+                    print(f"Overwriting {path}")
+                    os.remove(path)
 
         self._validate_source_weight_files(out_dir)
         with tqdm(total=len(model.graph.initializer), desc="Saving initializers") as pbar:
-            if self.reuse_downloaded_weights:
-                self._externalize_generated_initializers(model, data_path)
+            if self.reuse_downloaded_weights or max_shard_size is not None:
+                self._externalize_generated_initializers(model, data_path, max_shard_size)
                 onnx.save_model(model, out_path)
             else:
                 onnx.save_model(
@@ -1225,24 +1233,37 @@ class Model(LocalFunctionsMixin):
                 raise ValueError(f"Source weight {source_path!r} is a symbolic link.")
 
     @staticmethod
-    def _externalize_generated_initializers(model: ModelProto, data_path: str) -> None:
+    def _externalize_generated_initializers(model: ModelProto, data_path: str, max_shard_size: int | None = None) -> None:
         offset = 0
         data_file = None
+        shard = 0
         try:
             for initializer in model.graph.initializer:
                 if initializer.data_location == TensorProto.EXTERNAL or len(initializer.raw_data) < 1024:
                     continue
+                size = len(initializer.raw_data)
+                if max_shard_size is not None:
+                    if size > max_shard_size:
+                        raise ValueError(
+                            f"Initializer {initializer.name!r} ({size} bytes) exceeds max_shard_size ({max_shard_size} bytes)."
+                        )
+                    if offset and offset + size > max_shard_size:
+                        data_file.close()
+                        data_file = None
+                        shard += 1
+                        offset = 0
+                shard_path = data_path if shard == 0 else f"{data_path}.{shard}"
                 if data_file is None:
-                    data_file = open(data_path, "wb")
+                    data_file = open(shard_path, "wb")
                 raw_data = bytes(initializer.raw_data)
                 data_file.write(raw_data)
                 initializer.raw_data = b""
                 initializer.data_location = TensorProto.EXTERNAL
-                for key, value in (("location", os.path.basename(data_path)), ("offset", str(offset)), ("length", str(len(raw_data)))):
+                for key, value in (("location", os.path.basename(shard_path)), ("offset", str(offset)), ("length", str(size))):
                     entry = initializer.external_data.add()
                     entry.key = key
                     entry.value = value
-                offset += len(raw_data)
+                offset += size
         finally:
             if data_file is not None:
                 data_file.close()
