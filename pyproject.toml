@@ -12,7 +12,7 @@ license-files = ["LICENSE"]
 requires-python = ">=3.12,<3.15"
 dependencies = [
     "ml_dtypes>=0.6.0",
-    "numpy>=2.5.2",
+    "numpy>=2.5.3",
     "onnx-light @ https://github.com/xadupre/onnx-light/releases/download/0.1.27/onnx_light-0.1.27-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl ; python_version == '3.12' and sys_platform == 'linux' and platform_machine == 'x86_64'",
     "onnx-light @ https://github.com/xadupre/onnx-light/releases/download/0.1.27/onnx_light-0.1.27-cp313-cp313-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl ; python_version == '3.13' and sys_platform == 'linux' and platform_machine == 'x86_64'",
     "onnx-light @ https://github.com/xadupre/onnx-light/releases/download/0.1.27/onnx_light-0.1.27-cp314-cp314-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl ; python_version == '3.14' and sys_platform == 'linux' and platform_machine == 'x86_64'",
