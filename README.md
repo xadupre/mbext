@@ -62,8 +62,9 @@ The arguments are:
   checkpoint is downloaded once under ``<output>/.weights`` and remains there as
   the ONNX model's external data.
 - ``--max-shard-size``: maximum size of each generated ONNX external data file,
-  in bytes or with a suffix such as ``2GB`` or ``512MiB``. Without it, all
-  generated external data goes into ``model.onnx.data``. With it, additional
+  in bytes or with a suffix such as ``2GB`` or ``512MiB``. onnx-light handles
+  the sharding. Without it, all generated external data goes into
+  ``model.onnx.data``. With it, additional
   files are named ``model.onnx.data.1``, ``model.onnx.data.2``, etc. The limit
   must be at least as large as the largest externalized initializer; reused
   checkpoint files referenced by ``--reuse-weights`` are not split.

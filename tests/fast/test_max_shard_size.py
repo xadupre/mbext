@@ -111,6 +111,10 @@ class TestMaxShardSize(ExtTestCase):
             self.assertEqual(locations, [".weights/weights.bin", "model.onnx.data", "model.onnx.data.1"])
             self.assertEqual(os.path.getsize(weights_path), 1200)
             self.assertEqual(os.path.getsize(os.path.join(tmp, "model.onnx.data")), 1024)
+            self.assertEqual(sorted(name for name in os.listdir(tmp) if name.endswith(".onnx")), ["model.onnx"])
+            loaded = load(os.path.join(tmp, "model.onnx"))
+            for initializer in loaded.graph.initializer:
+                self.assertEqual(to_array(initializer, tmp).tobytes(), bytes([initializer.dims[0] % 251]) * initializer.dims[0])
 
 
 if __name__ == "__main__":
