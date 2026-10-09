@@ -61,6 +61,13 @@ The arguments are:
   ONNX initializers reference the downloaded checkpoint bytes directly. The
   checkpoint is downloaded once under ``<output>/.weights`` and remains there as
   the ONNX model's external data.
+- ``--max-shard-size``: maximum size of each generated ONNX external data file,
+  in bytes or with a suffix such as ``2GB`` or ``512MiB``. onnx-light handles
+  the sharding. Without it, all generated external data goes into
+  ``model.onnx.data``. With it, additional
+  files are named ``model.onnx.data.1``, ``model.onnx.data.2``, etc. An
+  individual tensor can exceed the requested size; reused checkpoint files
+  referenced by ``--reuse-weights`` are not split.
 
 For example, this exports an FP16 model without creating a second copy of its
 downloaded weights:

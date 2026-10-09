@@ -12,6 +12,7 @@ Run the model builder to create the desired ONNX model.
 import argparse
 import importlib.util
 import os
+import re
 import runpy
 import sys
 import textwrap
@@ -645,6 +646,14 @@ def create_model(model_name, input_path, output_dir, precision, execution_provid
     onnx_model.save_vscode_settings(output_dir)
 
 
+def parse_shard_size(value):
+    match = re.fullmatch(r"([1-9]\d*)(B|KIB|MIB|GIB|KB|MB|GB)?", value.upper())
+    if match is None:
+        raise argparse.ArgumentTypeError("Shard size must be a positive number of bytes (optionally KB, MB, GB, KiB, MiB or GiB).")
+    units = {"B": 1, "KB": 1000, "MB": 1000**2, "GB": 1000**3, "KIB": 1024, "MIB": 1024**2, "GIB": 1024**3}
+    return int(match[1]) * units[match[2] or "B"]
+
+
 def get_args():
     parser = argparse.ArgumentParser(formatter_class=argparse.RawTextHelpFormatter)
 
@@ -713,6 +722,14 @@ def get_args():
             into the ONNX external data file. Hugging Face checkpoint shards are downloaded under the output
             directory so ONNX Runtime can load them directly.
             """),
+    )
+
+    parser.add_argument(
+        "--max-shard-size",
+        type=parse_shard_size,
+        default=None,
+        metavar="SIZE",
+        help="Maximum size of each generated ONNX external data file (e.g. 2GB or 512MiB). Defaults to one data file.",
     )
 
     parser.add_argument(
@@ -866,4 +883,6 @@ if __name__ == "__main__":
             extra_options["private"] = args.private
         if args.reuse_downloaded_weights:
             extra_options["reuse_downloaded_weights"] = True
+        if args.max_shard_size is not None:
+            extra_options["max_shard_size"] = args.max_shard_size
         create_model(args.model_name, args.input, args.output, args.precision, args.execution_provider, args.cache_dir, **extra_options)
