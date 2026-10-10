@@ -117,10 +117,9 @@ class TestRandomQwen3_5_4B(ExtTestCase):
         np.random.seed(0)
         input_ids = np.random.randint(0, config.vocab_size, (batch_size, seq_len), dtype=np.int64)
 
-        # 2D position_ids [batch_size, seq_len].  In text-only mode the
-        # graph itself expands these to [3, B, S] for mRoPE via Unsqueeze+Tile.
+        # Qwen3.5 uses 3D mRoPE position_ids [3, B, S] in the ONNX graph.
         pos = np.arange(seq_len, dtype=np.int64)
-        position_ids = np.broadcast_to(pos, (batch_size, seq_len)).copy()
+        position_ids = np.broadcast_to(pos[None, None, :], (3, batch_size, seq_len)).copy()
 
         np_dtype = self.get_input_np_dtype(precision)
         onnx_feed = {"input_ids": input_ids, "attention_mask": np.ones((batch_size, seq_len), dtype=np.int64), "position_ids": position_ids}
@@ -310,26 +309,17 @@ class TestRandomQwen3_5_4B(ExtTestCase):
         self.run_genai_generation_test(output_dir, None, config.vocab_size, config.eos_token_id)
 
     # ------------------------------------------------------------------ #
-    # PR #2157 contract: text-only 2D position_ids + in-graph expansion   #
+    # Text-only mRoPE position_ids contract                               #
     # ------------------------------------------------------------------ #
 
     @requires_transformers("5")
     @hide_stdout()
-    def test_qwen3_5_4b_text_only_position_ids_2d(self):
-        """Verify the text-only Qwen3.5 graph contract from onnxruntime-genai#2157.
+    def test_qwen3_5_4b_text_only_position_ids_3d(self):
+        """Verify the text-only Qwen3.5 graph contract with 3D mRoPE positions.
 
-        In text-only mode (``Qwen3_5ForCausalLM`` → ``Qwen35CausalLMModel``,
-        ``is_text_only=True``) the ONNX graph must:
-
-        * declare ``position_ids`` as 2D ``[batch_size, sequence_length]``
-          (instead of 3D ``[3, B, S]`` used by the VL pipeline), and
-        * embed an ``Unsqueeze`` + ``Tile`` pair that expands the 2D input
-          to ``[3, B, S]`` so the unchanged mRoPE subgraph can consume it.
-
-        The genai-config ``model_type`` must also flip from
-        ``qwen3_5`` (VL) to ``qwen3_5_text`` (LLM), matching the
-        ``qwen3_5_text`` entry added to ``model_type.h`` in upstream
-        onnxruntime-genai#2157.
+        ORT-GenAI supplies 3D ``[3, B, S]`` position IDs for the
+        ``qwen3_5_text`` model type, so the exported graph consumes that shape
+        directly, as does the VL pipeline.
         """
         import json
 
@@ -343,18 +333,18 @@ class TestRandomQwen3_5_4B(ExtTestCase):
 
         onnx_model = onnx.load(text_onnx_path)
 
-        # 1. position_ids graph input is 2D [batch_size, sequence_length].
+        # 1. position_ids graph input is 3D [3, batch_size, sequence_length].
         pos_input = next(i for i in onnx_model.graph.input if i.name == "position_ids")
         dims = pos_input.type.tensor_type.shape.dim
-        self.assertEqual(len(dims), 2)
-        self.assertEqual(dims[0].dim_param, "batch_size")
-        self.assertEqual(dims[1].dim_param, "sequence_length")
+        self.assertEqual(len(dims), 3)
+        self.assertEqual(dims[0].dim_value, 3)
+        self.assertEqual(dims[1].dim_param, "batch_size")
+        self.assertEqual(dims[2].dim_param, "sequence_length")
 
-        # 2. The Unsqueeze + Tile expansion nodes added by
-        #    ``make_position_ids_reformatting`` are present in the graph.
+        # 2. No expansion is needed because the runtime passes 3D IDs directly.
         node_names = {node.name for node in onnx_model.graph.node}
-        self.assertIn("/model/position_ids_expand/Unsqueeze", node_names)
-        self.assertIn("/model/position_ids_expand/Tile", node_names)
+        self.assertNotIn("/model/position_ids_expand/Unsqueeze", node_names)
+        self.assertNotIn("/model/position_ids_expand/Tile", node_names)
 
         # 3. genai-config model type is the text-only variant.
         genai_cfg_path = os.path.join(output_dir, "genai_config.json")
@@ -378,7 +368,7 @@ class TestRandomQwen3_5_4B(ExtTestCase):
         """Compare ONNX Runtime prefill logits with HF PyTorch forward.
 
         Builds a tiny random-weight ``Qwen3_5ForCausalLM`` decoder, exports it
-        to ONNX (text-only, ``input_ids`` + 2-D ``position_ids``), runs both
+        to ONNX (text-only, ``input_ids`` + 3-D ``position_ids``), runs both
         ``onnxruntime`` CPU and the HF PyTorch forward (with ``input_ids`` and
         the 3-D mRoPE ``position_ids`` that HF expects), and asserts the
         per-element maximum absolute difference of the logits is small and
@@ -424,12 +414,11 @@ class TestRandomQwen3_5_4B(ExtTestCase):
         input_ids_pt = torch.randint(3, config.vocab_size, (batch_size, seq_len))
         input_ids = input_ids_pt.numpy().astype(np.int64)
 
-        # ONNX text-only takes 2-D position_ids; the graph expands them to
-        # [3, B, S] for mRoPE.
+        # Both the ONNX graph and HF model take 3-D mRoPE position_ids [3, B, S].
         pos = np.arange(seq_len, dtype=np.int64)
-        position_ids_2d = np.broadcast_to(pos, (batch_size, seq_len)).copy()
+        position_ids_3d = np.broadcast_to(pos[None, None, :], (3, batch_size, seq_len)).copy()
 
-        feed = {"input_ids": input_ids, "attention_mask": np.ones((batch_size, seq_len), dtype=np.int64), "position_ids": position_ids_2d}
+        feed = {"input_ids": input_ids, "attention_mask": np.ones((batch_size, seq_len), dtype=np.int64), "position_ids": position_ids_3d}
         for i, lt in enumerate(config.layer_types):
             if lt == "full_attention":
                 feed[f"past_key_values.{i}.key"] = np.zeros((batch_size, config.num_key_value_heads, 0, config.head_dim), dtype=np_dtype)
@@ -439,8 +428,6 @@ class TestRandomQwen3_5_4B(ExtTestCase):
         ort_logits = ort_outputs[0]
         self.assertEqual(ort_logits.shape, (batch_size, seq_len, config.vocab_size))
 
-        # HF PyTorch forward expects 3-D mRoPE position_ids [3, B, S].
-        position_ids_3d = np.broadcast_to(position_ids_2d[None, :, :], (3, batch_size, seq_len)).copy()
         with torch.no_grad():
             pt_out = model(
                 input_ids=input_ids_pt,

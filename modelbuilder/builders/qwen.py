@@ -2043,14 +2043,9 @@ class Qwen35TextModel(Model):
             self.layernorm_attrs["cast"]["output_0"] = True
             self.layernorm_attrs["cast"]["output_3"] = True
 
-        # Position IDs input.
-        # In text-only mode the runtime provides standard 2D [B, S] position_ids.
-        # We expand them to 3D [3, B, S] inside the graph so mRoPE works unchanged.
-        # In VL mode the pipeline provides 3D position_ids directly.
-        if self.is_text_only:
-            self.input_shapes["position_ids"] = ["batch_size", "sequence_length"]
-        else:
-            self.input_shapes["position_ids"] = [3, "batch_size", "sequence_length"]
+        # Qwen3.5 uses 3D [3, B, S] position IDs for mRoPE in both text and VL
+        # modes. ORT-GenAI supplies this shape for the qwen3_5_text model type.
+        self.input_shapes["position_ids"] = [3, "batch_size", "sequence_length"]
         self.input_names["position_ids"] = "position_ids"
 
         # mRoPE config
@@ -2182,19 +2177,6 @@ class Qwen35TextModel(Model):
         self.output_names["present.value"] = filtered_value_outputs
 
     def make_position_ids_reformatting(self):
-        if self.is_text_only:
-            # The graph input is 2D position_ids [B, S].
-            # Expand to 3D [3, B, S] for mRoPE by stacking 3 copies.
-            pos_2d = "position_ids"
-            unsq_name = "/model/position_ids_expand/Unsqueeze"
-            unsq_output = f"{unsq_name}/output_0"
-            self.make_unsqueeze(unsq_name, [pos_2d, "/model/constants/INT64/[0]"], ir.DataType.INT64, [1, "batch_size", "sequence_length"])
-            tile_name = "/model/position_ids_expand/Tile"
-            tile_output = f"{tile_name}/output_0"
-            self.make_tile(
-                tile_name, [unsq_output, "/model/constants/INT64/[3, 1, 1]"], ir.DataType.INT64, [3, "batch_size", "sequence_length"]
-            )
-            return tile_output
         return self.input_names["position_ids"]
 
     def make_preprocessing_nodes(self):
@@ -2468,14 +2450,13 @@ class Qwen35TextModel(Model):
         ``Shape`` on intermediate Q/K tensors.  This avoids a data-dependency
         on Q/K computation.
 
-        The ``position_ids`` input rank depends on the model mode:
-          * text-only: ``[B, S]`` (rank 2)
-          * VL:        ``[3, B, S]`` (rank 3, mRoPE T/H/W axes)
+        ``position_ids`` has shape ``[3, B, S]`` (rank 3, mRoPE T/H/W axes)
+        for both text-only and VL models.
 
-        B*S is obtained by reshaping position_ids to ``[<lead>, -1]`` and
-        reading the inferred dimension from the shape.  This lets the runtime
-        compute the product implicitly (Reshape is metadata-only) and avoids
-        an explicit INT64 Mul that would fall back to CPU on WebGPU.
+        B*S is obtained by reshaping position_ids to ``[3, -1]`` and reading
+        the inferred dimension from the shape. This lets the runtime compute
+        the product implicitly (Reshape is metadata-only) and avoids an
+        explicit INT64 Mul that would fall back to CPU on WebGPU.
 
         Uses a fixed basename so ``make_node`` dedup ensures nodes are
         created once and reused across all layers and Q/K calls.
@@ -2483,17 +2464,10 @@ class Qwen35TextModel(Model):
         basename = "/model/attn/synthetic_pos_ids"
         pos_ids_input = self.input_names["position_ids"]
 
-        # text-only: [B, S] (rank 2); VL: [3, B, S] (rank 3).
-        if self.is_text_only:
-            in_rank = 2
-            bs_slice_start = 0
-            bs_slice_end = 2
-            flat_lead = 1
-        else:
-            in_rank = 3
-            bs_slice_start = 1
-            bs_slice_end = 3
-            flat_lead = 3
+        in_rank = 3
+        bs_slice_start = 1
+        bs_slice_end = 3
+        flat_lead = 3
 
         # Shape(position_ids) → [in_rank]
         shape_name = f"{basename}/Shape"
