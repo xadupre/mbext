@@ -21,7 +21,7 @@ jobs:
       matrix:
         os: ["ubuntu-latest"]
         python-version: ["3.14"]
-        transformers-version: ["5.6", "5.12.1", "5.15.0"]
+        transformers-version: ["5.6", "5.12.1", "5.15.0", "5.19.0"]
         torch:
           - version: "2.13.0"
         include:
@@ -34,6 +34,9 @@ jobs:
           - transformers-version: "5.15.0"
             onnxruntime-genai-version: "0.15.2"
             tokenizers-version: "0.23.0rc0"
+          - transformers-version: "5.19.0"
+            onnxruntime-genai-version: "0.15.2"
+            tokenizers-version: "0.23.3"
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
@@ -46,6 +49,10 @@ jobs:
 
       - name: Install dependencies
         run: pip install -e ".[dev]" "transformers==${{ matrix.transformers-version }}" "tokenizers==${{ matrix.tokenizers-version }}" "onnxruntime-genai==${{ matrix.onnxruntime-genai-version }}"
+
+      - name: Use huggingface-hub 2 with latest Transformers
+        if: matrix.transformers-version == '5.19.0'
+        run: pip install "huggingface_hub>=2.1.1"
 
       - name: pip freeze
         run: pip freeze

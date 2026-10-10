@@ -234,9 +234,12 @@ class TestRandomQwen25OmniVideo(ExtTestCase):
                 feeds = prepare_qwen25_omni_vision_inputs(pixels.numpy(), grid.numpy(), vc)
                 with torch.no_grad():
                     pt_features = model.visual(pixels, grid_thw=grid).pooler_output.numpy()
-                    pt_rotary = model.visual.rot_pos_emb(grid).numpy()
+                    rot_pos_emb = getattr(model.visual, "rot_pos_emb", None)
+                    if rot_pos_emb is not None:
+                        pt_rotary = rot_pos_emb(grid).numpy()
                 self.assertEqual(feeds["frame_ids"].dtype, np.int64)
-                np.testing.assert_allclose(feeds["rotary_pos_emb"], pt_rotary, atol=1e-6)
+                if rot_pos_emb is not None:
+                    np.testing.assert_allclose(feeds["rotary_pos_emb"], pt_rotary, atol=1e-6)
                 features = vision.run(None, feeds)[0]
                 np.testing.assert_allclose(features, pt_features, atol=atol)
 
@@ -435,6 +438,7 @@ class TestRandomQwen25OmniVision(ExtTestCase):
         )
 
         from modelbuilder.builder import create_model
+        from modelbuilder.helpers.vision_helper import prepare_qwen25_omni_vision_inputs
 
         num_hidden_layers = 1
         spatial_merge_size = 2
@@ -523,14 +527,21 @@ class TestRandomQwen25OmniVision(ExtTestCase):
 
         # Compute PyTorch reference (always in float32).
         with torch.no_grad():
-            rotary_pos_emb = model.visual.rot_pos_emb(grid_thw)
             pt_vis_out = model.visual(hidden_states=pixel_values, grid_thw=grid_thw)
             pt_vis_features = pt_vis_out.pooler_output.numpy().astype(np.float32)
+            rot_pos_emb = getattr(model.visual, "rot_pos_emb", None)
+            if rot_pos_emb is not None:
+                rotary_pos_emb = rot_pos_emb(grid_thw)
 
         vision_sess = self.check_ort(vision_onnx_path)
-        vision_out = vision_sess.run(
-            None, {"pixel_values": pixel_values.numpy().astype(np.float32), "rotary_pos_emb": rotary_pos_emb.numpy().astype(np.float32)}
-        )
+        vision_inputs = {"pixel_values": pixel_values.numpy().astype(np.float32)}
+        if rot_pos_emb is not None:
+            vision_inputs["rotary_pos_emb"] = rotary_pos_emb.numpy().astype(np.float32)
+        else:
+            vision_inputs["rotary_pos_emb"] = prepare_qwen25_omni_vision_inputs(pixel_values.numpy(), grid_thw.numpy(), vc)[
+                "rotary_pos_emb"
+            ]
+        vision_out = vision_sess.run(None, vision_inputs)
         self.assertIsNotNone(vision_out[0])
         self.assertEqual(vision_out[0].shape[0], n_merged)
         self.assertEqual(vision_out[0].shape[1], vc.out_hidden_size)
