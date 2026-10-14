@@ -281,27 +281,6 @@ class ExtTestCase(unittest.TestCase):
     _do_clean = os.environ.get("DOCLEAN", "") in (1, "1", "True", "true")
     _do_not_clean = os.environ.get("DONTCLEAN", os.environ.get("DONT_CLEAN", "")) in (1, "1", "True", "true")
 
-    def __init_subclass__(cls, **kwargs):
-        """Add a visible onnx-light companion for every GenAI generation test."""
-        super().__init_subclass__(**kwargs)
-        for name, method in tuple(cls.__dict__.items()):
-            if not name.startswith("test_") or not name.endswith("_genai_generate"):
-                continue
-            native_name = name.replace("_genai_generate", "_onnx_light_generate")
-            if hasattr(cls, native_name):
-                continue
-
-            def make_native_test(test_method, test_name):
-                def native_test(self):
-                    self._generation_backend = "onnx_light"
-                    return test_method(self)
-
-                native_test.__name__ = test_name
-                native_test.__doc__ = "Run the matching model export through " "onnx-light and onnx-light-cpu generation."
-                return native_test
-
-            setattr(cls, native_name, make_native_test(method, native_name))
-
     @classmethod
     def get_dump_folder(cls, name: str, folder: Optional[str] = None, clean: bool = False) -> str:
         if folder is None:
@@ -1354,22 +1333,10 @@ class ExtTestCase(unittest.TestCase):
         pt_tokens: Optional[List[int]] = None,
         prompt_ids=None,
     ) -> List[int]:
-        """Assert ONNX artefacts exist, then compare PyTorch vs genai generation.
+        """Compare PyTorch generation with ONNX Runtime GenAI generation.
 
-        This helper encapsulates the boilerplate shared by every
-        ``test_*_cpu_genai_generate`` test method:
-
-        1. Assert that ``model.onnx`` and ``genai_config.json`` exist in
-           *output_dir*.
-        2. Build a deterministic prompt tensor (or use the provided
-           *prompt_ids*).
-        3. Run ``model.generate`` with greedy decoding to get the reference
-           token sequence (unless *pt_tokens* is already provided or *model*
-           is ``None``).
-        4. Run either ORT GenAI or onnx-light with onnx-light-cpu kernels,
-           according to the generated test method.
-        5. Assert that the runtime sequence matches the PyTorch reference when
-           one is available.
+        The runtime is deliberately fixed by this helper. Native generation
+        tests use :meth:`run_onnx_light_generation_test` instead.
 
         :param output_dir: directory produced by
             :func:`modelbuilder.builder.create_model`, containing
@@ -1379,8 +1346,8 @@ class ExtTestCase(unittest.TestCase):
             does not support ``generate``).
         :param vocab_size: vocabulary size used to sample random prompt tokens.
             Ignored when *prompt_ids* is provided.
-        :param eos_token_id: end-of-sequence token id, forwarded to the
-            runtime and used as ``pad_token_id`` by ``model.generate``.
+        :param eos_token_id: end-of-sequence token id, used as
+            ``pad_token_id`` by ``model.generate``.
         :param max_new_tokens: maximum number of new tokens to generate.
         :param pt_tokens: pre-computed PyTorch token sequence.  When given,
             the ``model.generate`` call is skipped.  Pass ``None`` together
@@ -1403,10 +1370,38 @@ class ExtTestCase(unittest.TestCase):
                 pt_output = model.generate(prompt_ids, max_new_tokens=max_new_tokens, do_sample=False, pad_token_id=eos_token_id)
             pt_tokens = pt_output[0].tolist()
 
-        if getattr(self, "_generation_backend", "genai") == "onnx_light":
-            runtime_tokens = self.run_onnx_light_generation(output_dir, prompt_ids, max_new_tokens, eos_token_id=eos_token_id)
-        else:
-            runtime_tokens = self.run_genai_generation(output_dir, prompt_ids, max_new_tokens)
+        runtime_tokens = self.run_genai_generation(output_dir, prompt_ids, max_new_tokens)
+
+        if pt_tokens is not None:
+            self.assertEqual(pt_tokens, runtime_tokens)
+        return runtime_tokens
+
+    def run_onnx_light_generation_test(
+        self,
+        output_dir: str,
+        model,
+        vocab_size: int,
+        eos_token_id: int,
+        max_new_tokens: int = 5,
+        pt_tokens: Optional[List[int]] = None,
+        prompt_ids=None,
+    ) -> List[int]:
+        """Compare PyTorch generation with onnx-light native generation."""
+        import torch
+
+        self.assertExists(os.path.join(output_dir, "model.onnx"))
+        self.assertExists(os.path.join(output_dir, "genai_config.json"))
+
+        if prompt_ids is None:
+            torch.manual_seed(0)
+            prompt_ids = torch.randint(3, vocab_size, (1, 4))
+
+        if pt_tokens is None and model is not None:
+            with torch.no_grad():
+                pt_output = model.generate(prompt_ids, max_new_tokens=max_new_tokens, do_sample=False, pad_token_id=eos_token_id)
+            pt_tokens = pt_output[0].tolist()
+
+        runtime_tokens = self.run_onnx_light_generation(output_dir, prompt_ids, max_new_tokens, eos_token_id=eos_token_id)
 
         if pt_tokens is not None:
             self.assertEqual(pt_tokens, runtime_tokens)

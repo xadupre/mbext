@@ -267,6 +267,14 @@ class TestRandomQwen3_5_4B(ExtTestCase):
     @hide_stdout()
     @requires_genai("0.14")
     def test_qwen3_5_4b_fp32_cpu_genai_generate(self):
+        return self._test_qwen3_5_4b_fp32_cpu_generate(self.run_genai_generation_test, "test_qwen3_5_4b_fp32_cpu_genai_generate")
+
+    @requires_transformers("5")
+    @hide_stdout()
+    def test_qwen3_5_4b_fp32_cpu_onnx_light_generate(self):
+        return self._test_qwen3_5_4b_fp32_cpu_generate(self.run_onnx_light_generation_test, "test_qwen3_5_4b_fp32_cpu_onnx_light_generate")
+
+    def _test_qwen3_5_4b_fp32_cpu_generate(self, generation_test, test_name):
         """Export a Qwen3.5-4B CausalLM model and verify ORT-GenAI generation.
 
         Builds a random-weight Qwen3.5-4B model with all ``full_attention``
@@ -283,7 +291,7 @@ class TestRandomQwen3_5_4B(ExtTestCase):
 
         from modelbuilder.builder import create_model
 
-        prefix = "test_qwen3_5_4b_fp32_cpu_genai_generate"
+        prefix = test_name
         config = _make_qwen3_5_4b_config(["full_attention", "full_attention"])
 
         model_dir = self.get_model_dir(prefix, clean=False)
@@ -306,7 +314,7 @@ class TestRandomQwen3_5_4B(ExtTestCase):
         )
 
         # Pass model=None: skip PyTorch token comparison (see docstring).
-        self.run_genai_generation_test(output_dir, None, config.vocab_size, config.eos_token_id)
+        generation_test(output_dir, None, config.vocab_size, config.eos_token_id)
 
     # ------------------------------------------------------------------ #
     # Text-only mRoPE position_ids contract                               #
