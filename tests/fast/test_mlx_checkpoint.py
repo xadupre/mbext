@@ -5,6 +5,7 @@
 # --------------------------------------------------------------------------
 """Offline checks for MLX groupwise checkpoint conversion."""
 
+import os
 import tempfile
 
 import numpy as np
@@ -16,7 +17,7 @@ import torch
 from onnx_light.onnx import TensorProto
 from safetensors.numpy import save_file
 
-from modelbuilder.ext_test_case import ExtTestCase
+from modelbuilder.ext_test_case import ExtTestCase, requires_transformers
 from modelbuilder.helpers.mlx import MLXCheckpoint, repack_mlx
 
 
@@ -121,6 +122,36 @@ class TestMLXCheckpoint(ExtTestCase):
             with self.assertRaisesRegex(ValueError, "Incomplete MLX"):
                 MLXCheckpoint(directory)
 
+    @staticmethod
+    def _mlx_name(name):
+        if name.startswith("model.language_model."):
+            return "language_model.model." + name[len("model.language_model.") :]
+        if name.startswith("lm_head."):
+            return "language_model.lm_head." + name[len("lm_head.") :]
+        return name
+
+    def _decoder_step(self, session, embeddings, positions, attention_mask, past=None):
+        feeds = {}
+        for entry in session.get_inputs():
+            if entry.name == "inputs_embeds":
+                feeds[entry.name] = embeddings
+            elif entry.name == "position_ids":
+                feeds[entry.name] = positions
+            elif entry.name == "attention_mask":
+                feeds[entry.name] = attention_mask
+            elif entry.name.startswith("past_key_values."):
+                output_name = "present." + entry.name[len("past_key_values.") :]
+                if past is not None:
+                    feeds[entry.name] = past[output_name]
+                else:
+                    shape = [
+                        1 if size == "batch_size" else (0 if size == "past_sequence_length" else size)
+                        for size in entry.shape
+                    ]
+                    feeds[entry.name] = np.zeros(shape, dtype=np.float32)
+        return dict(zip((output.name for output in session.get_outputs()), session.run(None, feeds)))
+
+    @requires_transformers("5")
     def test_tiny_qwen_components(self):
         from transformers import Qwen3_5ForConditionalGeneration
         from transformers.models.qwen3_5.configuration_qwen3_5 import Qwen3_5Config, Qwen3_5TextConfig, Qwen3_5VisionConfig
@@ -131,13 +162,18 @@ class TestMLXCheckpoint(ExtTestCase):
         text = Qwen3_5TextConfig(
             hidden_size=256,
             intermediate_size=512,
-            num_hidden_layers=1,
+            num_hidden_layers=2,
             num_attention_heads=4,
             num_key_value_heads=2,
             head_dim=64,
             max_position_embeddings=256,
             vocab_size=64,
-            layer_types=["full_attention"],
+            layer_types=["full_attention", "linear_attention"],
+            linear_num_key_heads=2,
+            linear_num_value_heads=2,
+            linear_key_head_dim=16,
+            linear_value_head_dim=16,
+            linear_conv_kernel_dim=4,
         )
         text.rope_parameters = rope
         text.rope_scaling = rope
@@ -158,6 +194,7 @@ class TestMLXCheckpoint(ExtTestCase):
             skeleton = Qwen3_5ForConditionalGeneration(config)
         with tempfile.TemporaryDirectory() as directory:
             tensors = {}
+            reference_state = {}
             for name, value in skeleton.state_dict().items():
                 module = skeleton.get_submodule(name.rsplit(".", 1)[0])
                 width = value.numel() // value.shape[0] if value.ndim else 0
@@ -174,18 +211,90 @@ class TestMLXCheckpoint(ExtTestCase):
                     words = np.zeros((outputs, width * bits // 32), dtype=np.uint32)
                     for index in range(32 // bits):
                         words |= levels[:, index :: 32 // bits] << (index * bits)
-                    tensors[name] = words
-                    tensors[name[:-7] + ".scales"] = np.full((outputs, width // group), 0.125, dtype=np.float32)
-                    tensors[name[:-7] + ".biases"] = np.full((outputs, width // group), -0.0625, dtype=np.float32)
+                    source_name = self._mlx_name(name)
+                    scales = np.full((outputs, width // group), 0.125, dtype=np.float32)
+                    biases = np.full((outputs, width // group), -0.0625, dtype=np.float32)
+                    tensors[source_name] = words
+                    tensors[source_name[:-7] + ".scales"] = scales
+                    tensors[source_name[:-7] + ".biases"] = biases
+                    reference_array = levels.astype(np.float32) * scales.repeat(group, axis=1) + biases.repeat(
+                        group, axis=1
+                    )
+                    reference_state[name] = torch.from_numpy(reference_array).to(dtype=value.dtype)
                 else:
-                    tensors[name] = np.zeros(value.shape, dtype=np.float16)
+                    source_name = self._mlx_name(name)
+                    if name.endswith("linear_attn.conv1d.weight"):
+                        reference_array = np.arange(value.numel(), dtype=np.float16).reshape(value.shape)
+                        tensors[source_name] = reference_array.transpose(0, 2, 1).copy()
+                    elif name.endswith("linear_attn.norm.weight"):
+                        reference_array = np.full(value.shape, 0.25, dtype=np.float16)
+                        tensors[source_name] = reference_array
+                    elif name.endswith(
+                        (
+                            "input_layernorm.weight",
+                            "post_attention_layernorm.weight",
+                            "self_attn.q_norm.weight",
+                            "self_attn.k_norm.weight",
+                        )
+                    ) and source_name.startswith("language_model.model."):
+                        reference_array = np.zeros(value.shape, dtype=np.float16)
+                        tensors[source_name] = reference_array + 1
+                    elif name == "model.language_model.norm.weight":
+                        reference_array = np.zeros(value.shape, dtype=np.float16)
+                        tensors[source_name] = reference_array + 1
+                    else:
+                        reference_array = np.zeros(value.shape, dtype=np.float16)
+                        tensors[source_name] = reference_array
+                    reference_state[name] = torch.from_numpy(reference_array.copy()).to(dtype=value.dtype)
             save_file(tensors, f"{directory}/model.safetensors")
+            reference_model = Qwen3_5ForConditionalGeneration(config)
+            reference_model.load_state_dict(reference_state)
+            reference_directory = f"{directory}/reference_model"
+            reference_model.save_pretrained(reference_directory)
             options = {"_mlx_checkpoint": directory, "disable_qkv_fusion": True, "int4_bits": 2}
             checkpoint = MLXCheckpoint(directory)
             loaded = checkpoint.load_model(config, "text")
             self.assertTrue(hasattr(loaded.model.language_model.layers[0].mlp.gate_proj, "qweight"))
             self.assertTrue(loaded.model.language_model.layers[0].mlp.gate_proj.weight.is_meta)
             self.assertEqual(loaded.model.language_model.layers[0].input_layernorm.weight.dtype, torch.float16)
+            self.assertTrue(torch.all(loaded.model.language_model.layers[0].input_layernorm.weight == 0))
+            self.assertTrue(torch.all(loaded.model.language_model.layers[0].self_attn.q_norm.weight == 0))
+            self.assertTrue(torch.all(loaded.model.language_model.norm.weight == 0))
+            self.assertTrue(
+                torch.all(loaded.model.language_model.layers[1].linear_attn.norm.weight == 0.25)
+            )
+            np.testing.assert_array_equal(
+                loaded.model.language_model.layers[1].linear_attn.conv1d.weight.cpu().numpy(),
+                np.arange(
+                    loaded.model.language_model.layers[1].linear_attn.conv1d.weight.numel(),
+                    dtype=np.float16,
+                ).reshape(loaded.model.language_model.layers[1].linear_attn.conv1d.weight.shape),
+            )
+            hf_tensors = {}
+            for source_name, value in tensors.items():
+                if source_name.startswith("language_model.model."):
+                    name = "model.language_model." + source_name[len("language_model.model.") :]
+                elif source_name.startswith("language_model.lm_head."):
+                    name = "lm_head." + source_name[len("language_model.lm_head.") :]
+                else:
+                    name = source_name
+                if name.endswith(
+                    (
+                        "input_layernorm.weight",
+                        "post_attention_layernorm.weight",
+                        "self_attn.q_norm.weight",
+                        "self_attn.k_norm.weight",
+                        "model.language_model.norm.weight",
+                    )
+                ):
+                    value = reference_state[name].numpy()
+                hf_tensors[name] = value
+            hf_directory = f"{directory}/hf_style"
+            os.mkdir(hf_directory)
+            save_file(hf_tensors, f"{hf_directory}/model.safetensors")
+            hf_loaded = MLXCheckpoint(hf_directory).load_model(config, "text")
+            self.assertTrue(torch.all(hf_loaded.model.language_model.layers[0].input_layernorm.weight == 0))
+
             for builder_type, name, builder_config, extra in (
                 (Qwen35VisionEncoderModel, "vision.onnx", config, options),
                 (Qwen35EmbeddingModel, "embedding.onnx", text, {**options, "_mlx_config": config, "image_token_id": config.image_token_id}),
@@ -240,3 +349,33 @@ class TestMLXCheckpoint(ExtTestCase):
                             )
                     logits = session.run(None, feeds)[0]
                     self.assertEqual(logits.shape, (1, 2, 64))
+                    reference_directory = f"{directory}/reference_onnx"
+                    reference_builder = Qwen35TextModel(
+                        config,
+                        TensorProto.FLOAT,
+                        TensorProto.FLOAT,
+                        "cpu",
+                        reference_directory,
+                        {"disable_qkv_fusion": True},
+                    )
+                    reference_builder.make_model(reference_directory)
+                    reference_builder.save_model(reference_directory)
+                    reference_session = ort.InferenceSession(
+                        f"{reference_directory}/model.onnx", providers=["CPUExecutionProvider"]
+                    )
+                    embeddings = np.arange(3 * 256, dtype=np.float32).reshape(1, 3, 256) / 768
+                    positions = np.broadcast_to(np.arange(3, dtype=np.int64), (3, 1, 3)).copy()
+                    mask = np.ones((1, 3), dtype=np.int64)
+                    mlx_prefill = self._decoder_step(session, embeddings, positions, mask)
+                    dense_prefill = self._decoder_step(reference_session, embeddings, positions, mask)
+                    np.testing.assert_allclose(mlx_prefill["logits"], dense_prefill["logits"], rtol=1e-3, atol=2e-3)
+                    decode_positions = np.full((3, 1, 1), 3, dtype=np.int64)
+                    decode_embeddings = embeddings[:, :1, :]
+                    decode_mask = np.ones((1, 4), dtype=np.int64)
+                    mlx_decode = self._decoder_step(
+                        session, decode_embeddings, decode_positions, decode_mask, mlx_prefill
+                    )
+                    dense_decode = self._decoder_step(
+                        reference_session, decode_embeddings, decode_positions, decode_mask, dense_prefill
+                    )
+                    np.testing.assert_allclose(mlx_decode["logits"], dense_decode["logits"], rtol=1e-3, atol=2e-3)
