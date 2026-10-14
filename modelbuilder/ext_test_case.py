@@ -1246,6 +1246,61 @@ class ExtTestCase(unittest.TestCase):
             og_tokens.append(int(generator.get_next_tokens()[0]))
         return og_tokens
 
+    def run_onnx_light_generation(self, output_dir: str, prompt_ids, max_new_tokens: int = 5) -> Optional[List[int]]:
+        """Run greedy generation through onnx-light with onnx-light-cpu kernels.
+
+        Multi-graph decoders consuming ``inputs_embeds`` and decoders using
+        higher-rank position IDs are outside the native generator's current
+        single-graph contract and return ``None``.
+        """
+        import onnx_light.onnx as onnx
+        from onnx_light.onnx.helper import tensor_dtype_to_np_dtype
+        from onnx_light.onnx.reference import ReferenceEvaluator
+        from onnx_light_cpu import register_kernels_global
+
+        register_kernels_global()
+        model = onnx.load(os.path.join(output_dir, "model.onnx"), load_external_data=True)
+        input_names = {value.name for value in model.graph.input}
+        if "input_ids" not in input_names:
+            return None
+        position_inputs = [value for value in model.graph.input if value.name == "position_ids"]
+        if position_inputs and len(position_inputs[0].type.tensor_type.shape.dim) != 2:
+            return None
+
+        output_names = {value.name for value in model.graph.output}
+        existing_bindings = {(binding.input_name, binding.output_name) for binding in model.graph.persistent_bindings}
+        for input_name in sorted(input_names):
+            if not input_name.startswith("past_key_values."):
+                continue
+            output_name = input_name.replace("past_key_values.", "present.", 1)
+            if output_name in output_names and (input_name, output_name) not in existing_bindings:
+                binding = model.graph.persistent_bindings.add()
+                binding.input_name = input_name
+                binding.output_name = output_name
+
+        if hasattr(prompt_ids, "detach"):
+            prompt = prompt_ids.detach().cpu().numpy().astype(np.int64)
+        else:
+            prompt = np.asarray(prompt_ids, dtype=np.int64)
+        feeds = {"input_ids": prompt}
+        automatic_inputs = {"input_ids", "attention_mask", "position_ids"}
+        for value in model.graph.input:
+            if value.name in automatic_inputs:
+                continue
+            tensor_type = value.type.tensor_type
+            shape = []
+            for axis, dim in enumerate(tensor_type.shape.dim):
+                if dim.HasField("dim_value"):
+                    shape.append(dim.dim_value)
+                elif axis == 0 or "batch" in dim.dim_param:
+                    shape.append(prompt.shape[0])
+                else:
+                    shape.append(0)
+            feeds[value.name] = np.zeros(tuple(shape), dtype=tensor_dtype_to_np_dtype(tensor_type.elem_type))
+
+        tokens = ReferenceEvaluator(model).generate(feeds, max_new_tokens=max_new_tokens, temperature=0.0)
+        return tokens[0].tolist()
+
     def run_genai_generation_test(
         self,
         output_dir: str,
@@ -1269,8 +1324,9 @@ class ExtTestCase(unittest.TestCase):
            token sequence (unless *pt_tokens* is already provided or *model*
            is ``None``).
         4. Run :meth:`run_genai_generation` to obtain the genai token sequence.
-        5. Assert that both sequences are equal (skipped when *pt_tokens* is
-           ``None`` after step 3).
+        5. Run compatible single-graph text decoders through onnx-light with
+           onnx-light-cpu kernels.
+        6. Assert that every available sequence is equal.
 
         :param output_dir: directory produced by
             :func:`modelbuilder.builder.create_model`, containing
@@ -1305,9 +1361,14 @@ class ExtTestCase(unittest.TestCase):
             pt_tokens = pt_output[0].tolist()
 
         og_tokens = self.run_genai_generation(output_dir, prompt_ids, max_new_tokens)
+        onnx_light_tokens = self.run_onnx_light_generation(output_dir, prompt_ids, max_new_tokens)
 
         if pt_tokens is not None:
             self.assertEqual(pt_tokens, og_tokens)
+            if onnx_light_tokens is not None:
+                self.assertEqual(pt_tokens, onnx_light_tokens)
+        elif onnx_light_tokens is not None:
+            self.assertEqual(og_tokens, onnx_light_tokens)
 
     def check_phi3v_genai_config(
         self,

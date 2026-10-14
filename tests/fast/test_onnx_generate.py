@@ -98,6 +98,21 @@ class TestOnnxGenerate(ExtTestCase):
         self.assertEqual(tokens.dtype, np.int64)
 
     @hide_stdout()
+    def test_generate_with_onnx_light_cpu(self):
+        """The shared native helper generates with onnx-light-cpu kernels."""
+        import os
+        import tempfile
+
+        model = _make_tiny_lm_no_cache(fixed_token=5)
+        prompt = np.array([[1, 2]], dtype=np.int64)
+
+        with tempfile.TemporaryDirectory() as output_dir:
+            onnx.save(model, os.path.join(output_dir, "model.onnx"))
+            tokens = self.run_onnx_light_generation(output_dir, prompt, max_new_tokens=4)
+
+        self.assertEqual(tokens, [1, 2, 5, 5, 5, 5])
+
+    @hide_stdout()
     def test_generate_return_session(self):
         """return_session=True returns a 3-tuple (tokens, session, feeds)."""
         from onnxruntime import InferenceSession
