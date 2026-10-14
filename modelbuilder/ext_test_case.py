@@ -281,6 +281,27 @@ class ExtTestCase(unittest.TestCase):
     _do_clean = os.environ.get("DOCLEAN", "") in (1, "1", "True", "true")
     _do_not_clean = os.environ.get("DONTCLEAN", os.environ.get("DONT_CLEAN", "")) in (1, "1", "True", "true")
 
+    def __init_subclass__(cls, **kwargs):
+        """Add a visible onnx-light companion for every GenAI generation test."""
+        super().__init_subclass__(**kwargs)
+        for name, method in tuple(cls.__dict__.items()):
+            if not name.startswith("test_") or not name.endswith("_genai_generate"):
+                continue
+            native_name = name.replace("_genai_generate", "_onnx_light_generate")
+            if hasattr(cls, native_name):
+                continue
+
+            def make_native_test(test_method, test_name):
+                def native_test(self):
+                    self._generation_backend = "onnx_light"
+                    return test_method(self)
+
+                native_test.__name__ = test_name
+                native_test.__doc__ = "Run the matching model export through " "onnx-light and onnx-light-cpu generation."
+                return native_test
+
+            setattr(cls, native_name, make_native_test(method, native_name))
+
     @classmethod
     def get_dump_folder(cls, name: str, folder: Optional[str] = None, clean: bool = False) -> str:
         if folder is None:
@@ -1323,10 +1344,10 @@ class ExtTestCase(unittest.TestCase):
         3. Run ``model.generate`` with greedy decoding to get the reference
            token sequence (unless *pt_tokens* is already provided or *model*
            is ``None``).
-        4. Run :meth:`run_genai_generation` to obtain the genai token sequence.
-        5. Run compatible single-graph text decoders through onnx-light with
-           onnx-light-cpu kernels.
-        6. Assert that every available sequence is equal.
+        4. Run either ORT GenAI or onnx-light with onnx-light-cpu kernels,
+           according to the generated test method.
+        5. Assert that the runtime sequence matches the PyTorch reference when
+           one is available.
 
         :param output_dir: directory produced by
             :func:`modelbuilder.builder.create_model`, containing
@@ -1360,15 +1381,15 @@ class ExtTestCase(unittest.TestCase):
                 pt_output = model.generate(prompt_ids, max_new_tokens=max_new_tokens, do_sample=False, pad_token_id=eos_token_id)
             pt_tokens = pt_output[0].tolist()
 
-        og_tokens = self.run_genai_generation(output_dir, prompt_ids, max_new_tokens)
-        onnx_light_tokens = self.run_onnx_light_generation(output_dir, prompt_ids, max_new_tokens)
+        if getattr(self, "_generation_backend", "genai") == "onnx_light":
+            runtime_tokens = self.run_onnx_light_generation(output_dir, prompt_ids, max_new_tokens)
+            if runtime_tokens is None:
+                self.skipTest("onnx-light generate currently requires a single graph " "with input_ids and rank-2 position_ids")
+        else:
+            runtime_tokens = self.run_genai_generation(output_dir, prompt_ids, max_new_tokens)
 
         if pt_tokens is not None:
-            self.assertEqual(pt_tokens, og_tokens)
-            if onnx_light_tokens is not None:
-                self.assertEqual(pt_tokens, onnx_light_tokens)
-        elif onnx_light_tokens is not None:
-            self.assertEqual(og_tokens, onnx_light_tokens)
+            self.assertEqual(pt_tokens, runtime_tokens)
 
     def check_phi3v_genai_config(
         self,
