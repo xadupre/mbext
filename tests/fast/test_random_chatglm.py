@@ -526,11 +526,18 @@ class TestChatGLM(ExtTestCase):
     @hide_stdout()
     @requires_genai()
     def test_chatglm_fp32_cpu_genai_generate(self):
+        return self._test_chatglm_fp32_cpu_generate(self.run_genai_generation_test, "test_chatglm_fp32_cpu_genai_generate")
+
+    @hide_stdout()
+    def test_chatglm_fp32_cpu_onnx_light_generate(self):
+        return self._test_chatglm_fp32_cpu_generate(self.run_onnx_light_generation_test, "test_chatglm_fp32_cpu_onnx_light_generate")
+
+    def _test_chatglm_fp32_cpu_generate(self, generation_test, test_name):
         import torch
 
         from modelbuilder.builder import create_model
 
-        prefix = "test_chatglm_fp32_cpu_genai_generate"
+        prefix = test_name
         num_hidden_layers = 1
 
         model_dir = self.get_model_dir(prefix, clean=False)
@@ -566,7 +573,7 @@ class TestChatGLM(ExtTestCase):
                 if next_tok == config.eos_token_id:
                     break
 
-        self.run_genai_generation_test(output_dir, None, config.vocab_size, config.eos_token_id, pt_tokens=pt_tokens, prompt_ids=prompt_ids)
+        generation_test(output_dir, None, config.vocab_size, config.eos_token_id, pt_tokens=pt_tokens, prompt_ids=prompt_ids)
 
 
 if __name__ == "__main__":

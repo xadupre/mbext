@@ -139,12 +139,19 @@ class TestOLMo2(ExtTestCase):
     @hide_stdout()
     @requires_genai()
     def test_olmo2_fp32_cpu_genai_generate(self):
+        return self._test_olmo2_fp32_cpu_generate(self.run_genai_generation_test, "test_olmo2_fp32_cpu_genai_generate")
+
+    @hide_stdout()
+    def test_olmo2_fp32_cpu_onnx_light_generate(self):
+        return self._test_olmo2_fp32_cpu_generate(self.run_onnx_light_generation_test, "test_olmo2_fp32_cpu_onnx_light_generate")
+
+    def _test_olmo2_fp32_cpu_generate(self, generation_test, test_name):
         import torch
         from transformers import AutoModelForCausalLM, Olmo2Config
 
         from modelbuilder.builder import create_model
 
-        prefix = "test_olmo2_fp32_cpu_genai_generate"
+        prefix = test_name
         num_hidden_layers = 1
         config = Olmo2Config(
             architectures=["Olmo2ForCausalLM"],
@@ -183,7 +190,7 @@ class TestOLMo2(ExtTestCase):
             cache_dir=cache_dir,
         )
 
-        self.run_genai_generation_test(output_dir, model, config.vocab_size, config.eos_token_id)
+        generation_test(output_dir, model, config.vocab_size, config.eos_token_id)
 
 
 if __name__ == "__main__":

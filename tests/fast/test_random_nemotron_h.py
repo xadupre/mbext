@@ -351,13 +351,20 @@ class TestNemotronH(ExtTestCase):
     @hide_stdout()
     @requires_genai()
     def test_nemotron_h_fp32_cpu_genai_generate(self):
+        return self._test_nemotron_h_fp32_cpu_generate(self.run_genai_generation_test, "test_nemotron_h_fp32_cpu_genai_generate")
+
+    @hide_stdout()
+    def test_nemotron_h_fp32_cpu_onnx_light_generate(self):
+        return self._test_nemotron_h_fp32_cpu_generate(self.run_onnx_light_generation_test, "test_nemotron_h_fp32_cpu_onnx_light_generate")
+
+    def _test_nemotron_h_fp32_cpu_generate(self, generation_test, test_name):
         import torch
         from transformers import AutoModelForCausalLM
         from transformers.models.nemotron_h import NemotronHConfig
 
         from modelbuilder.builder import create_model
 
-        prefix = "test_nemotron_h_fp32_cpu_genai_generate"
+        prefix = test_name
         num_hidden_layers = 1
         config = NemotronHConfig(
             architectures=["NemotronHForCausalLM"],
@@ -409,7 +416,7 @@ class TestNemotronH(ExtTestCase):
                 pt_output = model.generate(prompt_ids, max_new_tokens=5, do_sample=False, pad_token_id=config.eos_token_id)
             pt_tokens = pt_output[0].tolist()
 
-        self.run_genai_generation_test(output_dir, None, config.vocab_size, config.eos_token_id, pt_tokens=pt_tokens, prompt_ids=prompt_ids)
+        generation_test(output_dir, None, config.vocab_size, config.eos_token_id, pt_tokens=pt_tokens, prompt_ids=prompt_ids)
 
     def common_fast_nemotron_h_moe_random_weights(self, precision, provider):
         import torch
@@ -582,13 +589,22 @@ class TestNemotronH(ExtTestCase):
     @hide_stdout()
     @requires_genai()
     def test_nemotron_h_moe_fp32_cpu_genai_generate(self):
+        return self._test_nemotron_h_moe_fp32_cpu_generate(self.run_genai_generation_test, "test_nemotron_h_moe_fp32_cpu_genai_generate")
+
+    @hide_stdout()
+    def test_nemotron_h_moe_fp32_cpu_onnx_light_generate(self):
+        return self._test_nemotron_h_moe_fp32_cpu_generate(
+            self.run_onnx_light_generation_test, "test_nemotron_h_moe_fp32_cpu_onnx_light_generate"
+        )
+
+    def _test_nemotron_h_moe_fp32_cpu_generate(self, generation_test, test_name):
         import torch
         from transformers import AutoModelForCausalLM
         from transformers.models.nemotron_h import NemotronHConfig
 
         from modelbuilder.builder import create_model
 
-        prefix = "test_nemotron_h_moe_fp32_cpu_genai_generate"
+        prefix = test_name
         num_hidden_layers = 2
         layers_block_type = ["attention", "moe"]
         config = NemotronHConfig(
@@ -647,7 +663,7 @@ class TestNemotronH(ExtTestCase):
         # attention+moe configs in transformers 5.x, so we skip the PyTorch
         # reference comparison and only verify that genai generation completes
         # without errors.
-        self.run_genai_generation_test(output_dir, None, config.vocab_size, config.eos_token_id, prompt_ids=prompt_ids)
+        generation_test(output_dir, None, config.vocab_size, config.eos_token_id, prompt_ids=prompt_ids)
 
     # ------------------------------------------------------------------ #
     # Tests: NemotronH Mamba blocks                                       #
@@ -748,9 +764,20 @@ class TestNemotronH(ExtTestCase):
     @hide_stdout()
     @requires_genai()
     def test_nemotron_h_mamba_fp32_cpu_genai_generate(self):
+        return self._test_nemotron_h_mamba_fp32_cpu_generate(
+            self.run_genai_generation_test, "test_nemotron_h_mamba_fp32_cpu_genai_generate"
+        )
+
+    @hide_stdout()
+    def test_nemotron_h_mamba_fp32_cpu_onnx_light_generate(self):
+        return self._test_nemotron_h_mamba_fp32_cpu_generate(
+            self.run_onnx_light_generation_test, "test_nemotron_h_mamba_fp32_cpu_onnx_light_generate"
+        )
+
+    def _test_nemotron_h_mamba_fp32_cpu_generate(self, generation_test, test_name):
         """Verify genai generation completes for a mamba-only NemotronH model (fp32/CPU)."""
         config = self._make_nemotronh_mamba_config(["mamba"])
-        prefix = "test_nemotron_h_mamba_fp32_cpu_genai_generate"
+        prefix = test_name
         _, _, output_dir = self._build_mamba_model(config, "fp32", "cpu", prefix)
 
         import torch
@@ -760,14 +787,25 @@ class TestNemotronH(ExtTestCase):
         # NemotronH mamba layers use stateful conv/SSM states that differ from
         # the standard KV cache, so we skip the PyTorch reference comparison and
         # only verify that genai generation completes without errors.
-        self.run_genai_generation_test(output_dir, None, config.vocab_size, config.eos_token_id, prompt_ids=prompt_ids)
+        generation_test(output_dir, None, config.vocab_size, config.eos_token_id, prompt_ids=prompt_ids)
 
     @hide_stdout()
     @requires_genai()
     def test_nemotron_h_mamba_hybrid_fp32_cpu_genai_generate(self):
+        return self._test_nemotron_h_mamba_hybrid_fp32_cpu_generate(
+            self.run_genai_generation_test, "test_nemotron_h_mamba_hybrid_fp32_cpu_genai_generate"
+        )
+
+    @hide_stdout()
+    def test_nemotron_h_mamba_hybrid_fp32_cpu_onnx_light_generate(self):
+        return self._test_nemotron_h_mamba_hybrid_fp32_cpu_generate(
+            self.run_onnx_light_generation_test, "test_nemotron_h_mamba_hybrid_fp32_cpu_onnx_light_generate"
+        )
+
+    def _test_nemotron_h_mamba_hybrid_fp32_cpu_generate(self, generation_test, test_name):
         """Verify genai generation completes for a hybrid attention+mamba NemotronH model (fp32/CPU)."""
         config = self._make_nemotronh_mamba_config(["attention", "mamba"])
-        prefix = "test_nemotron_h_mamba_hybrid_fp32_cpu_genai_generate"
+        prefix = test_name
         _, _, output_dir = self._build_mamba_model(config, "fp32", "cpu", prefix)
 
         import torch
@@ -775,7 +813,7 @@ class TestNemotronH(ExtTestCase):
         torch.manual_seed(0)
         prompt_ids = torch.randint(3, config.vocab_size, (1, 4))
         # Skip PyTorch reference comparison for the same reason as the mamba-only test.
-        self.run_genai_generation_test(output_dir, None, config.vocab_size, config.eos_token_id, prompt_ids=prompt_ids)
+        generation_test(output_dir, None, config.vocab_size, config.eos_token_id, prompt_ids=prompt_ids)
 
     def _make_nemotronh_full_hybrid_config(self):
         """Return a small NemotronHConfig with attention, mamba, and moe layers for fast tests."""
@@ -856,6 +894,17 @@ class TestNemotronH(ExtTestCase):
     @hide_stdout()
     @requires_genai()
     def test_nemotron_h_full_hybrid_fp32_cpu_genai_generate(self):
+        return self._test_nemotron_h_full_hybrid_fp32_cpu_generate(
+            self.run_genai_generation_test, "test_nemotron_h_full_hybrid_fp32_cpu_genai_generate"
+        )
+
+    @hide_stdout()
+    def test_nemotron_h_full_hybrid_fp32_cpu_onnx_light_generate(self):
+        return self._test_nemotron_h_full_hybrid_fp32_cpu_generate(
+            self.run_onnx_light_generation_test, "test_nemotron_h_full_hybrid_fp32_cpu_onnx_light_generate"
+        )
+
+    def _test_nemotron_h_full_hybrid_fp32_cpu_generate(self, generation_test, test_name):
         """Verify genai generation completes for a full hybrid attention+mamba+moe NemotronH model (fp32/CPU)."""
         import torch
         from transformers import AutoModelForCausalLM
@@ -863,7 +912,7 @@ class TestNemotronH(ExtTestCase):
         from modelbuilder.builder import create_model
 
         config = self._make_nemotronh_full_hybrid_config()
-        prefix = "test_nemotron_h_full_hybrid_fp32_cpu_genai_generate"
+        prefix = test_name
         model_dir = self.get_model_dir(prefix, clean=False)
         output_dir, cache_dir = self.get_dirs(prefix, clean=False)
 
@@ -887,7 +936,7 @@ class TestNemotronH(ExtTestCase):
         prompt_ids = torch.randint(3, config.vocab_size, (1, 4))
         # Skip PyTorch reference comparison: mamba states and mixed block types are
         # not supported by standard ORT/transformers reference generation.
-        self.run_genai_generation_test(output_dir, None, config.vocab_size, config.eos_token_id, prompt_ids=prompt_ids)
+        generation_test(output_dir, None, config.vocab_size, config.eos_token_id, prompt_ids=prompt_ids)
 
 
 if __name__ == "__main__":

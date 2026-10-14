@@ -130,6 +130,13 @@ class TestRandomQwen25Omni(ExtTestCase):
     @hide_stdout()
     @requires_genai()
     def test_qwen25omni_fp32_cpu_genai_generate(self):
+        return self._test_qwen25omni_fp32_cpu_generate(self.run_genai_generation_test, "test_qwen25omni_fp32_cpu_genai_generate")
+
+    @hide_stdout()
+    def test_qwen25omni_fp32_cpu_onnx_light_generate(self):
+        return self._test_qwen25omni_fp32_cpu_generate(self.run_onnx_light_generation_test, "test_qwen25omni_fp32_cpu_onnx_light_generate")
+
+    def _test_qwen25omni_fp32_cpu_generate(self, generation_test, test_name):
         """Verify that ``onnxruntime-genai`` can load and run a Qwen2.5-Omni thinker model.
 
         This test builds a minimal random-weight Qwen2.5-Omni thinker ONNX model
@@ -142,7 +149,7 @@ class TestRandomQwen25Omni(ExtTestCase):
 
         from modelbuilder.builder import create_model
 
-        prefix = "test_qwen25omni_fp32_cpu_genai_generate"
+        prefix = test_name
         num_hidden_layers = 1
         config = _make_qwen25_omni_thinker_config(num_hidden_layers)
 
@@ -174,9 +181,7 @@ class TestRandomQwen25Omni(ExtTestCase):
         # ORT-genai (computed from the genai pipeline).  The test still verifies
         # that model.onnx and genai_config.json are valid and that ORT-genai can
         # execute a generation loop without error.
-        self.run_genai_generation_test(
-            output_dir, model=None, vocab_size=config.text_config.vocab_size, eos_token_id=config.text_config.eos_token_id
-        )
+        generation_test(output_dir, model=None, vocab_size=config.text_config.vocab_size, eos_token_id=config.text_config.eos_token_id)
 
 
 @requires_transformers("5")

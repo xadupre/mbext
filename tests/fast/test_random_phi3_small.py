@@ -807,11 +807,18 @@ class TestPhi3Small(ExtTestCase):
     @hide_stdout()
     @requires_genai()
     def test_phi3_small_fp32_cpu_genai_generate(self):
+        return self._test_phi3_small_fp32_cpu_generate(self.run_genai_generation_test, "test_phi3_small_fp32_cpu_genai_generate")
+
+    @hide_stdout()
+    def test_phi3_small_fp32_cpu_onnx_light_generate(self):
+        return self._test_phi3_small_fp32_cpu_generate(self.run_onnx_light_generation_test, "test_phi3_small_fp32_cpu_onnx_light_generate")
+
+    def _test_phi3_small_fp32_cpu_generate(self, generation_test, test_name):
         import torch
 
         from modelbuilder.builder import create_model
 
-        prefix = "test_phi3_small_fp32_cpu_genai_generate"
+        prefix = test_name
         num_hidden_layers = 1
 
         torch.manual_seed(42)
@@ -845,9 +852,7 @@ class TestPhi3Small(ExtTestCase):
                 if next_tok == config_obj.eos_token_id:
                     break
 
-        self.run_genai_generation_test(
-            output_dir, None, config_obj.vocab_size, config_obj.eos_token_id, pt_tokens=pt_tokens, prompt_ids=prompt_ids
-        )
+        generation_test(output_dir, None, config_obj.vocab_size, config_obj.eos_token_id, pt_tokens=pt_tokens, prompt_ids=prompt_ids)
 
 
 if __name__ == "__main__":
