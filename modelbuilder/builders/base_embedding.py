@@ -62,10 +62,7 @@ class EmbeddingModel(Model):
                 raise ValueError("MLX embedding must be packed in 2 bits.")
             bits = embed_weight.bits
             block_size = embed_weight.group_size
-            self.make_initializer(
-                embed_weight.qweight.reshape(embed_weight.num_embeddings, -1),
-                name="embed_tokens_weight",
-            )
+            self.make_initializer(embed_weight.qweight.reshape(embed_weight.num_embeddings, -1), name="embed_tokens_weight")
             self.make_initializer(embed_weight.scales, name="embed_tokens_scales", to=self.io_dtype)
             self.make_initializer(embed_weight.qzeros, name="embed_tokens_zero_points")
             correction = embed_weight.mlx_residual
@@ -121,41 +118,20 @@ class EmbeddingModel(Model):
         if quantized_output != "text_embeds":
             self.make_initializer(correction, "embed_tokens_residual", to=self.io_dtype)
             self.make_initializer(np.array([3], dtype=np.int64), "embed_residual_axes")
-            self.make_initializer(
-                np.array([1, 1, 1, block_size], dtype=np.int64),
-                "embed_residual_repeats",
+            self.make_initializer(np.array([1, 1, 1, block_size], dtype=np.int64), "embed_residual_repeats")
+            self.make_node(
+                "Gather", ["embed_tokens_residual", "input_ids"], ["embed_residual_groups"], name="/embed/residual/Gather", axis=0
             )
             self.make_node(
-                "Gather",
-                ["embed_tokens_residual", "input_ids"],
-                ["embed_residual_groups"],
-                name="/embed/residual/Gather",
-                axis=0,
+                "Unsqueeze", ["embed_residual_groups", "embed_residual_axes"], ["embed_residual_expanded"], name="/embed/residual/Unsqueeze"
             )
             self.make_node(
-                "Unsqueeze",
-                ["embed_residual_groups", "embed_residual_axes"],
-                ["embed_residual_expanded"],
-                name="/embed/residual/Unsqueeze",
-            )
-            self.make_node(
-                "Tile",
-                ["embed_residual_expanded", "embed_residual_repeats"],
-                ["embed_residual_tiled"],
-                name="/embed/residual/Tile",
+                "Tile", ["embed_residual_expanded", "embed_residual_repeats"], ["embed_residual_tiled"], name="/embed/residual/Tile"
             )
             expanded = self.make_reshape(
-                "/embed/residual/Reshape",
-                ["embed_residual_tiled", [0, 0, -1]],
-                self.io_dtype,
-                [1, None, self.hidden_size],
+                "/embed/residual/Reshape", ["embed_residual_tiled", [0, 0, -1]], self.io_dtype, [1, None, self.hidden_size]
             )
-            self.make_node(
-                "Add",
-                [quantized_output, expanded],
-                ["text_embeds"],
-                name="/embed/residual/Add",
-            )
+            self.make_node("Add", [quantized_output, expanded], ["text_embeds"], name="/embed/residual/Add")
         # 2. Squeeze batch dim for easier indexing: [1, T, H] → [T, H] (still fp32)
         self.make_node("Squeeze", inputs=["text_embeds", "squeeze_batch_axes"], outputs=["text_2d_fp32"], name="/embed/Squeeze_3d")
         # 3. Cast text embeddings from float32 to io_dtype so that ScatterND

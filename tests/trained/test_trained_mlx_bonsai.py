@@ -41,9 +41,7 @@ class TestTrainedMLXBonsai(ExtTestCase):
         mlx_model, tokenizer = mlx_lm.load(source)
         prompt = "The capital of France is"
         tokens = tokenizer.encode(prompt)
-        mlx_token = next(
-            mlx_lm.stream_generate(mlx_model, tokenizer, tokens, max_tokens=1)
-        ).token
+        mlx_token = next(mlx_lm.stream_generate(mlx_model, tokenizer, tokens, max_tokens=1)).token
 
         ort_model = og.Model(output)
         params = og.GeneratorParams(ort_model)

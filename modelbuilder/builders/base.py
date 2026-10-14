@@ -1677,48 +1677,22 @@ class Model(LocalFunctionsMixin):
             self.make_initializer(correction.T, residual_name, to=self.io_dtype)
             grouped = f"{name}/correction/Reshape"
             grouped_output = self.make_reshape(
-                grouped,
-                [root_input, [-1, blocks, matmul.group_size]],
-                self.io_dtype,
-                [None, blocks, matmul.group_size],
+                grouped, [root_input, [-1, blocks, matmul.group_size]], self.io_dtype, [None, blocks, matmul.group_size]
             )
             axes_name = f"{weight}.reduction_axes"
             self.make_initializer(np.array([2], dtype=np.int64), axes_name)
             reduced = f"{name}/correction/ReduceSum/output_0"
-            self.make_node(
-                "ReduceSum",
-                [grouped_output, axes_name],
-                [reduced],
-                name=f"{name}/correction/ReduceSum",
-                keepdims=0,
-            )
+            self.make_node("ReduceSum", [grouped_output, axes_name], [reduced], name=f"{name}/correction/ReduceSum", keepdims=0)
             self.make_value(reduced, self.io_dtype, [None, blocks])
             product = f"{name}/correction/MatMul/output_0"
-            self.make_node(
-                "MatMul",
-                [reduced, residual_name],
-                [product],
-                name=f"{name}/correction/MatMul",
-            )
+            self.make_node("MatMul", [reduced, residual_name], [product], name=f"{name}/correction/MatMul")
             self.make_value(product, self.io_dtype, [None, matmul.out_features])
             output_shape = f"{name}/correction/Shape/output_0"
-            self.make_node(
-                "Shape", [packed_output], [output_shape], name=f"{name}/correction/Shape"
-            )
+            self.make_node("Shape", [packed_output], [output_shape], name=f"{name}/correction/Shape")
             self.make_value(output_shape, TensorProto.INT64, [None])
             restored = f"{name}/correction/restore"
-            restored_output = self.make_reshape(
-                restored,
-                [product, output_shape],
-                self.io_dtype,
-                shape,
-            )
-            self.make_node(
-                "Add",
-                [packed_output, restored_output],
-                [output],
-                name=f"{name}/correction/Add",
-            )
+            restored_output = self.make_reshape(restored, [product, output_shape], self.io_dtype, shape)
+            self.make_node("Add", [packed_output, restored_output], [output], name=f"{name}/correction/Add")
             self.make_value(output, self.io_dtype, shape)
 
         return name

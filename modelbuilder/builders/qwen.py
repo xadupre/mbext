@@ -2961,9 +2961,7 @@ class Qwen35TextModel(Model):
         if self.extra_options.get("_mlx_checkpoint"):
             from ..helpers.mlx import MLXCheckpoint
 
-            return MLXCheckpoint(self.extra_options["_mlx_checkpoint"]).load_model(
-                self.config, "text"
-            )
+            return MLXCheckpoint(self.extra_options["_mlx_checkpoint"]).load_model(self.config, "text")
         from transformers import Qwen3_5ForConditionalGeneration
 
         print("Loading Qwen3_5ForConditionalGeneration model...")
@@ -3039,9 +3037,7 @@ class Qwen35VisionEncoderModel(Qwen25OmniVisionEncoderModel):
         if self.extra_options.get("_mlx_checkpoint"):
             from ..helpers.mlx import MLXCheckpoint
 
-            return MLXCheckpoint(self.extra_options["_mlx_checkpoint"]).load_model(
-                self.config, "vision"
-            )
+            return MLXCheckpoint(self.extra_options["_mlx_checkpoint"]).load_model(self.config, "vision")
         from transformers import Qwen3_5ForConditionalGeneration
 
         src = input_path if os.path.isdir(input_path) else self.model_name_or_path
@@ -3098,28 +3094,15 @@ class Qwen35VisionEncoderModel(Qwen25OmniVisionEncoderModel):
         if hasattr(vis.pos_embed, "qweight"):
             embedding = vis.pos_embed
             prefix = "/vision/position/quantized"
-            self.make_initializer(
-                embedding.qweight.reshape(embedding.num_embeddings, -1),
-                f"{prefix}.weight",
-            )
-            self.make_initializer(
-                embedding.scales, f"{prefix}.scales", to=self.io_dtype
-            )
+            self.make_initializer(embedding.qweight.reshape(embedding.num_embeddings, -1), f"{prefix}.weight")
+            self.make_initializer(embedding.scales, f"{prefix}.scales", to=self.io_dtype)
             self.make_initializer(embedding.qzeros, f"{prefix}.zeros")
-            self.make_initializer(
-                np.arange(embedding.num_embeddings, dtype=np.int64),
-                f"{prefix}.indices",
-            )
+            self.make_initializer(np.arange(embedding.num_embeddings, dtype=np.int64), f"{prefix}.indices")
             corrected = torch.any(embedding.mlx_residual)
             output = f"{prefix}/output_0" if corrected else weight_name
             self.make_node(
                 "GatherBlockQuantized",
-                [
-                    f"{prefix}.weight",
-                    f"{prefix}.indices",
-                    f"{prefix}.scales",
-                    f"{prefix}.zeros",
-                ],
+                [f"{prefix}.weight", f"{prefix}.indices", f"{prefix}.scales", f"{prefix}.zeros"],
                 [output],
                 name=prefix,
                 domain="com.microsoft",
@@ -3129,52 +3112,22 @@ class Qwen35VisionEncoderModel(Qwen25OmniVisionEncoderModel):
                 quantize_axis=1,
             )
             if corrected:
-                self.make_initializer(
-                    embedding.mlx_residual,
-                    f"{prefix}.residual",
-                    to=self.io_dtype,
-                )
-                self.make_initializer(
-                    np.array([2], dtype=np.int64), f"{prefix}.axes"
-                )
-                self.make_initializer(
-                    np.array([1, 1, embedding.group_size], dtype=np.int64),
-                    f"{prefix}.repeats",
-                )
+                self.make_initializer(embedding.mlx_residual, f"{prefix}.residual", to=self.io_dtype)
+                self.make_initializer(np.array([2], dtype=np.int64), f"{prefix}.axes")
+                self.make_initializer(np.array([1, 1, embedding.group_size], dtype=np.int64), f"{prefix}.repeats")
                 groups = f"{prefix}/groups"
-                self.make_node(
-                    "Gather",
-                    [f"{prefix}.residual", f"{prefix}.indices"],
-                    [groups],
-                    name=groups,
-                    axis=0,
-                )
+                self.make_node("Gather", [f"{prefix}.residual", f"{prefix}.indices"], [groups], name=groups, axis=0)
                 expanded = f"{prefix}/expanded"
-                self.make_node(
-                    "Unsqueeze",
-                    [groups, f"{prefix}.axes"],
-                    [expanded],
-                    name=expanded,
-                )
+                self.make_node("Unsqueeze", [groups, f"{prefix}.axes"], [expanded], name=expanded)
                 tiled = f"{prefix}/tiled"
-                self.make_node(
-                    "Tile",
-                    [expanded, f"{prefix}.repeats"],
-                    [tiled],
-                    name=tiled,
-                )
+                self.make_node("Tile", [expanded, f"{prefix}.repeats"], [tiled], name=tiled)
                 flattened = self.make_reshape(
                     f"{prefix}/reshape",
                     [tiled, [embedding.num_embeddings, self.vis_hidden_size]],
                     self.io_dtype,
                     [embedding.num_embeddings, self.vis_hidden_size],
                 )
-                self.make_node(
-                    "Add",
-                    [output, flattened],
-                    [weight_name],
-                    name=f"{prefix}/Add",
-                )
+                self.make_node("Add", [output, flattened], [weight_name], name=f"{prefix}/Add")
         else:
             self.make_initializer(vis.pos_embed.weight, weight_name, to=self.io_dtype)
 
@@ -3353,9 +3306,7 @@ class Qwen35EmbeddingModel(EmbeddingModel):
         if self.extra_options.get("_mlx_checkpoint"):
             from ..helpers.mlx import MLXCheckpoint
 
-            return MLXCheckpoint(self.extra_options["_mlx_checkpoint"]).load_model(
-                self.extra_options["_mlx_config"], "embedding"
-            )
+            return MLXCheckpoint(self.extra_options["_mlx_checkpoint"]).load_model(self.extra_options["_mlx_config"], "embedding")
         from transformers import Qwen3_5ForConditionalGeneration
 
         src = input_path if os.path.isdir(input_path) else self.model_name_or_path
