@@ -1274,7 +1274,7 @@ class Model(LocalFunctionsMixin):
         """Release a converted module's tensors after their final alias is used."""
         if not isinstance(module, torch.nn.Module):
             return
-        if self.extra_options.get("_mlx_checkpoint"):
+        if getattr(self, "extra_options", {}).get("_mlx_checkpoint"):
             for child in module.modules():
                 for name in ("qweight", "scales", "qzeros", "mlx_residual"):
                     if hasattr(child, name):

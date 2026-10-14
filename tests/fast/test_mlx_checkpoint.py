@@ -292,16 +292,10 @@ class TestMLXCheckpoint(ExtTestCase):
             self.assertTrue(torch.all(hf_loaded.model.language_model.layers[0].input_layernorm.weight == 0))
             np.testing.assert_array_equal(
                 hf_loaded.model.language_model.layers[1].linear_attn.conv1d.weight.cpu().numpy(),
-                reference_state[
-                    "model.language_model.layers.1.linear_attn.conv1d.weight"
-                ].numpy(),
+                reference_state["model.language_model.layers.1.linear_attn.conv1d.weight"].numpy(),
             )
             loaded_vision = checkpoint.load_model(config, "vision")
-            self.assertTrue(
-                torch.count_nonzero(
-                    loaded_vision.model.visual.pos_embed.mlx_residual
-                )
-            )
+            self.assertTrue(torch.count_nonzero(loaded_vision.model.visual.pos_embed.mlx_residual))
 
             for builder_type, name, builder_config, extra in (
                 (Qwen35VisionEncoderModel, "vision.onnx", config, options),
