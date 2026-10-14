@@ -1267,12 +1267,12 @@ class ExtTestCase(unittest.TestCase):
             og_tokens.append(int(generator.get_next_tokens()[0]))
         return og_tokens
 
-    def run_onnx_light_generation(self, output_dir: str, prompt_ids, max_new_tokens: int = 5) -> Optional[List[int]]:
+    def run_onnx_light_generation(self, output_dir: str, prompt_ids, max_new_tokens: int = 5) -> List[int]:
         """Run greedy generation through onnx-light with onnx-light-cpu kernels.
 
         Multi-graph decoders consuming ``inputs_embeds`` and decoders using
-        higher-rank position IDs are outside the native generator's current
-        single-graph contract and return ``None``.
+        higher-rank position IDs are skipped with their tracked implementation
+        issues. Missing CPU kernels are handled the same way.
         """
         import onnx_light.onnx as onnx
         from onnx_light.onnx.helper import tensor_dtype_to_np_dtype
@@ -1283,10 +1283,30 @@ class ExtTestCase(unittest.TestCase):
         model = onnx.load(os.path.join(output_dir, "model.onnx"), load_external_data=True)
         input_names = {value.name for value in model.graph.input}
         if "input_ids" not in input_names:
-            return None
+            self.skipTest("onnx-light multi-graph generation is tracked by " "https://github.com/xadupre/onnx-light/issues/5264")
         position_inputs = [value for value in model.graph.input if value.name == "position_ids"]
         if position_inputs and len(position_inputs[0].type.tensor_type.shape.dim) != 2:
-            return None
+            self.skipTest("onnx-light M-RoPE generation is tracked by " "https://github.com/xadupre/onnx-light/issues/5265")
+
+        unsupported_ops = {
+            ("com.microsoft", "SkipLayerNormalization"): ("https://github.com/xadupre/onnx-light-cpu/issues/896"),
+            ("com.microsoft", "MoE"): ("https://github.com/xadupre/onnx-light-cpu/issues/897"),
+        }
+        for node in model.graph.node:
+            issue = unsupported_ops.get((node.domain, node.op_type))
+            if issue is not None:
+                self.skipTest(f"onnx-light-cpu does not support {node.domain}::{node.op_type}; " f"tracked by {issue}")
+            if node.domain == "com.microsoft" and node.op_type == "GroupQueryAttention":
+                rotary_interleaved = next((attribute.i for attribute in node.attribute if attribute.name == "rotary_interleaved"), 0)
+                if rotary_interleaved:
+                    self.skipTest(
+                        "onnx-light-cpu interleaved GQA rotary support is tracked by "
+                        "https://github.com/xadupre/onnx-light-cpu/issues/898"
+                    )
+            if node.op_type == "Greater" and any("attn_mask_reformat/attn_mask_subgraph/Gather/output_0" in name for name in node.input):
+                self.skipTest(
+                    "onnx-light Phi-3 LongRoPE generation failure is tracked by " "https://github.com/xadupre/onnx-light/issues/5266"
+                )
 
         output_names = {value.name for value in model.graph.output}
         existing_bindings = {(binding.input_name, binding.output_name) for binding in model.graph.persistent_bindings}
@@ -1383,8 +1403,6 @@ class ExtTestCase(unittest.TestCase):
 
         if getattr(self, "_generation_backend", "genai") == "onnx_light":
             runtime_tokens = self.run_onnx_light_generation(output_dir, prompt_ids, max_new_tokens)
-            if runtime_tokens is None:
-                self.skipTest("onnx-light generate currently requires a single graph " "with input_ids and rank-2 position_ids")
         else:
             runtime_tokens = self.run_genai_generation(output_dir, prompt_ids, max_new_tokens)
 
