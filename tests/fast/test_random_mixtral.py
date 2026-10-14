@@ -242,26 +242,35 @@ class TestRandomMixtral(ExtTestCase):
     @requires_genai()
     @requires_transformers("5")
     def test_mixtral_int4_cuda_genai_generate(self):
-        """Generate tokens with ``onnxruntime-genai`` end to end on CUDA.
+        return self._test_mixtral_int4_cuda_generate(self.run_genai_generation_test, "test_mixtral_int4_cuda_genai")
 
-        Mixtral exports as a CUDA-only QMoE (INT4) model, so the genai
-        greedy-generation loop is gated by ``@requires_cuda()`` (the QMoE
-        kernel) and ``@requires_genai()`` (the runtime).  The synthetic
-        random-weight checkpoint and a tiny word-level tokenizer are written
-        to disk so ``create_model`` produces ``model.onnx`` together with the
-        ``genai_config.json`` / tokenizer files that ``og.Model`` needs.
+    @hide_stdout()
+    @requires_cuda()
+    @requires_transformers("5")
+    def test_mixtral_int4_cuda_onnx_light_generate(self):
+        return self._test_mixtral_int4_cuda_generate(self.run_onnx_light_generation_test, "test_mixtral_int4_cuda_onnx_light")
+
+    def _test_mixtral_int4_cuda_generate(self, generation_test, test_name):
+        """Generate tokens with the runtime selected by the calling test.
+
+        Mixtral exports as a CUDA-only QMoE (INT4) model, so both calling tests
+        are gated by ``@requires_cuda()``. The GenAI test additionally uses
+        ``@requires_genai()``. The synthetic random-weight checkpoint and a
+        tiny word-level tokenizer are written to disk so ``create_model``
+        produces ``model.onnx`` together with its runtime configuration and
+        tokenizer files.
 
         Because the weights are quantized to INT4 (lossy), the generated
         tokens are not compared against a PyTorch reference; the test only
-        asserts that genai runs the QMoE graph and emits the requested number
-        of new tokens without error.
+        asserts that the selected runtime emits the requested number of new
+        tokens without error.
         """
         import torch
         from transformers import AutoModelForCausalLM
 
         from modelbuilder.builder import create_model
 
-        basename = "test_mixtral_int4_cuda_genai"
+        basename = test_name
         model_dir = self.get_model_dir(basename)
         output_dir, cache_dir = self.get_dirs(basename)
 
@@ -290,7 +299,9 @@ class TestRandomMixtral(ExtTestCase):
 
         max_new_tokens = 5
         prompt_ids = torch.tensor([[config.bos_token_id, 3, 4, 5]], dtype=torch.int64)
-        og_tokens = self.run_genai_generation(output_dir, prompt_ids, max_new_tokens)
+        og_tokens = generation_test(
+            output_dir, None, config.vocab_size, config.eos_token_id, max_new_tokens=max_new_tokens, prompt_ids=prompt_ids
+        )
 
         self.assertEqual(og_tokens[: prompt_ids.shape[1]], prompt_ids[0].tolist())
         self.assertLessEqual(len(og_tokens) - prompt_ids.shape[1], max_new_tokens)

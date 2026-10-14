@@ -1246,6 +1246,89 @@ class ExtTestCase(unittest.TestCase):
             og_tokens.append(int(generator.get_next_tokens()[0]))
         return og_tokens
 
+    def run_onnx_light_generation(
+        self, output_dir: str, prompt_ids, max_new_tokens: int = 5, eos_token_id: Optional[int] = None
+    ) -> List[int]:
+        """Run greedy generation through onnx-light with onnx-light-cpu kernels.
+
+        Multi-graph decoders consuming ``inputs_embeds`` and decoders using
+        higher-rank position IDs are skipped with their tracked implementation
+        issues. Missing CPU kernels are handled the same way.
+        """
+        import onnx_light.onnx as onnx
+        from onnx_light.onnx.helper import tensor_dtype_to_np_dtype
+        from onnx_light.onnx.reference import ReferenceEvaluator
+        from onnx_light_cpu import register_kernels_global
+
+        register_kernels_global()
+        model = onnx.load(os.path.join(output_dir, "model.onnx"), load_external_data=True)
+        input_names = {value.name for value in model.graph.input}
+        if "input_ids" not in input_names:
+            self.skipTest("onnx-light multi-graph generation is tracked by " "https://github.com/xadupre/onnx-light/issues/5264")
+        position_inputs = [value for value in model.graph.input if value.name == "position_ids"]
+        if position_inputs and len(position_inputs[0].type.tensor_type.shape.dim) != 2:
+            self.skipTest("onnx-light M-RoPE generation is tracked by " "https://github.com/xadupre/onnx-light/issues/5265")
+
+        unsupported_ops = {
+            ("com.microsoft", "SkipLayerNormalization"): ("https://github.com/xadupre/onnx-light-cpu/issues/896"),
+            ("com.microsoft", "MoE"): ("https://github.com/xadupre/onnx-light-cpu/issues/897"),
+        }
+        for node in model.graph.node:
+            issue = unsupported_ops.get((node.domain, node.op_type))
+            if issue is not None:
+                self.skipTest(f"onnx-light-cpu does not support {node.domain}::{node.op_type}; " f"tracked by {issue}")
+            if node.domain == "com.microsoft" and node.op_type == "GroupQueryAttention":
+                rotary_interleaved = next((attribute.i for attribute in node.attribute if attribute.name == "rotary_interleaved"), 0)
+                if rotary_interleaved:
+                    self.skipTest(
+                        "onnx-light-cpu interleaved GQA rotary support is tracked by "
+                        "https://github.com/xadupre/onnx-light-cpu/issues/898"
+                    )
+            if node.op_type == "Greater" and any("attn_mask_reformat/attn_mask_subgraph/Gather/output_0" in name for name in node.input):
+                self.skipTest(
+                    "onnx-light Phi-3 LongRoPE generation failure is tracked by " "https://github.com/xadupre/onnx-light/issues/5266"
+                )
+
+        output_names = {value.name for value in model.graph.output}
+        existing_bindings = {(binding.input_name, binding.output_name) for binding in model.graph.persistent_bindings}
+        for input_name in sorted(input_names):
+            if not input_name.startswith("past_key_values."):
+                continue
+            output_name = input_name.replace("past_key_values.", "present.", 1)
+            if output_name in output_names and (input_name, output_name) not in existing_bindings:
+                input_uses = sum(input_name in node.input for node in model.graph.node)
+                if input_uses != 1:
+                    self.skipTest(
+                        f"onnx-light persistent state requires one consumer, but {input_name!r} "
+                        f"has {input_uses}; tracked by https://github.com/xadupre/onnx-light/issues/5269"
+                    )
+                binding = model.graph.persistent_bindings.add()
+                binding.input_name = input_name
+                binding.output_name = output_name
+
+        if hasattr(prompt_ids, "detach"):
+            prompt = prompt_ids.detach().cpu().numpy().astype(np.int64)
+        else:
+            prompt = np.asarray(prompt_ids, dtype=np.int64)
+        feeds = {"input_ids": prompt}
+        automatic_inputs = {"input_ids", "attention_mask", "position_ids"}
+        for value in model.graph.input:
+            if value.name in automatic_inputs:
+                continue
+            tensor_type = value.type.tensor_type
+            shape = []
+            for axis, dim in enumerate(tensor_type.shape.dim):
+                if dim.HasField("dim_value"):
+                    shape.append(dim.dim_value)
+                elif axis == 0 or "batch" in dim.dim_param:
+                    shape.append(prompt.shape[0])
+                else:
+                    shape.append(0)
+            feeds[value.name] = np.zeros(tuple(shape), dtype=tensor_dtype_to_np_dtype(tensor_type.elem_type))
+
+        tokens = ReferenceEvaluator(model).generate(feeds, max_new_tokens=max_new_tokens, temperature=0.0, eos_token_id=eos_token_id)
+        return tokens[0].tolist()
+
     def run_genai_generation_test(
         self,
         output_dir: str,
@@ -1255,22 +1338,11 @@ class ExtTestCase(unittest.TestCase):
         max_new_tokens: int = 5,
         pt_tokens: Optional[List[int]] = None,
         prompt_ids=None,
-    ) -> None:
-        """Assert ONNX artefacts exist, then compare PyTorch vs genai generation.
+    ) -> List[int]:
+        """Compare PyTorch generation with ONNX Runtime GenAI generation.
 
-        This helper encapsulates the boilerplate shared by every
-        ``test_*_cpu_genai_generate`` test method:
-
-        1. Assert that ``model.onnx`` and ``genai_config.json`` exist in
-           *output_dir*.
-        2. Build a deterministic prompt tensor (or use the provided
-           *prompt_ids*).
-        3. Run ``model.generate`` with greedy decoding to get the reference
-           token sequence (unless *pt_tokens* is already provided or *model*
-           is ``None``).
-        4. Run :meth:`run_genai_generation` to obtain the genai token sequence.
-        5. Assert that both sequences are equal (skipped when *pt_tokens* is
-           ``None`` after step 3).
+        The runtime is deliberately fixed by this helper. Native generation
+        tests use :meth:`run_onnx_light_generation_test` instead.
 
         :param output_dir: directory produced by
             :func:`modelbuilder.builder.create_model`, containing
@@ -1280,8 +1352,8 @@ class ExtTestCase(unittest.TestCase):
             does not support ``generate``).
         :param vocab_size: vocabulary size used to sample random prompt tokens.
             Ignored when *prompt_ids* is provided.
-        :param eos_token_id: end-of-sequence token id, forwarded as
-            ``pad_token_id`` to ``model.generate``.
+        :param eos_token_id: end-of-sequence token id, used as
+            ``pad_token_id`` by ``model.generate``.
         :param max_new_tokens: maximum number of new tokens to generate.
         :param pt_tokens: pre-computed PyTorch token sequence.  When given,
             the ``model.generate`` call is skipped.  Pass ``None`` together
@@ -1304,10 +1376,42 @@ class ExtTestCase(unittest.TestCase):
                 pt_output = model.generate(prompt_ids, max_new_tokens=max_new_tokens, do_sample=False, pad_token_id=eos_token_id)
             pt_tokens = pt_output[0].tolist()
 
-        og_tokens = self.run_genai_generation(output_dir, prompt_ids, max_new_tokens)
+        runtime_tokens = self.run_genai_generation(output_dir, prompt_ids, max_new_tokens)
 
         if pt_tokens is not None:
-            self.assertEqual(pt_tokens, og_tokens)
+            self.assertEqual(pt_tokens, runtime_tokens)
+        return runtime_tokens
+
+    def run_onnx_light_generation_test(
+        self,
+        output_dir: str,
+        model,
+        vocab_size: int,
+        eos_token_id: int,
+        max_new_tokens: int = 5,
+        pt_tokens: Optional[List[int]] = None,
+        prompt_ids=None,
+    ) -> List[int]:
+        """Compare PyTorch generation with onnx-light native generation."""
+        import torch
+
+        self.assertExists(os.path.join(output_dir, "model.onnx"))
+        self.assertExists(os.path.join(output_dir, "genai_config.json"))
+
+        if prompt_ids is None:
+            torch.manual_seed(0)
+            prompt_ids = torch.randint(3, vocab_size, (1, 4))
+
+        if pt_tokens is None and model is not None:
+            with torch.no_grad():
+                pt_output = model.generate(prompt_ids, max_new_tokens=max_new_tokens, do_sample=False, pad_token_id=eos_token_id)
+            pt_tokens = pt_output[0].tolist()
+
+        runtime_tokens = self.run_onnx_light_generation(output_dir, prompt_ids, max_new_tokens, eos_token_id=eos_token_id)
+
+        if pt_tokens is not None:
+            self.assertEqual(pt_tokens, runtime_tokens)
+        return runtime_tokens
 
     def check_phi3v_genai_config(
         self,
