@@ -1296,6 +1296,12 @@ class ExtTestCase(unittest.TestCase):
                 continue
             output_name = input_name.replace("past_key_values.", "present.", 1)
             if output_name in output_names and (input_name, output_name) not in existing_bindings:
+                input_uses = sum(input_name in node.input for node in model.graph.node)
+                if input_uses != 1:
+                    self.skipTest(
+                        f"onnx-light persistent state requires one consumer, but {input_name!r} "
+                        f"has {input_uses}; tracked by https://github.com/xadupre/onnx-light/issues/5269"
+                    )
                 binding = model.graph.persistent_bindings.add()
                 binding.input_name = input_name
                 binding.output_name = output_name
