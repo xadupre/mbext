@@ -1267,7 +1267,9 @@ class ExtTestCase(unittest.TestCase):
             og_tokens.append(int(generator.get_next_tokens()[0]))
         return og_tokens
 
-    def run_onnx_light_generation(self, output_dir: str, prompt_ids, max_new_tokens: int = 5) -> List[int]:
+    def run_onnx_light_generation(
+        self, output_dir: str, prompt_ids, max_new_tokens: int = 5, eos_token_id: Optional[int] = None
+    ) -> List[int]:
         """Run greedy generation through onnx-light with onnx-light-cpu kernels.
 
         Multi-graph decoders consuming ``inputs_embeds`` and decoders using
@@ -1339,7 +1341,7 @@ class ExtTestCase(unittest.TestCase):
                     shape.append(0)
             feeds[value.name] = np.zeros(tuple(shape), dtype=tensor_dtype_to_np_dtype(tensor_type.elem_type))
 
-        tokens = ReferenceEvaluator(model).generate(feeds, max_new_tokens=max_new_tokens, temperature=0.0)
+        tokens = ReferenceEvaluator(model).generate(feeds, max_new_tokens=max_new_tokens, temperature=0.0, eos_token_id=eos_token_id)
         return tokens[0].tolist()
 
     def run_genai_generation_test(
@@ -1351,7 +1353,7 @@ class ExtTestCase(unittest.TestCase):
         max_new_tokens: int = 5,
         pt_tokens: Optional[List[int]] = None,
         prompt_ids=None,
-    ) -> None:
+    ) -> List[int]:
         """Assert ONNX artefacts exist, then compare PyTorch vs genai generation.
 
         This helper encapsulates the boilerplate shared by every
@@ -1377,8 +1379,8 @@ class ExtTestCase(unittest.TestCase):
             does not support ``generate``).
         :param vocab_size: vocabulary size used to sample random prompt tokens.
             Ignored when *prompt_ids* is provided.
-        :param eos_token_id: end-of-sequence token id, forwarded as
-            ``pad_token_id`` to ``model.generate``.
+        :param eos_token_id: end-of-sequence token id, forwarded to the
+            runtime and used as ``pad_token_id`` by ``model.generate``.
         :param max_new_tokens: maximum number of new tokens to generate.
         :param pt_tokens: pre-computed PyTorch token sequence.  When given,
             the ``model.generate`` call is skipped.  Pass ``None`` together
@@ -1402,12 +1404,13 @@ class ExtTestCase(unittest.TestCase):
             pt_tokens = pt_output[0].tolist()
 
         if getattr(self, "_generation_backend", "genai") == "onnx_light":
-            runtime_tokens = self.run_onnx_light_generation(output_dir, prompt_ids, max_new_tokens)
+            runtime_tokens = self.run_onnx_light_generation(output_dir, prompt_ids, max_new_tokens, eos_token_id=eos_token_id)
         else:
             runtime_tokens = self.run_genai_generation(output_dir, prompt_ids, max_new_tokens)
 
         if pt_tokens is not None:
             self.assertEqual(pt_tokens, runtime_tokens)
+        return runtime_tokens
 
     def check_phi3v_genai_config(
         self,

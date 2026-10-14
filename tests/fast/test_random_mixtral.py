@@ -290,7 +290,9 @@ class TestRandomMixtral(ExtTestCase):
 
         max_new_tokens = 5
         prompt_ids = torch.tensor([[config.bos_token_id, 3, 4, 5]], dtype=torch.int64)
-        og_tokens = self.run_genai_generation(output_dir, prompt_ids, max_new_tokens)
+        og_tokens = self.run_genai_generation_test(
+            output_dir, None, config.vocab_size, config.eos_token_id, max_new_tokens=max_new_tokens, prompt_ids=prompt_ids
+        )
 
         self.assertEqual(og_tokens[: prompt_ids.shape[1]], prompt_ids[0].tolist())
         self.assertLessEqual(len(og_tokens) - prompt_ids.shape[1], max_new_tokens)
