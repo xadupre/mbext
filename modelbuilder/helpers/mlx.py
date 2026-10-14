@@ -143,6 +143,12 @@ class MLXCheckpoint:
                 if scales.shape[1] == 0 or width % scales.shape[1]:
                     raise ValueError(f"MLX group shape mismatch for {stem}.")
                 group_size = width // scales.shape[1]
+                if component in ("text", "embedding") and (
+                    bits != 2 or group_size != 128
+                ):
+                    raise ValueError(
+                        f"MLX text tensors require 2 bits and 128-element groups: {stem}."
+                    )
                 packed, scale, zeros, residual = repack_mlx(
                     weight, scales, biases, bits, group_size
                 )

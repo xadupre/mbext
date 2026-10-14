@@ -8,6 +8,7 @@
 import tempfile
 
 import numpy as np
+import onnx_light.onnx as onnx
 import onnx_light.onnx.helper as helper
 import onnx_light.onnx.numpy_helper as numpy_helper
 import onnxruntime as ort
@@ -140,6 +141,13 @@ class TestMLXCheckpoint(ExtTestCase):
                 ).numpy(),
                 words,
             )
+        with tempfile.TemporaryDirectory() as directory:
+            save_file(
+                {"layer.weight": words, "layer.scales": scales},
+                f"{directory}/model.safetensors",
+            )
+            with self.assertRaisesRegex(ValueError, "Incomplete MLX"):
+                MLXCheckpoint(directory)
 
     def test_tiny_qwen_components(self):
         from transformers import Qwen3_5ForConditionalGeneration
@@ -204,18 +212,12 @@ class TestMLXCheckpoint(ExtTestCase):
                     and isinstance(module, (torch.nn.Linear, torch.nn.Embedding))
                     and width >= group
                     and width % group == 0
-                    and not name.startswith("model.visual.pos_embed.")
                 ):
                     outputs = value.shape[0]
-                    levels = (
-                        np.arange(outputs * width, dtype=np.uint32).reshape(
-                            outputs, width
-                        )
-                        % (1 << bits)
-                    )
-                    words = np.zeros(
-                        (outputs, width * bits // 32), dtype=np.uint32
-                    )
+                    levels = np.arange(outputs * width, dtype=np.uint32).reshape(
+                        outputs, width
+                    ) % (1 << bits)
+                    words = np.zeros((outputs, width * bits // 32), dtype=np.uint32)
                     for index in range(32 // bits):
                         words |= levels[:, index :: 32 // bits] << (index * bits)
                     tensors[name] = words
@@ -226,7 +228,7 @@ class TestMLXCheckpoint(ExtTestCase):
                         (outputs, width // group), -0.0625, dtype=np.float32
                     )
                 else:
-                    tensors[name] = np.zeros(value.shape, dtype=np.float32)
+                    tensors[name] = np.zeros(value.shape, dtype=np.float16)
             save_file(tensors, f"{directory}/model.safetensors")
             options = {
                 "_mlx_checkpoint": directory,
@@ -240,6 +242,10 @@ class TestMLXCheckpoint(ExtTestCase):
             )
             self.assertTrue(
                 loaded.model.language_model.layers[0].mlp.gate_proj.weight.is_meta
+            )
+            self.assertEqual(
+                loaded.model.language_model.layers[0].input_layernorm.weight.dtype,
+                torch.float16,
             )
             for builder_type, name, builder_config, extra in (
                 (Qwen35VisionEncoderModel, "vision.onnx", config, options),
@@ -258,16 +264,42 @@ class TestMLXCheckpoint(ExtTestCase):
                 builder = builder_type(
                     builder_config,
                     TensorProto.FLOAT,
-                    TensorProto.FLOAT if name == "embedding.onnx" else TensorProto.UINT4,
+                    (
+                        TensorProto.FLOAT
+                        if name == "embedding.onnx"
+                        else TensorProto.UINT4
+                    ),
                     "cpu",
                     directory,
                     dict(extra),
                 )
                 builder.make_model(directory)
                 builder.save_model(directory)
+                graph = onnx.load_model(
+                    f"{directory}/{name}", load_external_data=False
+                ).graph
+                quantized_nodes = [
+                    node
+                    for node in graph.node
+                    if node.op_type in ("MatMulNBits", "GatherBlockQuantized")
+                ]
+                self.assertTrue(quantized_nodes)
+                expected_bits = 4 if name == "vision.onnx" else 2
+                self.assertTrue(
+                    any(
+                        attribute.i == expected_bits
+                        for node in quantized_nodes
+                        for attribute in node.attribute
+                        if attribute.name == "bits"
+                    )
+                )
+                if name == "model.onnx":
+                    self.assertNotIn(
+                        "model.layers.0.mlp.gate_proj.MatMul.weight",
+                        {initializer.name for initializer in graph.initializer},
+                    )
                 session = ort.InferenceSession(
-                    f"{directory}/{name}",
-                    providers=["CPUExecutionProvider"],
+                    f"{directory}/{name}", providers=["CPUExecutionProvider"]
                 )
                 self.assertTrue(session.get_outputs())
                 if name == "embedding.onnx":
@@ -281,9 +313,7 @@ class TestMLXCheckpoint(ExtTestCase):
                     self.assertEqual(embeddings.shape, (1, 2, 256))
                     levels = np.arange(256, dtype=np.float32) % 4
                     np.testing.assert_allclose(
-                        embeddings[0, 0],
-                        levels * 0.125 - 0.0625,
-                        atol=1e-6,
+                        embeddings[0, 0], levels * 0.125 - 0.0625, atol=1e-6
                     )
                 elif name == "vision.onnx":
                     images = session.run(
@@ -304,9 +334,15 @@ class TestMLXCheckpoint(ExtTestCase):
                         if entry.name.startswith("past_key_values."):
                             feeds[entry.name] = np.zeros(
                                 [
-                                    1 if size == "batch_size" else
-                                    0 if size == "past_sequence_length" else
-                                    size
+                                    (
+                                        1
+                                        if size == "batch_size"
+                                        else (
+                                            0
+                                            if size == "past_sequence_length"
+                                            else size
+                                        )
+                                    )
                                     for size in entry.shape
                                 ],
                                 dtype=np.float32,

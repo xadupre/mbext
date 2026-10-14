@@ -3095,7 +3095,88 @@ class Qwen35VisionEncoderModel(Qwen25OmniVisionEncoderModel):
     def _make_position_embeddings(self, vis, t, h, w):
         grid = int(vis.num_grid_per_side)
         weight_name = "visual.pos_embed.weight"
-        self.make_initializer(vis.pos_embed.weight, weight_name, to=self.io_dtype)
+        if hasattr(vis.pos_embed, "qweight"):
+            embedding = vis.pos_embed
+            prefix = "/vision/position/quantized"
+            self.make_initializer(
+                embedding.qweight.reshape(embedding.num_embeddings, -1),
+                f"{prefix}.weight",
+            )
+            self.make_initializer(
+                embedding.scales, f"{prefix}.scales", to=self.io_dtype
+            )
+            self.make_initializer(embedding.qzeros, f"{prefix}.zeros")
+            self.make_initializer(
+                np.arange(embedding.num_embeddings, dtype=np.int64),
+                f"{prefix}.indices",
+            )
+            corrected = torch.any(embedding.mlx_residual)
+            output = f"{prefix}/output_0" if corrected else weight_name
+            self.make_node(
+                "GatherBlockQuantized",
+                [
+                    f"{prefix}.weight",
+                    f"{prefix}.indices",
+                    f"{prefix}.scales",
+                    f"{prefix}.zeros",
+                ],
+                [output],
+                name=prefix,
+                domain="com.microsoft",
+                bits=embedding.bits,
+                block_size=embedding.group_size,
+                gather_axis=0,
+                quantize_axis=1,
+            )
+            if corrected:
+                self.make_initializer(
+                    embedding.mlx_residual,
+                    f"{prefix}.residual",
+                    to=self.io_dtype,
+                )
+                self.make_initializer(
+                    np.array([2], dtype=np.int64), f"{prefix}.axes"
+                )
+                self.make_initializer(
+                    np.array([1, 1, embedding.group_size], dtype=np.int64),
+                    f"{prefix}.repeats",
+                )
+                groups = f"{prefix}/groups"
+                self.make_node(
+                    "Gather",
+                    [f"{prefix}.residual", f"{prefix}.indices"],
+                    [groups],
+                    name=groups,
+                    axis=0,
+                )
+                expanded = f"{prefix}/expanded"
+                self.make_node(
+                    "Unsqueeze",
+                    [groups, f"{prefix}.axes"],
+                    [expanded],
+                    name=expanded,
+                )
+                tiled = f"{prefix}/tiled"
+                self.make_node(
+                    "Tile",
+                    [expanded, f"{prefix}.repeats"],
+                    [tiled],
+                    name=tiled,
+                )
+                flattened = self.make_reshape(
+                    f"{prefix}/reshape",
+                    [tiled, [embedding.num_embeddings, self.vis_hidden_size]],
+                    self.io_dtype,
+                    [embedding.num_embeddings, self.vis_hidden_size],
+                )
+                self.make_node(
+                    "Add",
+                    [output, flattened],
+                    [weight_name],
+                    name=f"{prefix}/Add",
+                )
+        else:
+            self.make_initializer(vis.pos_embed.weight, weight_name, to=self.io_dtype)
 
         source = "/vision/position/source/Reshape/output_0"
         self.make_node(
@@ -3245,6 +3326,7 @@ class Qwen35VisionEncoderModel(Qwen25OmniVisionEncoderModel):
             patch.qweight = proj.qweight
             patch.scales = proj.scales
             patch.qzeros = proj.qzeros
+            patch.mlx_residual = proj.mlx_residual
             patch.bits = proj.bits
             patch.group_size = proj.group_size
         else:

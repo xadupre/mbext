@@ -297,6 +297,8 @@ def create_model(model_name, input_path, output_dir, precision, execution_provid
     if extra_options.get("mlx_quantized", False):
         if precision != "int2":
             raise ValueError("MLX checkpoint conversion requires --precision int2.")
+        if extra_options.get("use_qdq", False):
+            raise ValueError("MLX checkpoint conversion requires MatMulNBits, not QDQ.")
         if config.architectures[0] != "Qwen3_5ForConditionalGeneration":
             raise ValueError("MLX checkpoint conversion supports Qwen3_5ForConditionalGeneration only.")
         if not os.path.isdir(input_path):
@@ -823,6 +825,8 @@ def get_args():
                     Used for unit testing purposes.
                 filename = Filename for ONNX model (default is 'model.onnx').
                     For models with multiple components, each component is exported to its own ONNX model.
+                mlx_quantized = Read packed MLX Qwen3.5 safetensors directly and export
+                    2-bit text and source-width vision MatMulNBits without dense BF16 weights.
                 config_only = Generate config and pre/post processing files only.
                     Use this option when you already have your optimized and/or quantized ONNX model.
                 hf_token = false/token: Use this to manage authentication with Hugging Face.
