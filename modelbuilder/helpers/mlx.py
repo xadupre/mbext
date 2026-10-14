@@ -6,6 +6,7 @@
 """Read MLX affine-quantized safetensors without unpacking linear weights."""
 
 import glob
+import inspect
 import os
 
 import numpy as np
@@ -72,10 +73,7 @@ class MLXCheckpoint:
 
     @staticmethod
     def _normalize_name(name):
-        for source, target in (
-            ("language_model.model.", "model.language_model."),
-            ("language_model.lm_head.", "lm_head."),
-        ):
+        for source, target in (("language_model.model.", "model.language_model."), ("language_model.lm_head.", "lm_head.")):
             if name.startswith(source):
                 return target + name[len(source) :]
         return name
@@ -89,7 +87,13 @@ class MLXCheckpoint:
         if component == "vision":
             from transformers.models.qwen3_5.modeling_qwen3_5 import Qwen3_5VisionRotaryEmbedding
 
-            model.model.visual.rotary_pos_emb = Qwen3_5VisionRotaryEmbedding(config.vision_config)
+            constructor_parameters = list(inspect.signature(Qwen3_5VisionRotaryEmbedding).parameters)
+            if constructor_parameters[0] == "dim":
+                head_dim = config.vision_config.hidden_size // config.vision_config.num_heads
+                rotary_pos_emb = Qwen3_5VisionRotaryEmbedding(head_dim // 2)
+            else:
+                rotary_pos_emb = Qwen3_5VisionRotaryEmbedding(config.vision_config)
+            model.model.visual.rotary_pos_emb = rotary_pos_emb
         prefix = {"text": "model.language_model.", "vision": "model.visual.", "embedding": "model.language_model.embed_tokens."}
         wanted = prefix[component] if component else ""
         keys = {}
@@ -99,27 +103,18 @@ class MLXCheckpoint:
                 raise ValueError(f"Duplicate normalized MLX tensor {name!r}.")
             keys[name] = source_name
         for name, source_name in keys.items():
-            if not (
-                name.startswith(wanted)
-                or component == "text" and name.startswith("lm_head.")
-            ):
+            if not (name.startswith(wanted) or component == "text" and name.startswith("lm_head.")):
                 continue
             if name.endswith((".scales", ".biases")):
                 continue
-            if (
-                name.endswith(".weight")
-                and name[:-7] + ".biases" in keys
-                and name[:-7] + ".scales" not in keys
-            ):
+            if name.endswith(".weight") and name[:-7] + ".biases" in keys and name[:-7] + ".scales" not in keys:
                 raise ValueError(f"Missing MLX scales for {name[:-7]}.")
             if name.endswith(".weight") and name[:-7] + ".scales" in keys:
                 stem = name[:-7]
                 if stem + ".biases" not in keys:
                     raise ValueError(f"Missing MLX biases for {stem}.")
                 module = model.get_submodule(stem)
-                if not isinstance(
-                    module, (torch.nn.Linear, torch.nn.Embedding, torch.nn.Conv3d)
-                ):
+                if not isinstance(module, (torch.nn.Linear, torch.nn.Embedding, torch.nn.Conv3d)):
                     raise ValueError(f"Unsupported MLX quantized module {stem}.")
                 weight = self.tensor(source_name).numpy()
                 scales = self.tensor(keys[stem + ".scales"]).float().numpy()
@@ -131,19 +126,10 @@ class MLXCheckpoint:
                 if scales.shape[1] == 0 or width % scales.shape[1]:
                     raise ValueError(f"MLX group shape mismatch for {stem}.")
                 group_size = width // scales.shape[1]
-                if component in ("text", "embedding") and (
-                    bits != 2 or group_size != 128
-                ):
-                    raise ValueError(
-                        f"MLX text tensors require 2 bits and 128-element groups: {stem}."
-                    )
-                packed, scale, zeros, residual = repack_mlx(
-                    weight, scales, biases, bits, group_size
-                )
-                if (
-                    module.weight.shape[0] != weight.shape[0]
-                    or width != weight.shape[1] * (32 // bits)
-                ):
+                if component in ("text", "embedding") and (bits != 2 or group_size != 128):
+                    raise ValueError(f"MLX text tensors require 2 bits and 128-element groups: {stem}.")
+                packed, scale, zeros, residual = repack_mlx(weight, scales, biases, bits, group_size)
+                if module.weight.shape[0] != weight.shape[0] or width != weight.shape[1] * (32 // bits):
                     raise ValueError(f"MLX quantized weight shape mismatch for {stem}.")
                 module.qweight = torch.from_numpy(packed.copy())
                 module.scales = torch.from_numpy(scale.copy())
@@ -155,10 +141,13 @@ class MLXCheckpoint:
                 parent, _, field = name.rpartition(".")
                 module = model.get_submodule(parent)
                 value = self.tensor(source_name)
+                previous = getattr(module, field)
                 if value.dtype == torch.uint32:
                     raise ValueError(f"Missing MLX scales and biases for {name}.")
                 if name.endswith("linear_attn.conv1d.weight"):
-                    value = value.permute(0, 2, 1).contiguous()
+                    transposed = value.permute(0, 2, 1)
+                    if value.shape != previous.shape and transposed.shape == previous.shape:
+                        value = transposed.contiguous()
                 if (
                     source_name.startswith("language_model.model.")
                     and field == "weight"
@@ -173,13 +162,10 @@ class MLXCheckpoint:
                     )
                 ):
                     value = value - 1
-                previous = getattr(module, field)
                 if previous.shape != value.shape:
                     raise ValueError(f"MLX tensor shape mismatch for {name}.")
                 if field in module._parameters:
-                    module._parameters[field] = torch.nn.Parameter(
-                        value, requires_grad=False
-                    )
+                    module._parameters[field] = torch.nn.Parameter(value, requires_grad=False)
                 elif field in module._buffers:
                     module._buffers[field] = value
                 else:
@@ -194,14 +180,8 @@ class MLXCheckpoint:
                 else:
                     head.weight = embedding.weight
         for name, parameter in model.named_parameters():
-            if not (
-                name.startswith(wanted)
-                or component == "text" and name.startswith("lm_head.")
-            ):
+            if not (name.startswith(wanted) or component == "text" and name.startswith("lm_head.")):
                 continue
-            if parameter.is_meta and not (
-                name.endswith(".weight")
-                and hasattr(model.get_submodule(name[:-7]), "qweight")
-            ):
+            if parameter.is_meta and not (name.endswith(".weight") and hasattr(model.get_submodule(name[:-7]), "qweight")):
                 raise ValueError(f"Missing MLX checkpoint tensor {name}.")
         return model
