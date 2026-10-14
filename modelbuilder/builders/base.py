@@ -935,7 +935,11 @@ class Model(LocalFunctionsMixin):
         already_quantized_in_qdq_format = (
             self.quant_type is not None and self.quant_attrs["use_qdq"]
         )  # Skip quantizing `MatMul` in `DequantizeLinear --> Transpose --> MatMul` path
-        quantizing = self.onnx_dtype in {TensorProto.INT4, TensorProto.UINT4} and not already_quantized_in_qdq_format
+        quantizing = (
+            self.onnx_dtype in {TensorProto.INT4, TensorProto.UINT4}
+            and not already_quantized_in_qdq_format
+            and not self.extra_options.get("_mlx_checkpoint")
+        )
 
         # Optionally dump the distribution statistics of the weight tensors that
         # are about to be quantized to a separate file (computed on the float
@@ -1269,6 +1273,12 @@ class Model(LocalFunctionsMixin):
     def _release_source_module(self, module) -> None:
         """Release a converted module's tensors after their final alias is used."""
         if not isinstance(module, torch.nn.Module):
+            return
+        if self.extra_options.get("_mlx_checkpoint"):
+            for child in module.modules():
+                for name in ("qweight", "scales", "qzeros", "mlx_residual"):
+                    if hasattr(child, name):
+                        delattr(child, name)
             return
         module_parameters = {id(parameter): parameter for _, parameter in module.named_parameters(recurse=True, remove_duplicate=False)}
         parameter_uses = Counter(id(parameter) for _, parameter in module.named_parameters(recurse=True, remove_duplicate=False))
@@ -1623,7 +1633,7 @@ class Model(LocalFunctionsMixin):
             # print(f"Saving as {self.io_dtype} on-the-fly and quantizing to {self.onnx_dtype} at the end.")
             return self.make_matmul_float(matmul, basename, root_input, **kwargs)
 
-        name = f"{basename}NBits"
+        name = basename if self.extra_options.get("_mlx_checkpoint") else f"{basename}NBits"
 
         # Input weights are quantized, save quantized MatMul weights for onnx model
         weight = name[1:].replace("/", ".") + ".qweight"
@@ -1645,10 +1655,12 @@ class Model(LocalFunctionsMixin):
 
         output = "logits" if kwargs.get("logits", False) else f"{name}/output_0"
         seq_dim = kwargs.get("seq_dim", "sequence_length")
+        correction = getattr(matmul, "mlx_residual", None)
+        packed_output = f"{name}/quantized_output_0" if correction is not None and torch.any(correction) else output
         self.make_node(
             "MatMulNBits",
             inputs=inputs,
-            outputs=[output],
+            outputs=[packed_output],
             name=name,
             domain="com.microsoft",
             accuracy_level=self.quant_attrs["int4"]["accuracy_level"],
@@ -1657,7 +1669,57 @@ class Model(LocalFunctionsMixin):
             K=matmul.in_features,
             N=matmul.out_features,
         )
-        self.make_value(output, self.io_dtype, shape=["batch_size", seq_dim, matmul.out_features])
+        shape = ["batch_size", seq_dim, matmul.out_features]
+        self.make_value(packed_output, self.io_dtype, shape=shape)
+        if packed_output != output:
+            blocks = matmul.in_features // matmul.group_size
+            residual_name = f"{weight}.residual"
+            self.make_initializer(correction.T, residual_name, to=self.io_dtype)
+            grouped = f"{name}/correction/Reshape"
+            grouped_output = self.make_reshape(
+                grouped,
+                [root_input, [-1, blocks, matmul.group_size]],
+                self.io_dtype,
+                [None, blocks, matmul.group_size],
+            )
+            axes_name = f"{weight}.reduction_axes"
+            self.make_initializer(np.array([2], dtype=np.int64), axes_name)
+            reduced = f"{name}/correction/ReduceSum/output_0"
+            self.make_node(
+                "ReduceSum",
+                [grouped_output, axes_name],
+                [reduced],
+                name=f"{name}/correction/ReduceSum",
+                keepdims=0,
+            )
+            self.make_value(reduced, self.io_dtype, [None, blocks])
+            product = f"{name}/correction/MatMul/output_0"
+            self.make_node(
+                "MatMul",
+                [reduced, residual_name],
+                [product],
+                name=f"{name}/correction/MatMul",
+            )
+            self.make_value(product, self.io_dtype, [None, matmul.out_features])
+            output_shape = f"{name}/correction/Shape/output_0"
+            self.make_node(
+                "Shape", [packed_output], [output_shape], name=f"{name}/correction/Shape"
+            )
+            self.make_value(output_shape, TensorProto.INT64, [None])
+            restored = f"{name}/correction/restore"
+            restored_output = self.make_reshape(
+                restored,
+                [product, output_shape],
+                self.io_dtype,
+                shape,
+            )
+            self.make_node(
+                "Add",
+                [packed_output, restored_output],
+                [output],
+                name=f"{name}/correction/Add",
+            )
+            self.make_value(output, self.io_dtype, shape)
 
         return name
 
