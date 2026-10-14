@@ -1589,9 +1589,118 @@ class Model(LocalFunctionsMixin):
         if hasattr(matmul, "base_layer"):
             # For LoRA `MatMul`
             return self.make_matmul_lora(matmul, basename, root_input, **kwargs)
+        elif getattr(matmul, "quant_type", "none") != "none":
+            return self.make_matmul_quantized(matmul, basename, root_input, **kwargs)
         else:
             # For regular `MatMul`
             return self.make_matmul_op(matmul, basename, root_input, **kwargs)
+
+    def make_matmul_quantized(self, matmul, basename, root_input, **kwargs):
+        if matmul.quant_type == "nvfp4":
+            global_scale = float(matmul.weight_scale_2.float().item())
+            return self.make_matmul_block_quantized_nvfp4_weight(
+                basename, root_input, matmul.weight, matmul.weight_scale, global_scale, **kwargs
+            )
+        if matmul.quant_type == "fp8":
+            input_scale_tensor = getattr(matmul, "input_scale", None)
+            input_scale = float(input_scale_tensor.float().item()) if input_scale_tensor is not None else None
+            return self.make_matmul_block_quantized_fp8_weight(
+                basename, root_input, matmul.weight, matmul.weight_scale, input_scale, **kwargs
+            )
+        raise NotImplementedError(f"The {matmul.quant_type} quantized MatMul format is not currently supported.")
+
+    @staticmethod
+    def prepare_matmul_block_quantized_scales(weight_scale, out_features, block_count):
+        scale = weight_scale.float()
+        if scale.numel() == 1:
+            return scale.reshape(1, 1).expand(out_features, block_count).contiguous()
+        if scale.ndim >= 2 and scale.shape[0] == out_features:
+            scale = scale.reshape(out_features, -1)
+            if scale.shape[1] == block_count:
+                return scale.contiguous()
+        if scale.ndim >= 2 and scale.shape[0] == block_count:
+            scale = scale.reshape(block_count, -1)
+            if scale.shape[1] == out_features:
+                return scale.transpose(0, 1).contiguous()
+        if scale.ndim == 1 and scale.numel() == out_features * block_count:
+            return scale.view(out_features, block_count).contiguous()
+        return None
+
+    def make_fp8_activation_scale_initializer(self, scale):
+        cache = getattr(self, "_fp8_activation_scale_cache", None)
+        if cache is None:
+            cache = self._fp8_activation_scale_cache = {}
+        if scale in cache:
+            return cache[scale]
+
+        name = f"model.fp8_input_scale.{len(cache)}"
+        self.make_initializer(torch.tensor([scale], dtype=torch.float32), name, to=TensorProto.FLOAT)
+        cache[scale] = name
+        return name
+
+    def make_matmul_block_quantized_fp8_weight(self, basename, root_input, weight, weight_scale, input_scale=None, **kwargs):
+        if weight.dtype != torch.float8_e4m3fn:
+            raise ValueError(f"FP8 weight for '{basename}' must be float8_e4m3fn, " f"got {weight.dtype}.")
+        if weight.ndim != 2:
+            raise ValueError(f"FP8 weight for '{basename}' must have shape [N, K], " f"got {tuple(weight.shape)}.")
+
+        out_features = int(weight.shape[0])
+        block_size = int(weight.shape[1])
+        scale = self.prepare_matmul_block_quantized_scales(weight_scale, out_features, 1)
+        if scale is None:
+            raise ValueError(
+                f"FP8 weight scale for '{basename}' has shape "
+                f"{tuple(weight_scale.shape)}, expected a scalar or "
+                f"[{out_features}, 1]."
+            )
+
+        prefix = basename[1:].replace("/", ".")
+        weight_name = f"{prefix}.fp8_weight"
+        self.make_initializer(weight.contiguous(), weight_name)
+        scale_name = f"{prefix}.fp8_weight_scale"
+        self.make_initializer(scale, scale_name, to=TensorProto.FLOAT)
+
+        inputs = [root_input, weight_name, scale_name]
+        if input_scale is not None:
+            inputs.append(self.make_fp8_activation_scale_initializer(input_scale))
+
+        output = "logits" if kwargs.get("logits", False) else f"{basename}/output_0"
+        self.make_node(
+            "MatMulBlockQuantizedFp8Weight", inputs=inputs, outputs=[output], name=basename, domain="com.microsoft", block_size=block_size
+        )
+        seq_dim = kwargs.get("seq_dim", "sequence_length")
+        self.make_value(output, self.io_dtype, shape=["batch_size", seq_dim, out_features])
+        return basename
+
+    def make_matmul_block_quantized_nvfp4_weight(self, basename, root_input, weight, weight_scale, global_scale, **kwargs):
+        if weight.dtype != torch.uint8:
+            raise ValueError(f"NVFP4 weight for '{basename}' must contain packed uint8 codes, " f"got {weight.dtype}.")
+        if weight.ndim != 2 or weight.shape[1] % 8 != 0:
+            raise ValueError(
+                f"NVFP4 weight for '{basename}' must have shape [N, K/2] " f"with K divisible by 16, got {tuple(weight.shape)}."
+            )
+
+        out_features = int(weight.shape[0])
+        prefix = basename[1:].replace("/", ".")
+        weight_name = f"{prefix}.nvfp4_weight"
+        self.make_initializer(weight, weight_name)
+        scale_name = f"{prefix}.nvfp4_weight_scale"
+        self.make_initializer(weight_scale, scale_name)
+        global_scale_name = f"{prefix}.nvfp4_weight_scale_2"
+        self.make_initializer(torch.tensor([global_scale], dtype=torch.float32), global_scale_name)
+
+        output = "logits" if kwargs.get("logits", False) else f"{basename}/output_0"
+        self.make_node(
+            "MatMulBlockQuantizedFp4Weight",
+            inputs=[root_input, weight_name, scale_name, global_scale_name],
+            outputs=[output],
+            name=basename,
+            domain="com.microsoft",
+            block_size=16,
+        )
+        seq_dim = kwargs.get("seq_dim", "sequence_length")
+        self.make_value(output, self.io_dtype, shape=["batch_size", seq_dim, out_features])
+        return basename
 
     def make_matmul_op(self, matmul, basename, root_input, **kwargs):
         if self.onnx_dtype in {TensorProto.FLOAT16, TensorProto.BFLOAT16, TensorProto.FLOAT}:
@@ -4422,7 +4531,7 @@ class Model(LocalFunctionsMixin):
             try:
                 from quantized_model import QuantModel
             except ImportError:
-                from onnxruntime_genai.models.quantized_model import QuantModel
+                from onnxruntime_genai.models.loaders.quant_model import QuantModel
             q_size = self.num_attn_heads * self.head_size
             kv_size = self.num_kv_heads * self.head_size
             model = QuantModel.from_pretrained(

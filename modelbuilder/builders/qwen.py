@@ -2953,6 +2953,9 @@ class Qwen35TextModel(Model):
         return gated_output
 
     def load_weights(self, input_path):
+        if self.quant_type is not None:
+            return super().load_weights(input_path)
+
         # Qwen3_5ForConditionalGeneration is not registered with AutoModelForCausalLM.
         # Load the full multimodal model directly; make_model will find the
         # embedded language-model sub-modules (embed_tokens, Qwen3_5TextModel
