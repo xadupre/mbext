@@ -37,6 +37,7 @@ jobs:
           - transformers-version: "5.19.0"
             onnxruntime-genai-version: "0.17.1"
             tokenizers-version: "0.23.3"
+            tokenizers-extra: ",dev-latest-tokenizers"
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
@@ -48,7 +49,7 @@ jobs:
         run: pip install "torch==${{ matrix.torch.version }}+cpu" torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
 
       - name: Install dependencies
-        run: pip install -e ".[dev]" "transformers==${{ matrix.transformers-version }}" "tokenizers==${{ matrix.tokenizers-version }}" "onnxruntime-genai==${{ matrix.onnxruntime-genai-version }}"
+        run: pip install -e ".[dev${{ matrix.tokenizers-extra }}]" "transformers==${{ matrix.transformers-version }}" "tokenizers==${{ matrix.tokenizers-version }}" "onnxruntime-genai==${{ matrix.onnxruntime-genai-version }}"
 
       - name: Use huggingface-hub 2 with latest Transformers
         if: matrix.transformers-version == '5.19.0'
