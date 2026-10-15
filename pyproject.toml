@@ -28,7 +28,7 @@ dependencies = [
     "onnx-light @ https://github.com/xadupre/onnx-light/releases/download/0.1.31/onnx_light-0.1.31-cp312-cp312-win_arm64.whl ; python_version == '3.12' and sys_platform == 'win32' and platform_machine == 'ARM64'",
     "onnx-light @ https://github.com/xadupre/onnx-light/releases/download/0.1.31/onnx_light-0.1.31-cp313-cp313-win_arm64.whl ; python_version == '3.13' and sys_platform == 'win32' and platform_machine == 'ARM64'",
     "onnx-light @ https://github.com/xadupre/onnx-light/releases/download/0.1.31/onnx_light-0.1.31-cp314-cp314-win_arm64.whl ; python_version == '3.14' and sys_platform == 'win32' and platform_machine == 'ARM64'",
-    "scipy>=1.18.0",
+    "scipy>=1.18.1",
 ]
 
 [project.optional-dependencies]
