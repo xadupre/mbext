@@ -1983,6 +1983,7 @@ class Qwen35TextModel(Model):
     """
 
     def __init__(self, config, io_dtype, onnx_dtype, ep, cache_dir, extra_options):
+        self.config = config
         # Qwen3.5 is a VL model. The decoder takes inputs_embeds.
         # When exclude_embeds is explicitly set to False, build as a standalone LLM.
         self.is_text_only = extra_options.get("exclude_embeds", None) is False
@@ -2966,6 +2967,10 @@ class Qwen35TextModel(Model):
         # Load the full multimodal model directly; make_model will find the
         # embedded language-model sub-modules (embed_tokens, Qwen3_5TextModel
         # decoder layers, norm, lm_head) via standard module iteration.
+        if self.extra_options.get("_mlx_checkpoint"):
+            from ..helpers.mlx import MLXCheckpoint
+
+            return MLXCheckpoint(self.extra_options["_mlx_checkpoint"]).load_model(self.config, "text")
         from transformers import Qwen3_5ForConditionalGeneration
 
         print("Loading Qwen3_5ForConditionalGeneration model...")
@@ -3038,6 +3043,10 @@ class Qwen35VisionEncoderModel(Qwen25OmniVisionEncoderModel):
         self.graph.name = "qwen35_vision_encoder"
 
     def load_hf_model(self, input_path):
+        if self.extra_options.get("_mlx_checkpoint"):
+            from ..helpers.mlx import MLXCheckpoint
+
+            return MLXCheckpoint(self.extra_options["_mlx_checkpoint"]).load_model(self.config, "vision")
         from transformers import Qwen3_5ForConditionalGeneration
 
         src = input_path if os.path.isdir(input_path) else self.model_name_or_path
@@ -3091,7 +3100,45 @@ class Qwen35VisionEncoderModel(Qwen25OmniVisionEncoderModel):
     def _make_position_embeddings(self, vis, t, h, w):
         grid = int(vis.num_grid_per_side)
         weight_name = "visual.pos_embed.weight"
-        self.make_initializer(vis.pos_embed.weight, weight_name, to=self.io_dtype)
+        if hasattr(vis.pos_embed, "qweight"):
+            embedding = vis.pos_embed
+            prefix = "/vision/position/quantized"
+            self.make_initializer(embedding.qweight.reshape(embedding.num_embeddings, -1), f"{prefix}.weight")
+            self.make_initializer(embedding.scales, f"{prefix}.scales", to=self.io_dtype)
+            self.make_initializer(embedding.qzeros, f"{prefix}.zeros")
+            self.make_initializer(np.arange(embedding.num_embeddings, dtype=np.int64), f"{prefix}.indices")
+            corrected = torch.any(embedding.mlx_residual)
+            output = f"{prefix}/output_0" if corrected else weight_name
+            self.make_node(
+                "GatherBlockQuantized",
+                [f"{prefix}.weight", f"{prefix}.indices", f"{prefix}.scales", f"{prefix}.zeros"],
+                [output],
+                name=prefix,
+                domain="com.microsoft",
+                bits=embedding.bits,
+                block_size=embedding.group_size,
+                gather_axis=0,
+                quantize_axis=1,
+            )
+            if corrected:
+                self.make_initializer(embedding.mlx_residual, f"{prefix}.residual", to=self.io_dtype)
+                self.make_initializer(np.array([2], dtype=np.int64), f"{prefix}.axes")
+                self.make_initializer(np.array([1, 1, embedding.group_size], dtype=np.int64), f"{prefix}.repeats")
+                groups = f"{prefix}/groups"
+                self.make_node("Gather", [f"{prefix}.residual", f"{prefix}.indices"], [groups], name=groups, axis=0)
+                expanded = f"{prefix}/expanded"
+                self.make_node("Unsqueeze", [groups, f"{prefix}.axes"], [expanded], name=expanded)
+                tiled = f"{prefix}/tiled"
+                self.make_node("Tile", [expanded, f"{prefix}.repeats"], [tiled], name=tiled)
+                flattened = self.make_reshape(
+                    f"{prefix}/reshape",
+                    [tiled, [embedding.num_embeddings, self.vis_hidden_size]],
+                    self.io_dtype,
+                    [embedding.num_embeddings, self.vis_hidden_size],
+                )
+                self.make_node("Add", [output, flattened], [weight_name], name=f"{prefix}/Add")
+        else:
+            self.make_initializer(vis.pos_embed.weight, weight_name, to=self.io_dtype)
 
         source = "/vision/position/source/Reshape/output_0"
         self.make_node(
@@ -3236,9 +3283,18 @@ class Qwen35VisionEncoderModel(Qwen25OmniVisionEncoderModel):
             self.make_cast("/vision/pixel_values/Cast", pixel_values, self.io_dtype, [None, self.in_feat_dim])
             pixel_values = "/vision/pixel_values/Cast/output_0"
         patch = torch.nn.Linear(self.in_feat_dim, self.vis_hidden_size, bias=True)
-        patch.weight = torch.nn.Parameter(
-            vis.patch_embed.proj.weight.detach().reshape(self.vis_hidden_size, self.in_feat_dim), requires_grad=False
-        )
+        if hasattr(vis.patch_embed.proj, "qweight"):
+            proj = vis.patch_embed.proj
+            patch.qweight = proj.qweight
+            patch.scales = proj.scales
+            patch.qzeros = proj.qzeros
+            patch.mlx_residual = proj.mlx_residual
+            patch.bits = proj.bits
+            patch.group_size = proj.group_size
+        else:
+            patch.weight = torch.nn.Parameter(
+                vis.patch_embed.proj.weight.detach().reshape(self.vis_hidden_size, self.in_feat_dim), requires_grad=False
+            )
         patch.bias = torch.nn.Parameter(vis.patch_embed.proj.bias.detach(), requires_grad=False)
         hidden = self.make_vis_proj(patch, "/vision/patch_embed/MatMul", pixel_values)
         self.layernorm_attrs["root_input"] = self.make_add(
@@ -3256,6 +3312,10 @@ class Qwen35EmbeddingModel(EmbeddingModel):
     """Embedding mixer for Qwen3.5/Qwen3.8 image features."""
 
     def load_hf_model(self, input_path):
+        if self.extra_options.get("_mlx_checkpoint"):
+            from ..helpers.mlx import MLXCheckpoint
+
+            return MLXCheckpoint(self.extra_options["_mlx_checkpoint"]).load_model(self.extra_options["_mlx_config"], "embedding")
         from transformers import Qwen3_5ForConditionalGeneration
 
         src = input_path if os.path.isdir(input_path) else self.model_name_or_path
@@ -3263,6 +3323,8 @@ class Qwen35EmbeddingModel(EmbeddingModel):
         return Qwen3_5ForConditionalGeneration.from_pretrained(src, token=self.hf_token, trust_remote_code=self.hf_remote, **extra_kwargs)
 
     def get_embed_weight(self, hf_model):
+        if self.extra_options.get("_mlx_checkpoint"):
+            return hf_model.model.language_model.embed_tokens
         return hf_model.model.language_model.embed_tokens.weight.detach().float().numpy()
 
 
@@ -3281,6 +3343,8 @@ class Qwen35ConditionalGenerationModel(Model):
         self.vision_encoder = Qwen35VisionEncoderModel(config, io_dtype, onnx_dtype, ep, cache_dir, vision_options)
         embedding_options = dict(extra_options)
         embedding_options["image_token_id"] = self.image_token_id
+        if extra_options.get("_mlx_checkpoint"):
+            embedding_options["_mlx_config"] = config
         embedding_config = copy.deepcopy(config.text_config)
         embedding_config.architectures = config.architectures
         self.embedding_model = Qwen35EmbeddingModel(embedding_config, io_dtype, ir.DataType.FLOAT, ep, cache_dir, embedding_options)

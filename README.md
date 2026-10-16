@@ -48,6 +48,25 @@ python -m modelbuilder.builder \
     -c cache_dir
 ```
 
+To convert an MLX Qwen3.5 multimodal checkpoint directly, use:
+
+```bash
+python -m modelbuilder.builder \
+    -m prism-ml/Ternary-Bonsai-27B-mlx-2bit \
+    -o bonsai-onnx \
+    -p int2 -e cpu -c cache_dir \
+    --extra_options mlx_quantized=true
+```
+
+This reads packed safetensors tensors directly rather than expanding the
+language model into BF16. Quantized vision matrices retain their checkpoint
+bit width (including 4-bit matrices); floating-point state tensors are loaded
+separately. The package contains text, vision, embedding and processor files.
+CPU inference requires an ONNX Runtime GenAI release with Qwen3.5 hybrid-state
+support (0.15.2 is too old). CUDA execution and optimized INT2 kernel
+performance depend on the installed ONNX Runtime build and are not guaranteed
+to match CPU behavior.
+
 The arguments are:
 
 - ``-m/--model_name``: model name on Hugging Face (use ``-i/--input`` instead for a

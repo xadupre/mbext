@@ -48,6 +48,7 @@ def check_extra_options(kv_pairs, execution_provider):
         "use_3d_position_ids",
         "int4_quantize_moe_router",
         "quant_weight_stats",
+        "mlx_quantized",
     ]
     for key in bools:
         if key in kv_pairs:
@@ -293,6 +294,22 @@ def create_model(model_name, input_path, output_dir, precision, execution_provid
         extra_kwargs = {} if os.path.isdir(input_path) else {"cache_dir": cache_dir}
 
     config = AutoConfig.from_pretrained(config_source, token=hf_token, trust_remote_code=hf_remote, **extra_kwargs)
+    if extra_options.get("mlx_quantized", False):
+        if precision != "int2":
+            raise ValueError("MLX checkpoint conversion requires --precision int2.")
+        if extra_options.get("use_qdq", False):
+            raise ValueError("MLX checkpoint conversion requires MatMulNBits, not QDQ.")
+        if config.architectures[0] != "Qwen3_5ForConditionalGeneration":
+            raise ValueError("MLX checkpoint conversion supports Qwen3_5ForConditionalGeneration only.")
+        if not os.path.isdir(input_path):
+            from huggingface_hub import snapshot_download
+
+            input_path = snapshot_download(repo_id=model_name, cache_dir=cache_dir, token=hf_token)
+        extra_options["_mlx_checkpoint"] = os.path.abspath(input_path)
+        extra_options["disable_qkv_fusion"] = True
+        extra_options["multimodal"] = True
+        if hasattr(config, "quantization_config"):
+            delattr(config, "quantization_config")
     if "adapter_path" in extra_options:
         from peft import PeftConfig
 
@@ -808,6 +825,8 @@ def get_args():
                     Used for unit testing purposes.
                 filename = Filename for ONNX model (default is 'model.onnx').
                     For models with multiple components, each component is exported to its own ONNX model.
+                mlx_quantized = Read packed MLX Qwen3.5 safetensors directly and export
+                    2-bit text and source-width vision MatMulNBits without dense BF16 weights.
                 config_only = Generate config and pre/post processing files only.
                     Use this option when you already have your optimized and/or quantized ONNX model.
                 hf_token = false/token: Use this to manage authentication with Hugging Face.

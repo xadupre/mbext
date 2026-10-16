@@ -6,6 +6,7 @@
 
 import numpy as np
 import onnx_light.onnx.numpy_helper as numpy_helper
+import torch
 from onnx_light.onnx import TensorProto
 
 from ..helpers.quantization import quantize_ternary_groupwise
@@ -55,7 +56,17 @@ class EmbeddingModel(Model):
         embed_weight = self.get_embed_weight(hf_model)
 
         ternary = self.quant_attrs["int4"]["algo_config"]["algorithm"] == "ternary"
-        if ternary:
+        mlx = self.extra_options.get("_mlx_checkpoint")
+        if mlx:
+            if not hasattr(embed_weight, "qweight") or embed_weight.bits != 2:
+                raise ValueError("MLX embedding must be packed in 2 bits.")
+            bits = embed_weight.bits
+            block_size = embed_weight.group_size
+            self.make_initializer(embed_weight.qweight.reshape(embed_weight.num_embeddings, -1), name="embed_tokens_weight")
+            self.make_initializer(embed_weight.scales, name="embed_tokens_scales", to=self.io_dtype)
+            self.make_initializer(embed_weight.qzeros, name="embed_tokens_zero_points")
+            correction = embed_weight.mlx_residual
+        elif ternary:
             bits = self.quant_attrs["int4"]["bits"]
             block_size = self.quant_attrs["int4"]["qdq_block_size"]
             if bits != 2:
@@ -89,11 +100,12 @@ class EmbeddingModel(Model):
         self.make_graph_input("image_features", self.io_dtype, [None, self.hidden_size])
 
         # 1. Embed all tokens: input_ids [1, T] -> text_embeds [1, T, H].
-        if ternary:
+        quantized_output = "text_embeds_quantized" if mlx and torch.any(correction) else "text_embeds"
+        if ternary or mlx:
             self.make_node(
                 "GatherBlockQuantized",
                 inputs=["embed_tokens_weight", "input_ids", "embed_tokens_scales", "embed_tokens_zero_points"],
-                outputs=["text_embeds"],
+                outputs=[quantized_output],
                 name="/embed/GatherBlockQuantized",
                 domain="com.microsoft",
                 bits=bits,
@@ -103,6 +115,23 @@ class EmbeddingModel(Model):
             )
         else:
             self.make_node("Gather", inputs=["embed_tokens_weight", "input_ids"], outputs=["text_embeds"], name="/embed/Gather", axis=0)
+        if quantized_output != "text_embeds":
+            self.make_initializer(correction, "embed_tokens_residual", to=self.io_dtype)
+            self.make_initializer(np.array([3], dtype=np.int64), "embed_residual_axes")
+            self.make_initializer(np.array([1, 1, 1, block_size], dtype=np.int64), "embed_residual_repeats")
+            self.make_node(
+                "Gather", ["embed_tokens_residual", "input_ids"], ["embed_residual_groups"], name="/embed/residual/Gather", axis=0
+            )
+            self.make_node(
+                "Unsqueeze", ["embed_residual_groups", "embed_residual_axes"], ["embed_residual_expanded"], name="/embed/residual/Unsqueeze"
+            )
+            self.make_node(
+                "Tile", ["embed_residual_expanded", "embed_residual_repeats"], ["embed_residual_tiled"], name="/embed/residual/Tile"
+            )
+            expanded = self.make_reshape(
+                "/embed/residual/Reshape", ["embed_residual_tiled", [0, 0, -1]], self.io_dtype, [1, None, self.hidden_size]
+            )
+            self.make_node("Add", [quantized_output, expanded], ["text_embeds"], name="/embed/residual/Add")
         # 2. Squeeze batch dim for easier indexing: [1, T, H] → [T, H] (still fp32)
         self.make_node("Squeeze", inputs=["text_embeds", "squeeze_batch_axes"], outputs=["text_2d_fp32"], name="/embed/Squeeze_3d")
         # 3. Cast text embeddings from float32 to io_dtype so that ScatterND
