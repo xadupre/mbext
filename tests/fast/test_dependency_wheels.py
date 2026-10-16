@@ -19,8 +19,8 @@ class TestDependencyWheels(ExtTestCase):
             project = tomllib.load(f)["project"]
 
         for requirements, package, version in (
-            (project["dependencies"], "onnx-light", "0.1.31"),
-            (project["optional-dependencies"]["dev"], "onnx-light-cpu", "0.1.21"),
+            (project["dependencies"], "onnx-light", "0.1.32"),
+            (project["optional-dependencies"]["dev"], "onnx-light-cpu", "0.1.22"),
         ):
             wheels = [requirement for requirement in requirements if requirement.startswith(f"{package} @ ")]
             self.assertTrue(wheels)
@@ -30,4 +30,4 @@ class TestDependencyWheels(ExtTestCase):
 
     def test_ci_onnx_light_cpu_wheel(self):
         workflow = (ROOT / ".github/workflows/fast_tests.yml").read_text(encoding="utf-8")
-        self.assertIn("onnx-light-cpu/releases/download/0.1.21/onnx_light_cpu-0.1.21-", workflow)
+        self.assertIn("onnx-light-cpu/releases/download/0.1.22/onnx_light_cpu-0.1.22-", workflow)
