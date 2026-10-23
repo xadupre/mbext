@@ -13,6 +13,7 @@ import heapq
 import json
 import os
 import struct
+import sys
 import tempfile
 from collections import Counter
 from collections.abc import Mapping, Sequence
@@ -57,6 +58,38 @@ _SAFETENSORS_ONNX_DTYPES = {
     "U32": TensorProto.UINT32,
     "U64": TensorProto.UINT64,
 }
+
+_DLPACK_TORCH_DTYPES = {
+    torch.bool,
+    torch.complex64,
+    torch.complex128,
+    torch.float16,
+    torch.float32,
+    torch.float64,
+    torch.int8,
+    torch.int16,
+    torch.int32,
+    torch.int64,
+    torch.uint8,
+}
+_BORROWED_NUMPY_DTYPES = {
+    "bool",
+    "complex64",
+    "complex128",
+    "float16",
+    "float32",
+    "float64",
+    "int8",
+    "int16",
+    "int32",
+    "int64",
+    "uint8",
+    "uint16",
+    "uint32",
+    "uint64",
+}
+# Matches the native limit for value-as-shape inference.
+_MAX_SHAPE_CONSTANT_ELEMENTS = 16
 
 
 def parse_hf_token(hf_token):
@@ -1130,6 +1163,10 @@ class Model(LocalFunctionsMixin):
         return True
 
     def make_initializer(self, tensor: torch.Tensor | np.ndarray, /, name: str, to: int | None = None):
+        """Borrow eligible CPU weights; copy small shape constants for native inference.
+
+        Callers must not mutate borrowed weights after insertion.
+        """
         if name in self._initializer_names:
             return
         if self.reuse_downloaded_weights and isinstance(tensor, torch.Tensor) and self._make_external_initializer(tensor, name, to):
@@ -1138,12 +1175,50 @@ class Model(LocalFunctionsMixin):
             if isinstance(tensor, torch.Tensor):
                 tensor = tensor.to(to_torch_dtype(to))
             else:
-                tensor = np.asarray(tensor).astype(onnx_helper.tensor_dtype_to_np_dtype(int(to)))
+                tensor = np.asarray(tensor).astype(onnx_helper.tensor_dtype_to_np_dtype(int(to)), copy=False)
+        if isinstance(tensor, torch.Tensor) and (tensor.layout != torch.strided or tensor.device.type == "meta"):
+            raise ValueError(f"Initializer {name!r} requires a dense tensor with accessible storage.")
+        if (
+            isinstance(tensor, torch.Tensor)
+            and sys.byteorder == "little"
+            and tensor.device.type == "cpu"
+            and tensor.is_contiguous()
+            and not tensor.is_conj()
+            and not tensor.is_neg()
+            and tensor.dtype in _DLPACK_TORCH_DTYPES
+            and (
+                tensor.ndim > 1
+                or tensor.numel() > _MAX_SHAPE_CONSTANT_ELEMENTS
+                or tensor.dtype.is_floating_point
+                or tensor.dtype.is_complex
+            )
+        ):
+            tensor_proto = TensorProto.from_dlpack(tensor.detach(), name=name)
+            dtype, shape = tensor_proto.data_type, tuple(tensor_proto.dims)
+            self.graph.make_initializer_move(tensor_proto)
+            self._initializer_names.add(name)
+            self.make_value(name, dtype, shape)
+            return
         array = torch_tensor_to_numpy(tensor) if isinstance(tensor, torch.Tensor) else np.asarray(tensor)
+        if not array.dtype.isnative:
+            raise ValueError(f"Initializer {name!r} requires native-endian storage, got {array.dtype}.")
+        if (
+            sys.byteorder == "little"
+            and array.flags.c_contiguous
+            and array.flags.aligned
+            and array.dtype.isnative
+            and array.dtype.name in _BORROWED_NUMPY_DTYPES
+            and (array.ndim > 1 or array.size > _MAX_SHAPE_CONSTANT_ELEMENTS or array.dtype.kind not in "biu")
+        ):
+            self.graph.init(array, name=name, copy=False)
+            self._initializer_names.add(name)
+            self.make_value(name, onnx_helper.np_dtype_to_tensor_dtype(array.dtype), array.shape)
+            return
         tensor_proto = numpy_helper.from_array(array, name=name)
-        self.graph.make_initializer(tensor_proto)
+        dtype, shape = tensor_proto.data_type, tuple(tensor_proto.dims)
+        self.graph.make_initializer_move(tensor_proto)
         self._initializer_names.add(name)
-        self.make_value(name, tensor_proto.data_type, tensor_proto.dims)
+        self.make_value(name, dtype, shape)
 
     def make_packed_initializer(self, tensor: torch.Tensor | np.ndarray, name: str, dtype: int, shape: Sequence[int]) -> None:
         """Add a packed sub-byte tensor using its logical ONNX shape."""
