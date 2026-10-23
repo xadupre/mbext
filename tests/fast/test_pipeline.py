@@ -350,27 +350,48 @@ class TestPipeline(ExtTestCase):
     def test_single_model_overwrite_removes_stale_pipeline(self):
         with tempfile.TemporaryDirectory() as folder:
             config, _, _ = self._export(folder)
-            save_pipeline(folder)
             pipeline_path = os.path.join(folder, PIPELINE_FILENAME)
-            self.assertTrue(os.path.exists(pipeline_path))
             del config["model"]["embedding"]
-            self._write_config(folder, config)
-            self.assertIsNone(save_pipeline(folder))
-            self.assertFalse(os.path.exists(pipeline_path))
+            for filename in ("prefill.onnx", os.path.join(".", "prefill.onnx"), os.path.join(folder, "prefill.onnx")):
+                with self.subTest(filename=filename):
+                    self._export(folder)
+                    save_pipeline(folder)
+                    self.assertTrue(os.path.exists(pipeline_path))
+                    config["model"]["decoder"]["filename"] = filename
+                    self._write_config(folder, config)
+                    self.assertIsNone(save_pipeline(folder))
+                    self.assertFalse(os.path.exists(pipeline_path))
+
+    @staticmethod
+    def _pipeline_filenames(folder):
+        path = os.path.join(folder, PIPELINE_FILENAME)
+        filenames = [
+            PIPELINE_FILENAME,
+            os.path.join(".", PIPELINE_FILENAME),
+            os.path.join("..", os.path.basename(folder), PIPELINE_FILENAME),
+            path,
+            os.path.join(folder, ".", PIPELINE_FILENAME),
+            os.path.join(folder, "..", os.path.basename(folder), PIPELINE_FILENAME),
+        ]
+        if os.name == "nt":
+            filenames.extend(["PIPELINE.ONNX", path.upper()])
+        return filenames
 
     def test_single_standalone_pipeline_filename_is_preserved(self):
         with tempfile.TemporaryDirectory() as folder:
             config, _, _ = self._export(folder)
             del config["model"]["embedding"]
-            config["model"]["decoder"]["filename"] = PIPELINE_FILENAME
             pipeline_path = os.path.join(folder, PIPELINE_FILENAME)
             shutil.copyfile(os.path.join(folder, "prefill.onnx"), pipeline_path)
             with open(pipeline_path, "rb") as stream:
                 standalone = stream.read()
-            self._write_config(folder, config)
-            self.assertIsNone(save_pipeline(folder))
-            with open(pipeline_path, "rb") as stream:
-                self.assertEqual(stream.read(), standalone)
+            for filename in self._pipeline_filenames(folder):
+                with self.subTest(filename=filename):
+                    config["model"]["decoder"]["filename"] = filename
+                    self._write_config(folder, config)
+                    self.assertIsNone(save_pipeline(folder))
+                    with open(pipeline_path, "rb") as stream:
+                        self.assertEqual(stream.read(), standalone)
 
     @hide_stdout()
     def test_prefill_decode_without_separate_embedding(self):
@@ -449,10 +470,14 @@ class TestPipeline(ExtTestCase):
     def test_reserved_filename_rejected(self):
         with tempfile.TemporaryDirectory() as folder:
             config, _, _ = self._export(folder)
-            config["model"]["embedding"]["filename"] = "./pipeline.onnx"
-            self._write_config(folder, config)
-            with self.assertRaisesRegex(ValueError, "reserved"):
-                save_pipeline(folder)
+            for filename in self._pipeline_filenames(folder):
+                with self.subTest(filename=filename):
+                    config["model"]["embedding"]["filename"] = filename
+                    self._write_config(folder, config)
+                    before = self._snapshot(folder)
+                    with self.assertRaisesRegex(ValueError, "reserved"):
+                        save_pipeline(folder)
+                    self.assertEqual(before, self._snapshot(folder))
 
     def test_interface_mismatch_rejected(self):
         with tempfile.TemporaryDirectory() as folder:
