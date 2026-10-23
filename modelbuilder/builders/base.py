@@ -1008,7 +1008,11 @@ class Model(LocalFunctionsMixin):
         already_quantized_in_qdq_format = (
             self.quant_type is not None and self.quant_attrs["use_qdq"]
         )  # Skip quantizing `MatMul` in `DequantizeLinear --> Transpose --> MatMul` path
-        quantizing = self.onnx_dtype in {TensorProto.INT4, TensorProto.UINT4} and not already_quantized_in_qdq_format
+        quantizing = (
+            self.onnx_dtype in {TensorProto.INT4, TensorProto.UINT4}
+            and not already_quantized_in_qdq_format
+            and not self.extra_options.get("_mlx_checkpoint")
+        )
 
         # Optionally dump the distribution statistics of the weight tensors that
         # are about to be quantized to a separate file (computed on the float
@@ -1384,6 +1388,12 @@ class Model(LocalFunctionsMixin):
     def _release_source_module(self, module) -> None:
         """Release a converted module's tensors after their final alias is used."""
         if not isinstance(module, torch.nn.Module):
+            return
+        if getattr(self, "extra_options", {}).get("_mlx_checkpoint"):
+            for child in module.modules():
+                for name in ("qweight", "scales", "qzeros", "mlx_residual"):
+                    if hasattr(child, name):
+                        delattr(child, name)
             return
         module_parameters = {id(parameter): parameter for _, parameter in module.named_parameters(recurse=True, remove_duplicate=False)}
         parameter_uses = Counter(id(parameter) for _, parameter in module.named_parameters(recurse=True, remove_duplicate=False))
@@ -1847,7 +1857,7 @@ class Model(LocalFunctionsMixin):
             # print(f"Saving as {self.io_dtype} on-the-fly and quantizing to {self.onnx_dtype} at the end.")
             return self.make_matmul_float(matmul, basename, root_input, **kwargs)
 
-        name = f"{basename}NBits"
+        name = basename if self.extra_options.get("_mlx_checkpoint") else f"{basename}NBits"
 
         # Input weights are quantized, save quantized MatMul weights for onnx model
         weight = name[1:].replace("/", ".") + ".qweight"
@@ -1869,10 +1879,12 @@ class Model(LocalFunctionsMixin):
 
         output = "logits" if kwargs.get("logits", False) else f"{name}/output_0"
         seq_dim = kwargs.get("seq_dim", "sequence_length")
+        correction = getattr(matmul, "mlx_residual", None)
+        packed_output = f"{name}/quantized_output_0" if correction is not None and torch.any(correction) else output
         self.make_node(
             "MatMulNBits",
             inputs=inputs,
-            outputs=[output],
+            outputs=[packed_output],
             name=name,
             domain="com.microsoft",
             accuracy_level=self.quant_attrs["int4"]["accuracy_level"],
@@ -1881,7 +1893,31 @@ class Model(LocalFunctionsMixin):
             K=matmul.in_features,
             N=matmul.out_features,
         )
-        self.make_value(output, self.io_dtype, shape=["batch_size", seq_dim, matmul.out_features])
+        shape = ["batch_size", seq_dim, matmul.out_features]
+        self.make_value(packed_output, self.io_dtype, shape=shape)
+        if packed_output != output:
+            blocks = matmul.in_features // matmul.group_size
+            residual_name = f"{weight}.residual"
+            self.make_initializer(correction.T, residual_name, to=self.io_dtype)
+            grouped = f"{name}/correction/Reshape"
+            grouped_output = self.make_reshape(
+                grouped, [root_input, [-1, blocks, matmul.group_size]], self.io_dtype, [None, blocks, matmul.group_size]
+            )
+            axes_name = f"{weight}.reduction_axes"
+            self.make_initializer(np.array([2], dtype=np.int64), axes_name)
+            reduced = f"{name}/correction/ReduceSum/output_0"
+            self.make_node("ReduceSum", [grouped_output, axes_name], [reduced], name=f"{name}/correction/ReduceSum", keepdims=0)
+            self.make_value(reduced, self.io_dtype, [None, blocks])
+            product = f"{name}/correction/MatMul/output_0"
+            self.make_node("MatMul", [reduced, residual_name], [product], name=f"{name}/correction/MatMul")
+            self.make_value(product, self.io_dtype, [None, matmul.out_features])
+            output_shape = f"{name}/correction/Shape/output_0"
+            self.make_node("Shape", [packed_output], [output_shape], name=f"{name}/correction/Shape")
+            self.make_value(output_shape, TensorProto.INT64, [None])
+            restored = f"{name}/correction/restore"
+            restored_output = self.make_reshape(restored, [product, output_shape], self.io_dtype, shape)
+            self.make_node("Add", [packed_output, restored_output], [output], name=f"{name}/correction/Add")
+            self.make_value(output, self.io_dtype, shape)
 
         return name
 
@@ -2167,6 +2203,10 @@ class Model(LocalFunctionsMixin):
         else:
             self.make_layernorm_op(layer_id, layernorm, skip, simple, location)
 
+    def _get_layernorm_weight(self, layernorm):
+        offset = 0 if getattr(layernorm, "mlx_norm_offset_applied", False) else self.layernorm_attrs["add_offset"]
+        return layernorm.weight if offset == 0 else layernorm.weight + offset
+
     def make_layernorm_op(self, layer_id, layernorm, skip, simple, location):
         root_input = self.layernorm_attrs["root_input"]
         skip_input = self.layernorm_attrs["skip_input"]
@@ -2178,9 +2218,7 @@ class Model(LocalFunctionsMixin):
 
         # Create weight and bias tensors
         weight = f"model.layers.{layer_id}.{location}_layernorm.weight"
-        layernorm_weight = (
-            layernorm.weight if self.layernorm_attrs["add_offset"] == 0 else layernorm.weight + self.layernorm_attrs["add_offset"]
-        )
+        layernorm_weight = self._get_layernorm_weight(layernorm)
         self.make_initializer(layernorm_weight, weight, to=new_io_dtype)
         bias = f"model.layers.{layer_id}.{location}_layernorm.bias"
         if not simple:
@@ -2236,9 +2274,7 @@ class Model(LocalFunctionsMixin):
 
         # Create weight and bias tensors
         weight = f"model.layers.{layer_id}.{location}_layernorm.weight"
-        layernorm_weight = (
-            layernorm.weight if self.layernorm_attrs["add_offset"] == 0 else layernorm.weight + self.layernorm_attrs["add_offset"]
-        )
+        layernorm_weight = self._get_layernorm_weight(layernorm)
         self.make_initializer(layernorm_weight, weight, to=new_io_dtype)
         bias = f"model.layers.{layer_id}.{location}_layernorm.bias"
         if not simple:
@@ -2881,11 +2917,7 @@ class Model(LocalFunctionsMixin):
         q_layernorm_name = f"/model/layers.{layer_id}/attn/q_norm/SimplifiedLayerNormalization"
         q_weight_name = f"model.layers.{layer_id}.attn.q_norm.layernorm.weight"
         q_layernorm_output = f"{q_layernorm_name}/output_0"
-        q_norm_weight = (
-            attention.q_norm.weight
-            if self.layernorm_attrs["add_offset"] == 0
-            else attention.q_norm.weight + self.layernorm_attrs["add_offset"]
-        )
+        q_norm_weight = self._get_layernorm_weight(attention.q_norm)
         self.make_initializer(q_norm_weight, q_weight_name, to=new_io_dtype)
 
         # Create Cast nodes for inputs and outputs if old_dtype != new_dtype
@@ -2927,11 +2959,7 @@ class Model(LocalFunctionsMixin):
         k_layernorm_name = f"/model/layers.{layer_id}/attn/k_norm/SimplifiedLayerNormalization"
         k_weight_name = f"model.layers.{layer_id}.attn.k_norm.layernorm.weight"
         k_layernorm_output = f"{k_layernorm_name}/output_0"
-        k_norm_weight = (
-            attention.k_norm.weight
-            if self.layernorm_attrs["add_offset"] == 0
-            else attention.k_norm.weight + self.layernorm_attrs["add_offset"]
-        )
+        k_norm_weight = self._get_layernorm_weight(attention.k_norm)
         self.make_initializer(k_norm_weight, k_weight_name, to=new_io_dtype)
 
         # Create Cast nodes for inputs and outputs if old_dtype != new_dtype
