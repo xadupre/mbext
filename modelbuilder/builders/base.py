@@ -88,6 +88,8 @@ _BORROWED_NUMPY_DTYPES = {
     "uint32",
     "uint64",
 }
+# Matches the native limit for value-as-shape inference.
+_MAX_SHAPE_CONSTANT_ELEMENTS = 16
 
 
 def parse_hf_token(hf_token):
@@ -1161,7 +1163,10 @@ class Model(LocalFunctionsMixin):
         return True
 
     def make_initializer(self, tensor: torch.Tensor | np.ndarray, /, name: str, to: int | None = None):
-        """Borrow eligible CPU weights; callers must not mutate them after insertion."""
+        """Borrow eligible CPU weights; copy small shape constants for native inference.
+
+        Callers must not mutate borrowed weights after insertion.
+        """
         if name in self._initializer_names:
             return
         if self.reuse_downloaded_weights and isinstance(tensor, torch.Tensor) and self._make_external_initializer(tensor, name, to):
@@ -1178,7 +1183,15 @@ class Model(LocalFunctionsMixin):
             and sys.byteorder == "little"
             and tensor.device.type == "cpu"
             and tensor.is_contiguous()
+            and not tensor.is_conj()
+            and not tensor.is_neg()
             and tensor.dtype in _DLPACK_TORCH_DTYPES
+            and (
+                tensor.ndim > 1
+                or tensor.numel() > _MAX_SHAPE_CONSTANT_ELEMENTS
+                or tensor.dtype.is_floating_point
+                or tensor.dtype.is_complex
+            )
         ):
             tensor_proto = TensorProto.from_dlpack(tensor.detach(), name=name)
             dtype, shape = tensor_proto.data_type, tuple(tensor_proto.dims)
@@ -1195,6 +1208,7 @@ class Model(LocalFunctionsMixin):
             and array.flags.aligned
             and array.dtype.isnative
             and array.dtype.name in _BORROWED_NUMPY_DTYPES
+            and (array.ndim > 1 or array.size > _MAX_SHAPE_CONSTANT_ELEMENTS or array.dtype.kind not in "biu")
         ):
             self.graph.init(array, name=name, copy=False)
             self._initializer_names.add(name)

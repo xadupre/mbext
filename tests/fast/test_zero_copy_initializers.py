@@ -96,9 +96,31 @@ class TestZeroCopyInitializers(ExtTestCase):
                 actual = to_array(initializer)
                 np.testing.assert_array_equal(actual.astype(np.float32), expected)
 
+    def test_shape_constant_values_feed_native_inference(self):
+        for shape in (np.array([2, 3], dtype=np.int64), torch.tensor([2, 3], dtype=torch.int64)):
+            with self.subTest(source=type(shape).__name__):
+                model = make_builder()
+                model.make_initializer(shape, "shape")
+                model.graph.inp("input", TensorProto.FLOAT, [6])
+                reshaped = model.graph.op.Reshape("input", "shape")
+                model.graph.out(model.graph.op.Transpose(reshaped, perm=[1, 0]))
+                built = model.graph.to_model()
+                self.assertEqual([dimension.dim_value for dimension in built.graph.output[0].type.tensor_type.shape.dim], [3, 2])
+                values = np.arange(6, dtype=np.float32)
+                actual = ReferenceEvaluator(built).run(None, {"input": values})[0]
+                np.testing.assert_array_equal(actual, values.reshape(2, 3).T)
+
+    def test_torch_metadata_views_preserve_values(self):
+        for weight in (torch.tensor([1 + 2j, 3 - 4j]).conj(), torch.tensor([1.0, 2.0])._neg_view()):
+            with self.subTest(conjugate=weight.is_conj(), negative=weight.is_neg()):
+                model = make_builder()
+                model.make_initializer(weight, "weight")
+                initializer = model.graph.to_model().graph.initializer[0]
+                np.testing.assert_array_equal(to_array(initializer), weight.numpy(force=True))
+
     def test_numpy_owner_released_exactly_once(self):
         model = make_builder()
-        array = np.arange(4, dtype=np.int64)
+        array = np.arange(32, dtype=np.int64)
         released = []
         weakref.finalize(array, released.append, "released")
         model.make_initializer(array, "weight")
