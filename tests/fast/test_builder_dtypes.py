@@ -8,6 +8,7 @@ Tests for the dtype/token helpers in :mod:`modelbuilder.builder`.
 """
 
 import os
+import tempfile
 import unittest
 
 import torch
@@ -17,7 +18,7 @@ from onnx_light.onnx import TensorProto as ir
 
 from modelbuilder.builder import create_model, parse_hf_token, set_io_dtype, set_onnx_dtype
 from modelbuilder.builders.base import Model
-from modelbuilder.ext_test_case import ExtTestCase
+from modelbuilder.ext_test_case import ExtTestCase, hide_stdout
 
 
 class TestParseHfToken(ExtTestCase):
@@ -67,6 +68,44 @@ class TestAttentionDtypes(ExtTestCase):
         model.ep = "cpu"
         model.io_dtype = ir.DataType.BFLOAT16
         self.assertTrue(model.is_gqa_supported())
+
+
+class TestRotaryConfiguration(ExtTestCase):
+    @hide_stdout()
+    def test_partial_rotary_cache_dimensions(self):
+        from transformers import PhiConfig
+
+        for legacy_factor, nested_factor, rotary_dim in (
+            (0.5, None, 8),
+            (None, 0.25, 4),
+            (0.5, 0.25, 4),
+            (None, None, 16),
+            (None, 1.0, 16),
+        ):
+            with self.subTest(legacy_factor=legacy_factor, nested_factor=nested_factor):
+                config = PhiConfig(
+                    architectures=["PhiForCausalLM"],
+                    hidden_size=64,
+                    intermediate_size=128,
+                    max_position_embeddings=32,
+                    num_attention_heads=4,
+                    num_hidden_layers=1,
+                    vocab_size=32,
+                )
+                if legacy_factor is not None:
+                    config.partial_rotary_factor = legacy_factor
+                elif hasattr(config, "partial_rotary_factor"):
+                    del config.partial_rotary_factor
+                config.rope_parameters = {"rope_theta": 10000.0, "rope_type": "default"}
+                if nested_factor is not None:
+                    config.rope_parameters["partial_rotary_factor"] = nested_factor
+                with tempfile.TemporaryDirectory() as cache_dir:
+                    model = Model(config, ir.FLOAT, ir.FLOAT, "cpu", cache_dir, {})
+                    model.rope_attrs["save_caches"] = False
+                    cos_cache, sin_cache = model.make_rotary_embedding_caches()
+                self.assertEqual(cos_cache.shape, (32, rotary_dim // 2))
+                self.assertEqual(sin_cache.shape, cos_cache.shape)
+                self.assertEqual(model.rope_attrs["rotary_embedding_dim"], 0 if rotary_dim == 16 else rotary_dim)
 
 
 class TestSetOnnxDtype(ExtTestCase):

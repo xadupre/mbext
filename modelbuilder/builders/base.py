@@ -333,6 +333,9 @@ class Model(LocalFunctionsMixin):
         # RotaryEmbedding-specific variables
         position_scale = config.rope_position_scale if hasattr(config, "rope_position_scale") else 1
         partial_rotary_factor = config.partial_rotary_factor if hasattr(config, "partial_rotary_factor") else 1.0
+        rope_parameters = getattr(config, "rope_parameters", None)
+        if isinstance(rope_parameters, dict):
+            partial_rotary_factor = rope_parameters.get("partial_rotary_factor", partial_rotary_factor)
         rotemb_dim = int(self.head_size * partial_rotary_factor) if partial_rotary_factor != 1.0 else 0
         rope_theta = self._rope_theta_from_config(config)
         self.rope_attrs = {
