@@ -9,7 +9,10 @@ import io
 import json
 import os
 import shutil
+import subprocess
+import sys
 import tempfile
+import textwrap
 import unittest
 
 import ml_dtypes
@@ -24,19 +27,129 @@ from modelbuilder.pipeline import PIPELINE_FILENAME, save_pipeline
 
 
 class TestPipeline(ExtTestCase):
+    @hide_stdout()
+    def test_cli_split_llama_reuses_checkpoint(self):
+        from transformers import AutoModelForCausalLM, LlamaConfig
+
+        # A real private exporter splits the saved Llama Gather from the decoder,
+        # keeping its external initializer reference, not a second weight copy.
+        converter = textwrap.dedent("""\
+            import os
+            from onnx_light.onnx import helper, load_model, save_model
+            from modelbuilder.builders.llama import LlamaModel
+
+            class SplitLlamaModel(LlamaModel):
+                def save_model(self, out_dir):
+                    super().save_model(out_dir)
+                    path = os.path.join(out_dir, self.filename)
+                    model = load_model(path, load_external_data=False)
+                    gather = next(n for n in model.graph.node
+                                  if n.op_type == "Gather" and "input_ids" in n.input)
+                    self.embedding_output = str(gather.output[0])
+                    value = helper.make_tensor_value_info(
+                        self.embedding_output, self.io_dtype,
+                        ["batch_size", "sequence_length", self.hidden_size])
+                    embedding = helper.make_model(helper.make_graph(
+                        [gather], "embedding",
+                        [v for v in model.graph.input if v.name == "input_ids"],
+                        [value],
+                        [v for v in model.graph.initializer
+                         if v.name == gather.input[0]]),
+                        opset_imports=list(model.opset_import),
+                        ir_version=model.ir_version)
+                    nodes = [n for n in model.graph.node if n.name != gather.name]
+                    weights = [v for v in model.graph.initializer
+                               if v.name != gather.input[0]]
+                    inputs = [v for v in model.graph.input if v.name != "input_ids"]
+                    model.graph.node.clear()
+                    model.graph.node.extend(nodes)
+                    model.graph.initializer.clear()
+                    model.graph.initializer.extend(weights)
+                    model.graph.input.clear()
+                    model.graph.input.extend(inputs + [value])
+                    save_model(model, path)
+                    save_model(embedding, os.path.join(out_dir, "embedding.onnx"))
+
+                def create_genai_config(self, *args):
+                    config = super().create_genai_config(*args)
+                    inputs = config["model"]["decoder"]["inputs"]
+                    del inputs["input_ids"]
+                    inputs["inputs_embeds"] = self.embedding_output
+                    config["model"]["embedding"] = {
+                        "filename": "embedding.onnx",
+                        "inputs": {"input_ids": "input_ids"},
+                        "outputs": {"inputs_embeds": self.embedding_output}}
+                    return config
+            """)
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = os.path.join(tmp, "export")
+            source_dir = os.path.join(output_dir, ".weights")
+            config = LlamaConfig(
+                architectures=["LlamaForCausalLM"],
+                hidden_size=16,
+                intermediate_size=24,
+                max_position_embeddings=16,
+                num_attention_heads=2,
+                num_hidden_layers=1,
+                num_key_value_heads=1,
+                vocab_size=32,
+            )
+            AutoModelForCausalLM.from_config(config).save_pretrained(source_dir)
+            self.make_word_level_tokenizer().save_pretrained(source_dir)
+            convert_path = os.path.join(tmp, "convert.py")
+            with open(convert_path, "w") as stream:
+                stream.write(converter)
+            command = [
+                sys.executable,
+                "-m",
+                "modelbuilder.builder",
+                "-i",
+                source_dir,
+                "-o",
+                output_dir,
+                "-p",
+                "fp32",
+                "-e",
+                "cpu",
+                "-c",
+                os.path.join(tmp, "cache"),
+                "--reuse-weights",
+                "--private",
+                f";{convert_path};",
+            ]
+            for _ in range(2):
+                completed = subprocess.run(command, check=False, capture_output=True, text=True)
+                self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+                self.assertIn("Saving PipelineProto", completed.stdout)
+                self.assertIn(PIPELINE_FILENAME, completed.stdout)
+                pipeline = PipelineProto()
+                pipeline.ParseFromFile(os.path.join(output_dir, PIPELINE_FILENAME))
+                verify_pipeline(pipeline)
+                self.assertFalse(pipeline.has_decode())
+                for role, filename in (("embedding", "embedding.onnx"), ("prefill", "model.onnx")):
+                    standalone = load_model(os.path.join(output_dir, filename), load_external_data=False)
+                    self.assertEqual(
+                        [t.SerializeToString() for t in standalone.graph.initializer],
+                        [t.SerializeToString() for t in getattr(pipeline, role).graph.initializer],
+                    )
+                locations = {
+                    entry.value
+                    for tensor in pipeline.embedding.graph.initializer
+                    for entry in tensor.external_data
+                    if entry.key == "location"
+                }
+                self.assertEqual(locations, {".weights/model.safetensors"})
+                self.assertFalse(any(name.startswith("pipeline.onnx.") for name in os.listdir(output_dir)))
+
     @staticmethod
     def _model(nodes, inputs, outputs, initializers=()):
         return helper.make_model(
-            helper.make_graph(nodes, "component", inputs, outputs, initializers),
-            opset_imports=[helper.make_opsetid("", 18)],
-            ir_version=10,
+            helper.make_graph(nodes, "component", inputs, outputs, initializers), opset_imports=[helper.make_opsetid("", 18)], ir_version=10
         )
 
     @staticmethod
     def _value(name, dtype=TensorProto.FLOAT, shape=None):
-        return helper.make_tensor_value_info(
-            name, dtype, [1, "sequence", 16] if shape is None else shape
-        )
+        return helper.make_tensor_value_info(name, dtype, [1, "sequence", 16] if shape is None else shape)
 
     def _export(self, folder, separate=False, reused=False, sharded=False):
         rng = np.random.default_rng(42)
@@ -52,22 +165,15 @@ class TestPipeline(ExtTestCase):
             [
                 helper.make_node("Add", ["embeds", "past"], ["hidden"]),
                 helper.make_node("MatMul", ["hidden", "weight"], ["scores"]),
-                helper.make_node(
-                    "ReduceMean", ["hidden", "axes"], ["present"], keepdims=0
-                ),
+                helper.make_node("ReduceMean", ["hidden", "axes"], ["present"], keepdims=0),
             ],
             [self._value("embeds"), self._value("past", shape=[1, 16])],
-            [
-                self._value("scores", shape=[1, "sequence", 32]),
-                self._value("present", shape=[1, 16]),
-            ],
+            [self._value("scores", shape=[1, "sequence", 32]), self._value("present", shape=[1, 16])],
             [
                 from_array(weight, name="weight"),
                 from_array(np.array([1], dtype=np.int64), name="axes"),
                 # Packed quantized storage must survive without decoding/repacking.
-                from_array(
-                    np.arange(512).astype(ml_dtypes.uint4), name="packed_weight"
-                ),
+                from_array(np.arange(512).astype(ml_dtypes.uint4), name="packed_weight"),
             ],
         )
         for name, model in (("embedding", embedding), ("prefill", decoder)):
@@ -90,33 +196,18 @@ class TestPipeline(ExtTestCase):
         }
         config = {
             "model": {
-                "embedding": {
-                    "filename": "embedding.onnx",
-                    "inputs": {"input_ids": "tokens"},
-                    "outputs": {"inputs_embeds": "embeds"},
-                },
+                "embedding": {"filename": "embedding.onnx", "inputs": {"input_ids": "tokens"}, "outputs": {"inputs_embeds": "embeds"}},
                 "decoder": decoder_config,
                 "eos_token_id": 31,
                 "pad_token_id": 0,
             },
-            "search": {
-                "do_sample": False,
-                "temperature": 1.0,
-                "top_k": 4,
-                "top_p": 0.9,
-                "max_new_tokens": 4,
-                "random_seed": 42,
-            },
+            "search": {"do_sample": False, "temperature": 1.0, "top_k": 4, "top_p": 0.9, "max_new_tokens": 4, "random_seed": 42},
         }
         if separate:
             # Reuse all prefill shards for decode, as an exporter with shared
             # weights would. Native serialization must not externalize again.
-            saved = load_model(
-                os.path.join(folder, "prefill.onnx"), load_external_data=False
-            )
-            saved.graph.persistent_bindings.add(
-                input_name="past", output_name="present"
-            )
+            saved = load_model(os.path.join(folder, "prefill.onnx"), load_external_data=False)
+            saved.graph.persistent_bindings.add(input_name="past", output_name="present")
             save_model(saved, os.path.join(folder, "decode.onnx"))
             config["model"]["prefill"] = dict(decoder_config)
             config["model"]["decoder"] = {**decoder_config, "filename": "decode.onnx"}
@@ -135,9 +226,7 @@ class TestPipeline(ExtTestCase):
             for filename in files:
                 path = os.path.join(root, filename)
                 with open(path, "rb") as stream:
-                    result[os.path.relpath(path, folder)] = hashlib.sha256(
-                        stream.read()
-                    ).hexdigest()
+                    result[os.path.relpath(path, folder)] = hashlib.sha256(stream.read()).hexdigest()
         return result
 
     def _check_components(self, folder, pipeline, separate):
@@ -153,49 +242,26 @@ class TestPipeline(ExtTestCase):
         self.assertEqual(pipeline.pad_token_id, 0)
         self.assertEqual(pipeline.top_k, 4)
         self.assertAlmostEqual(pipeline.top_p, 0.9, atol=1e-7)
-        for role in (
-            ("embedding", "prefill", "decode") if separate else ("embedding", "prefill")
-        ):
-            standalone = load_model(
-                os.path.join(folder, f"{role}.onnx"), load_external_data=False
-            )
+        for role in (("embedding", "prefill", "decode") if separate else ("embedding", "prefill")):
+            standalone = load_model(os.path.join(folder, f"{role}.onnx"), load_external_data=False)
             component = getattr(pipeline, role)
-            self.assertEqual(
-                [value.name for value in component.graph.input],
-                [value.name for value in standalone.graph.input],
-            )
-            for expected, actual in zip(
-                standalone.graph.initializer, component.graph.initializer
-            ):
-                self.assertEqual(
-                    expected.SerializeToString(), actual.SerializeToString()
-                )
+            self.assertEqual([value.name for value in component.graph.input], [value.name for value in standalone.graph.input])
+            for expected, actual in zip(standalone.graph.initializer, component.graph.initializer):
+                self.assertEqual(expected.SerializeToString(), actual.SerializeToString())
                 self.assertFalse(actual.raw_data)
             if role != "embedding":
                 self.assertEqual(
-                    [
-                        (binding.input_name, binding.output_name)
-                        for binding in component.graph.persistent_bindings
-                    ],
-                    [("past", "present")],
+                    [(binding.input_name, binding.output_name) for binding in component.graph.persistent_bindings], [("past", "present")]
                 )
             load_external_data_for_model(component, folder)
-            for actual, expected in zip(
-                component.graph.initializer,
-                load_model(os.path.join(folder, f"{role}.onnx")).graph.initializer,
-            ):
-                self.assertEqualArray(
-                    to_array(actual, folder), to_array(expected, folder)
-                )
+            for actual, expected in zip(component.graph.initializer, load_model(os.path.join(folder, f"{role}.onnx")).graph.initializer):
+                self.assertEqualArray(to_array(actual, folder), to_array(expected, folder))
 
     @hide_stdout()
     def test_shared_weights_shards_relocation_overwrite(self):
         for separate in (False, True):
             for reused, sharded in ((False, False), (False, True), (True, True)):
-                with (
-                    self.subTest(separate=separate, reused=reused, sharded=sharded),
-                    tempfile.TemporaryDirectory() as tmp,
-                ):
+                with self.subTest(separate=separate, reused=reused, sharded=sharded), tempfile.TemporaryDirectory() as tmp:
                     folder = os.path.join(tmp, "export")
                     os.mkdir(folder)
                     self._export(folder, separate, reused, sharded)
@@ -234,25 +300,16 @@ class TestPipeline(ExtTestCase):
                 sessions = {}
                 for role in ("embedding", "prefill", "decode"):
                     model = (
-                        getattr(pipeline, role)
-                        if bundled
-                        else load_model(
-                            os.path.join(folder, f"{role}.onnx"),
-                            load_external_data=False,
-                        )
+                        getattr(pipeline, role) if bundled else load_model(os.path.join(folder, f"{role}.onnx"), load_external_data=False)
                     )
                     load_external_data_for_model(model, folder)
-                    sessions[role] = ort.InferenceSession(
-                        model.SerializeToString(), providers=["CPUExecutionProvider"]
-                    )
+                    sessions[role] = ort.InferenceSession(model.SerializeToString(), providers=["CPUExecutionProvider"])
                 tokens = np.array([[1, 2]], dtype=np.int64)
                 state = np.zeros((1, 16), dtype=np.float32)
                 generated, logits = [], []
                 for step in range(4):
                     embeds = sessions["embedding"].run(None, {"tokens": tokens})[0]
-                    scores, state = sessions["prefill" if step == 0 else "decode"].run(
-                        None, {"embeds": embeds, "past": state}
-                    )
+                    scores, state = sessions["prefill" if step == 0 else "decode"].run(None, {"embeds": embeds, "past": state})
                     logits.append(scores[:, -1].copy())
                     tokens = scores[:, -1].argmax(axis=-1).reshape(1, 1)
                     generated.append(int(tokens[0, 0]))
@@ -277,18 +334,9 @@ class TestPipeline(ExtTestCase):
                 self.assertIn("schema extensions", output.getvalue())
                 for role in roles:
                     self.assertIn(role, output.getvalue())
-                self.assertFalse(
-                    os.path.exists(os.path.join(folder, PIPELINE_FILENAME))
-                )
+                self.assertFalse(os.path.exists(os.path.join(folder, PIPELINE_FILENAME)))
                 after = self._snapshot(folder)
-                self.assertEqual(
-                    after,
-                    {
-                        key: value
-                        for key, value in before.items()
-                        if key != PIPELINE_FILENAME
-                    },
-                )
+                self.assertEqual(after, {key: value for key, value in before.items() if key != PIPELINE_FILENAME})
 
     def test_single_model_unchanged(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -299,19 +347,84 @@ class TestPipeline(ExtTestCase):
             self.assertIsNone(save_pipeline(folder))
             self.assertEqual(before, self._snapshot(folder))
 
+    @hide_stdout()
+    def test_prefill_decode_without_separate_embedding(self):
+        with tempfile.TemporaryDirectory() as folder:
+            config, _, _ = self._export(folder, separate=True)
+            embedding = load_model(os.path.join(folder, "embedding.onnx"), load_external_data=False)
+            del config["model"]["embedding"]
+            for role, filename in (("prefill", "prefill.onnx"), ("decoder", "decode.onnx")):
+                model = load_model(os.path.join(folder, filename), load_external_data=False)
+                nodes = list(embedding.graph.node) + list(model.graph.node)
+                inputs = [value for value in model.graph.input if value.name != "embeds"]
+                model.graph.node.clear()
+                model.graph.node.extend(nodes)
+                model.graph.input.clear()
+                model.graph.input.extend(list(embedding.graph.input) + inputs)
+                model.graph.initializer.extend(embedding.graph.initializer)
+                if role == "prefill":
+                    # The supported prefill contract also allows state-only outputs.
+                    outputs = [value for value in model.graph.output if value.name != "scores"]
+                    model.graph.output.clear()
+                    model.graph.output.extend(outputs)
+                save_model(model, os.path.join(folder, filename))
+                config["model"][role]["inputs"] = {"input_ids": "tokens", "past_key_names": "past"}
+            config["model"]["prefill"]["outputs"] = {"present_key_names": "present"}
+            self._write_config(folder, config)
+            save_pipeline(folder)
+            pipeline = PipelineProto()
+            pipeline.ParseFromFile(os.path.join(folder, PIPELINE_FILENAME))
+            verify_pipeline(pipeline)
+            self.assertFalse(pipeline.has_embedding())
+            self.assertTrue(pipeline.has_decode())
+            self.assertEqual(pipeline.input_ids_name, "tokens")
+            self.assertEqual(pipeline.logits_name, "scores")
+            self.assertEqual(len(pipeline.prefill.graph.persistent_bindings), 1)
+
+    def test_sampling_metadata_and_shared_decoder(self):
+        with tempfile.TemporaryDirectory() as folder:
+            config, _, _ = self._export(folder)
+            config["model"]["prefill"] = dict(config["model"]["decoder"])
+            config["model"]["eos_token_id"] = [2, 3]
+            config["search"].update(do_sample=True, temperature=0.75)
+            self._write_config(folder, config)
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                save_pipeline(folder)
+            pipeline = PipelineProto()
+            pipeline.ParseFromFile(os.path.join(folder, PIPELINE_FILENAME))
+            self.assertFalse(pipeline.has_decode())
+            self.assertEqual(pipeline.temperature, 0.75)
+            self.assertEqual(pipeline.eos_token_id, 2)
+            self.assertIn("Multiple stop IDs", output.getvalue())
+
+    def test_conflicting_state_rejected(self):
+        with tempfile.TemporaryDirectory() as folder:
+            self._export(folder)
+            path = os.path.join(folder, "prefill.onnx")
+            model = load_model(path, load_external_data=False)
+            model.graph.persistent_bindings.add(input_name="past", output_name="scores")
+            save_model(model, path)
+            with self.assertRaisesRegex(ValueError, "Conflicting state binding"):
+                save_pipeline(folder)
+
+    def test_reserved_filename_rejected(self):
+        with tempfile.TemporaryDirectory() as folder:
+            config, _, _ = self._export(folder)
+            config["model"]["embedding"]["filename"] = "./pipeline.onnx"
+            self._write_config(folder, config)
+            with self.assertRaisesRegex(ValueError, "reserved"):
+                save_pipeline(folder)
+
     def test_interface_mismatch_rejected(self):
         with tempfile.TemporaryDirectory() as folder:
             self._export(folder)
-            model = load_model(
-                os.path.join(folder, "embedding.onnx"), load_external_data=False
-            )
+            model = load_model(os.path.join(folder, "embedding.onnx"), load_external_data=False)
             model.graph.output[0].name = "renamed"
             model.graph.node[0].output.clear()
             model.graph.node[0].output.append("renamed")
             save_model(model, os.path.join(folder, "embedding.onnx"))
-            with self.assertRaisesRegex(
-                ValueError, "does not support interface renaming"
-            ):
+            with self.assertRaisesRegex(ValueError, "does not support interface renaming"):
                 save_pipeline(folder)
 
 

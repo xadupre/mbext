@@ -17,10 +17,7 @@ PIPELINE_FILENAME = "pipeline.onnx"
 def _bind_state(model, config):
     inputs = {value.name for value in model.graph.input}
     outputs = {value.name for value in model.graph.output}
-    existing = {
-        binding.input_name: binding.output_name
-        for binding in model.graph.persistent_bindings
-    }
+    existing = {binding.input_name: binding.output_name for binding in model.graph.persistent_bindings}
     for source, target in (
         ("past_key_names", "present_key_names"),
         ("past_value_names", "present_value_names"),
@@ -36,21 +33,15 @@ def _bind_state(model, config):
             past = [past % i for i in range(count)] if "%d" in past else [past]
         if isinstance(present, str):
             count = config.get("num_hidden_layers", 0)
-            present = (
-                [present % i for i in range(count)] if "%d" in present else [present]
-            )
+            present = [present % i for i in range(count)] if "%d" in present else [present]
         if len(past) != len(present):
-            raise ValueError(
-                "Pipeline cache input/output declarations differ in length."
-            )
+            raise ValueError("Pipeline cache input/output declarations differ in length.")
         for input_name, output_name in zip(past, present):
             # Hybrid decoders may declare cache templates for inactive layers.
             if input_name not in inputs and output_name not in outputs:
                 continue
             if input_name not in inputs or output_name not in outputs:
-                raise ValueError(
-                    f"Missing pipeline state interface: {input_name!r} -> {output_name!r}."
-                )
+                raise ValueError(f"Missing pipeline state interface: {input_name!r} -> {output_name!r}.")
             if input_name in existing:
                 if existing[input_name] != output_name:
                     raise ValueError(f"Conflicting state binding for {input_name!r}.")
@@ -70,16 +61,12 @@ def save_pipeline(out_dir):
     """
     with open(os.path.join(out_dir, "genai_config.json")) as stream:
         config = json.load(stream)
-    sections = {
-        key: value
-        for key, value in config["model"].items()
-        if isinstance(value, dict) and "filename" in value
-    }
-    if len({value["filename"] for value in sections.values()}) < 2:
+    sections = {key: value for key, value in config["model"].items() if isinstance(value, dict) and "filename" in value}
+    if len({os.path.normpath(value["filename"]) for value in sections.values()}) < 2:
         return None
 
     path = os.path.join(out_dir, PIPELINE_FILENAME)
-    if any(value["filename"] == PIPELINE_FILENAME for value in sections.values()):
+    if any(os.path.normpath(value["filename"]) == PIPELINE_FILENAME for value in sections.values()):
         raise ValueError(f"{PIPELINE_FILENAME!r} is reserved for the PipelineProto.")
     unsupported = sorted(set(sections) - {"embedding", "decoder", "prefill", "decode"})
     if unsupported:
@@ -105,10 +92,7 @@ def save_pipeline(out_dir):
         sections["prefill"] = sections.pop("decode")
     if "prefill" not in sections:
         raise ValueError("A PipelineProto requires a prefill/decoder component.")
-    if (
-        "decode" in sections
-        and sections["decode"]["filename"] == sections["prefill"]["filename"]
-    ):
+    if "decode" in sections and sections["decode"]["filename"] == sections["prefill"]["filename"]:
         del sections["decode"]
 
     pipeline = PipelineProto(name="mbext", producer_name="mbext", pipeline_version=1)
@@ -116,8 +100,7 @@ def save_pipeline(out_dir):
         filename = section["filename"]
         if os.path.dirname(filename) not in {"", "."}:
             raise ValueError(
-                "Pipeline component models must be saved beside pipeline.onnx; "
-                "external weights may use relative child directories."
+                "Pipeline component models must be saved beside pipeline.onnx; " "external weights may use relative child directories."
             )
         model = load_model(os.path.join(out_dir, filename), load_external_data=False)
         _bind_state(model, section)
@@ -125,10 +108,16 @@ def save_pipeline(out_dir):
 
     decoder = sections["prefill"]
     token_model = sections.get("embedding", decoder)
-    pipeline.input_ids_name = token_model.get("inputs", {}).get(
-        "input_ids", "input_ids"
-    )
-    pipeline.logits_name = decoder.get("outputs", {}).get("logits", "logits")
+    pipeline.input_ids_name = token_model.get("inputs", {}).get("input_ids", "input_ids")
+    generation_model = sections.get("decode", decoder)
+    pipeline.logits_name = generation_model.get("outputs", {}).get("logits", "logits")
+    token_roles = ("embedding",) if pipeline.has_embedding() else tuple(role for role in ("prefill", "decode") if role in sections)
+    for role in token_roles:
+        if pipeline.input_ids_name not in {value.name for value in getattr(pipeline, role).graph.input}:
+            raise ValueError(f"Missing pipeline token input {pipeline.input_ids_name!r} in {role}.")
+    logits_model = pipeline.decode if pipeline.has_decode() else pipeline.prefill
+    if pipeline.logits_name not in {value.name for value in logits_model.graph.output}:
+        raise ValueError(f"Missing pipeline logits output {pipeline.logits_name!r}.")
     for name in ("attention_mask", "position_ids"):
         value = decoder.get("inputs", {}).get(name)
         if value is not None:
@@ -139,18 +128,14 @@ def save_pipeline(out_dir):
             if role not in sections:
                 continue
             consumed = {value.name for value in getattr(pipeline, role).graph.input}
-            if not produced.intersection(consumed):
-                raise ValueError(
-                    f"Embedding outputs do not match {role} inputs; "
-                    "PipelineProto does not support interface renaming."
-                )
+            embedding_input = sections[role].get("inputs", {}).get("inputs_embeds")
+            if embedding_input not in produced or embedding_input not in consumed:
+                raise ValueError(f"Embedding outputs do not match {role} inputs; " "PipelineProto does not support interface renaming.")
     if pipeline.has_decode():
         prefill_outputs = {value.name for value in pipeline.prefill.graph.output}
         for binding in pipeline.decode.graph.persistent_bindings:
             if binding.output_name not in prefill_outputs:
-                raise ValueError(
-                    f"Prefill does not produce decode state {binding.output_name!r}."
-                )
+                raise ValueError(f"Prefill does not produce decode state {binding.output_name!r}.")
 
     search = config.get("search", {})
     for name in ("max_new_tokens", "temperature", "top_k", "top_p"):
