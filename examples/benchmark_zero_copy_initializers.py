@@ -24,6 +24,11 @@ from modelbuilder.builders.base import Model
 from modelbuilder.helpers.onnx_helper import torch_tensor_to_numpy
 
 
+def peak_rss_mib(ru_maxrss: int, platform: str) -> float:
+    divisor = 1024 * 1024 if platform == "darwin" else 1024
+    return round(ru_maxrss / divisor, 1)
+
+
 def run(mode: str, size: int) -> dict:
     weight = torch.ones((size, size), dtype=torch.float32)
     builder = GraphBuilder("weights")
@@ -42,7 +47,7 @@ def run(mode: str, size: int) -> dict:
         "mode": mode,
         "size": size,
         "seconds": round(time.perf_counter() - start, 3),
-        "peak_rss_mib": round(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024, 1),
+        "peak_rss_mib": peak_rss_mib(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss, sys.platform),
         "serialized_bytes": len(serialized),
     }
 

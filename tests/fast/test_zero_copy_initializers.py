@@ -18,6 +18,7 @@ from onnx_light.onnx.numpy_helper import to_array
 from onnx_light.onnx.reference import ReferenceEvaluator
 from onnx_light.onnx_core.graph_builder import GraphBuilder
 
+from examples.benchmark_zero_copy_initializers import peak_rss_mib
 from modelbuilder.builders.base import Model
 from modelbuilder.ext_test_case import ExtTestCase
 
@@ -32,6 +33,12 @@ def make_builder():
 
 
 class TestZeroCopyInitializers(ExtTestCase):
+    def test_peak_rss_mib_platform_units(self):
+        for kib, expected in ((0, 0.0), (256 * 1024, 256.0), (256 * 1024 + 256, 256.2)):
+            with self.subTest(kib=kib):
+                self.assertEqual(peak_rss_mib(kib, "linux"), expected)
+                self.assertEqual(peak_rss_mib(kib * 1024, "darwin"), expected)
+
     def test_numpy_owner_survives_builder_and_serialization(self):
         model = make_builder()
         array = np.arange(12, dtype=np.float32).reshape(3, 4)
