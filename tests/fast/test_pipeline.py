@@ -385,6 +385,7 @@ class TestPipeline(ExtTestCase):
         with tempfile.TemporaryDirectory() as folder:
             config, _, _ = self._export(folder)
             config["model"]["prefill"] = dict(config["model"]["decoder"])
+            config["model"]["decoder"]["filename"] = "./prefill.onnx"
             config["model"]["eos_token_id"] = [2, 3]
             config["search"].update(do_sample=True, temperature=0.75)
             self._write_config(folder, config)
@@ -397,6 +398,16 @@ class TestPipeline(ExtTestCase):
             self.assertEqual(pipeline.temperature, 0.75)
             self.assertEqual(pipeline.eos_token_id, 2)
             self.assertIn("Multiple stop IDs", output.getvalue())
+
+    def test_phase_interface_names_must_match(self):
+        for kind, name in (("inputs", "attention_mask"), ("inputs", "position_ids"), ("outputs", "logits")):
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as folder:
+                config, _, _ = self._export(folder, separate=True)
+                config["model"]["prefill"][kind] = {**config["model"]["prefill"][kind], name: "prompt_name"}
+                config["model"]["decoder"][kind] = {**config["model"]["decoder"][kind], name: "decode_name"}
+                self._write_config(folder, config)
+                with self.assertRaisesRegex(ValueError, "identical prefill/decode"):
+                    save_pipeline(folder)
 
     def test_conflicting_state_rejected(self):
         with tempfile.TemporaryDirectory() as folder:

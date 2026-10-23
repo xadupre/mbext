@@ -58,6 +58,12 @@ Load the bundle explicitly as a pipeline, not with ``load_model``::
     pipeline.ParseFromFile("export/pipeline.onnx")
     verify_pipeline(pipeline)
 
+Runtime support is distinct from serialization: onnx-light currently rejects
+execution of a separate ``decode`` model. Such bundles can be loaded and
+validated, and their recovered components executed independently; integrated
+generation must wait for runtime support. The offline tests compare generation
+and state updates from recovered and standalone components using available kernels.
+
 The current onnx-light schema supports only ``embedding``, ``prefill`` and
 ``decode``. Full Mistral/Phi/Qwen vision/audio exports and Whisper's audio
 encoder therefore need additional component ModelProto fields (vision, speech

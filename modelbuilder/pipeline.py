@@ -92,7 +92,7 @@ def save_pipeline(out_dir):
         sections["prefill"] = sections.pop("decode")
     if "prefill" not in sections:
         raise ValueError("A PipelineProto requires a prefill/decoder component.")
-    if "decode" in sections and sections["decode"]["filename"] == sections["prefill"]["filename"]:
+    if "decode" in sections and os.path.normpath(sections["decode"]["filename"]) == os.path.normpath(sections["prefill"]["filename"]):
         del sections["decode"]
 
     pipeline = PipelineProto(name="mbext", producer_name="mbext", pipeline_version=1)
@@ -111,6 +111,10 @@ def save_pipeline(out_dir):
     pipeline.input_ids_name = token_model.get("inputs", {}).get("input_ids", "input_ids")
     generation_model = sections.get("decode", decoder)
     pipeline.logits_name = generation_model.get("outputs", {}).get("logits", "logits")
+    for section in (decoder, generation_model):
+        declared_logits = section.get("outputs", {}).get("logits")
+        if declared_logits is not None and declared_logits != pipeline.logits_name:
+            raise ValueError("PipelineProto requires identical prefill/decode logits names.")
     token_roles = ("embedding",) if pipeline.has_embedding() else tuple(role for role in ("prefill", "decode") if role in sections)
     for role in token_roles:
         if pipeline.input_ids_name not in {value.name for value in getattr(pipeline, role).graph.input}:
@@ -119,9 +123,11 @@ def save_pipeline(out_dir):
     if pipeline.logits_name not in {value.name for value in logits_model.graph.output}:
         raise ValueError(f"Missing pipeline logits output {pipeline.logits_name!r}.")
     for name in ("attention_mask", "position_ids"):
-        value = decoder.get("inputs", {}).get(name)
-        if value is not None:
-            setattr(pipeline, f"{name}_name", value)
+        names = {section["inputs"][name] for role, section in sections.items() if role != "embedding" and name in section.get("inputs", {})}
+        if len(names) > 1:
+            raise ValueError(f"PipelineProto requires identical prefill/decode {name} names.")
+        if names:
+            setattr(pipeline, f"{name}_name", names.pop())
     if pipeline.has_embedding():
         produced = {value.name for value in pipeline.embedding.graph.output}
         for role in ("prefill", "decode"):
