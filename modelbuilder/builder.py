@@ -301,7 +301,7 @@ def create_model(model_name, input_path, output_dir, precision, execution_provid
             raise ValueError("MLX checkpoint conversion requires MatMulNBits, not QDQ.")
         if config.architectures[0] != "Qwen3_5ForConditionalGeneration":
             raise ValueError("MLX checkpoint conversion supports Qwen3_5ForConditionalGeneration only.")
-        if not os.path.isdir(input_path):
+        if not os.path.isdir(input_path) and "config_only" not in extra_options:
             from huggingface_hub import snapshot_download
 
             input_path = snapshot_download(repo_id=model_name, cache_dir=cache_dir, token=hf_token)

@@ -161,7 +161,8 @@ class MLXCheckpoint:
                         )
                     )
                 ):
-                    value = value - 1
+                    # MLX stores gamma directly; undoing the offset in FP16/BF16 is lossy.
+                    module.mlx_norm_offset_applied = True
                 if previous.shape != value.shape:
                     raise ValueError(f"MLX tensor shape mismatch for {name}.")
                 if field in module._parameters:

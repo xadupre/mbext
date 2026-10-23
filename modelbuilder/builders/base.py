@@ -2128,6 +2128,10 @@ class Model(LocalFunctionsMixin):
         else:
             self.make_layernorm_op(layer_id, layernorm, skip, simple, location)
 
+    def _get_layernorm_weight(self, layernorm):
+        offset = 0 if getattr(layernorm, "mlx_norm_offset_applied", False) else self.layernorm_attrs["add_offset"]
+        return layernorm.weight if offset == 0 else layernorm.weight + offset
+
     def make_layernorm_op(self, layer_id, layernorm, skip, simple, location):
         root_input = self.layernorm_attrs["root_input"]
         skip_input = self.layernorm_attrs["skip_input"]
@@ -2139,9 +2143,7 @@ class Model(LocalFunctionsMixin):
 
         # Create weight and bias tensors
         weight = f"model.layers.{layer_id}.{location}_layernorm.weight"
-        layernorm_weight = (
-            layernorm.weight if self.layernorm_attrs["add_offset"] == 0 else layernorm.weight + self.layernorm_attrs["add_offset"]
-        )
+        layernorm_weight = self._get_layernorm_weight(layernorm)
         self.make_initializer(layernorm_weight, weight, to=new_io_dtype)
         bias = f"model.layers.{layer_id}.{location}_layernorm.bias"
         if not simple:
@@ -2197,9 +2199,7 @@ class Model(LocalFunctionsMixin):
 
         # Create weight and bias tensors
         weight = f"model.layers.{layer_id}.{location}_layernorm.weight"
-        layernorm_weight = (
-            layernorm.weight if self.layernorm_attrs["add_offset"] == 0 else layernorm.weight + self.layernorm_attrs["add_offset"]
-        )
+        layernorm_weight = self._get_layernorm_weight(layernorm)
         self.make_initializer(layernorm_weight, weight, to=new_io_dtype)
         bias = f"model.layers.{layer_id}.{location}_layernorm.bias"
         if not simple:
@@ -2842,11 +2842,7 @@ class Model(LocalFunctionsMixin):
         q_layernorm_name = f"/model/layers.{layer_id}/attn/q_norm/SimplifiedLayerNormalization"
         q_weight_name = f"model.layers.{layer_id}.attn.q_norm.layernorm.weight"
         q_layernorm_output = f"{q_layernorm_name}/output_0"
-        q_norm_weight = (
-            attention.q_norm.weight
-            if self.layernorm_attrs["add_offset"] == 0
-            else attention.q_norm.weight + self.layernorm_attrs["add_offset"]
-        )
+        q_norm_weight = self._get_layernorm_weight(attention.q_norm)
         self.make_initializer(q_norm_weight, q_weight_name, to=new_io_dtype)
 
         # Create Cast nodes for inputs and outputs if old_dtype != new_dtype
@@ -2888,11 +2884,7 @@ class Model(LocalFunctionsMixin):
         k_layernorm_name = f"/model/layers.{layer_id}/attn/k_norm/SimplifiedLayerNormalization"
         k_weight_name = f"model.layers.{layer_id}.attn.k_norm.layernorm.weight"
         k_layernorm_output = f"{k_layernorm_name}/output_0"
-        k_norm_weight = (
-            attention.k_norm.weight
-            if self.layernorm_attrs["add_offset"] == 0
-            else attention.k_norm.weight + self.layernorm_attrs["add_offset"]
-        )
+        k_norm_weight = self._get_layernorm_weight(attention.k_norm)
         self.make_initializer(k_norm_weight, k_weight_name, to=new_io_dtype)
 
         # Create Cast nodes for inputs and outputs if old_dtype != new_dtype

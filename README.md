@@ -62,8 +62,12 @@ This reads packed safetensors tensors directly rather than expanding the
 language model into BF16. Quantized vision matrices retain their checkpoint
 bit width (including 4-bit matrices); floating-point state tensors are loaded
 separately. The package contains text, vision, embedding and processor files.
-CPU inference requires an ONNX Runtime GenAI release with Qwen3.5 hybrid-state
-support (0.15.2 is too old). CUDA execution and optimized INT2 kernel
+Offline CPU text and image generation parity is tested with ONNX Runtime
+GenAI 0.17.1; 0.15.2 lacks the required Qwen3.5 hybrid-state support.
+Native onnx-light / onnx-light-cpu 0.2.0 generation cannot yet execute the packed
+embedding operator, tracked in
+[onnx-light-cpu#972](https://github.com/xadupre/onnx-light-cpu/issues/972).
+CUDA execution and optimized INT2 kernel
 performance depend on the installed ONNX Runtime build and are not guaranteed
 to match CPU behavior.
 
