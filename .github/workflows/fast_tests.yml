@@ -86,7 +86,7 @@ jobs:
           torch
           "black==26.5.1"
           "mypy==2.3.0"
-          "onnx-light-cpu @ https://github.com/xadupre/onnx-light-cpu/releases/download/0.1.21/onnx_light_cpu-0.1.21-cp314-cp314-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl"
+          "onnx-light-cpu @ https://github.com/xadupre/onnx-light-cpu/releases/download/0.2.0/onnx_light_cpu-0.2.0-cp314-cp314-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl"
           "onnxruntime==1.30.0"
           "onnxruntime-genai==${{ matrix.onnxruntime-genai-version }}"
           "openpyxl==3.1.5"
