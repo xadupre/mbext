@@ -165,6 +165,9 @@ so opening that folder directly in VS Code stays stable too.
 pytest tests/fast
 ```
 
+Codecov reports overall project coverage as informational, so fluctuations across
+CI jobs do not fail the PR. Coverage checks for changed lines remain enabled.
+
 ## Long Unit tests
 
 ```bash
