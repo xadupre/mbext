@@ -64,7 +64,7 @@ bit width (including 4-bit matrices); floating-point state tensors are loaded
 separately. The package contains text, vision, embedding and processor files.
 Offline CPU text and image generation parity is tested with ONNX Runtime
 GenAI 0.17.1; 0.15.2 lacks the required Qwen3.5 hybrid-state support.
-Native onnx-light / onnx-light-cpu 0.2.0 generation cannot yet execute the packed
+Native onnx-light / onnx-light-cpu 0.2.0 and earlier cannot yet execute the packed
 embedding operator, tracked in
 [onnx-light-cpu#972](https://github.com/xadupre/onnx-light-cpu/issues/972).
 CUDA execution and optimized INT2 kernel
