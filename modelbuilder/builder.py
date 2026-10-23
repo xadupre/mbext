@@ -655,6 +655,11 @@ def create_model(model_name, input_path, output_dir, precision, execution_provid
     # Make GenAI config
     onnx_model.make_genai_config(hf_name, extra_kwargs, output_dir)
 
+    if not config_only:
+        from .pipeline import save_pipeline
+
+        save_pipeline(output_dir)
+
     # Copy Hugging Face processing files to output folder
     onnx_model.save_processing(hf_name, extra_kwargs, output_dir)
 

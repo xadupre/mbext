@@ -16,6 +16,63 @@ Converting a model
         -e cpu \
         -c cache_dir
 
+Multi-model artifacts
+---------------------
+
+A multi-component export automatically adds **pipeline.onnx**, an onnx-light
+``PipelineProto``, beside the standalone models and ``genai_config.json``.
+It is an additional artifact, not a merged graph or a replacement GenAI config.
+Single-model and config-only exports are unchanged.
+
+The pipeline embeds the saved embedding, prefill and (when separate) decode
+ModelProtos. A decoder used for both phases occupies only ``prefill``.
+Transferred tensors keep their declared names; cache input/output pairs use
+``GraphProto.persistent_bindings``. Available sampling settings and token IDs
+come from the GenAI configuration; greedy decoding uses temperature zero.
+The CLI reports the pipeline filename when it is saved.
+
+No weights are loaded or externalized again. For example::
+
+    export/
+      pipeline.onnx
+      embedding.onnx
+      model.onnx
+      embedding.onnx.data
+      model.onnx.data.0
+      model.onnx.data.1
+      .weights/model.safetensors
+      genai_config.json
+
+Both artifacts reference the same external-data locations, offsets and lengths,
+including quantized storage, ``--max-shard-size`` shards and reused source files
+under ``.weights/``. Keep component protos beside ``pipeline.onnx`` and relocate
+the whole output folder, including relative weight subdirectories, as a unit.
+Re-exporting overwrites the pipeline without creating pipeline-specific shards.
+
+Load the bundle explicitly as a pipeline, not with ``load_model``::
+
+    from onnx_light.onnx import PipelineProto
+    from onnx_light.onnx_proto.verify import verify_pipeline
+
+    pipeline = PipelineProto()
+    pipeline.ParseFromFile("export/pipeline.onnx")
+    verify_pipeline(pipeline)
+
+Runtime support is distinct from serialization: onnx-light currently rejects
+execution of a separate ``decode`` model. Such bundles can be loaded and
+validated, and their recovered components executed independently; integrated
+generation must wait for runtime support. The offline tests compare generation
+and state updates from recovered and standalone components using available kernels.
+
+The current onnx-light schema supports only ``embedding``, ``prefill`` and
+``decode``. Full Mistral/Phi/Qwen vision/audio exports and Whisper's audio
+encoder therefore need additional component ModelProto fields (vision, speech
+or encoder) and tensor/state interface support in onnx-light. These exports
+retain every standalone model and GenAI configuration but explicitly report
+that no complete PipelineProto can be written; they never emit a bundle that
+silently drops a component. Multiple EOS IDs also require a schema extension;
+the pipeline currently uses the first ID and reports this limitation.
+
 Main arguments
 --------------
 

@@ -327,6 +327,7 @@ class TestPhi4Multimodal(ExtTestCase):
         text_onnx = os.path.join(output_dir, "model.onnx")
         for path in (vision_onnx, audio_onnx, embed_onnx, text_onnx):
             self.assertExists(path)
+        self.assertFalse(os.path.exists(os.path.join(output_dir, "pipeline.onnx")))
 
         # --- genai_config.json structure ---
         self.check_phi3v_genai_config(output_dir, has_speech=True, speech_filename="audio_encoder.onnx")
