@@ -62,10 +62,7 @@ def save_pipeline(out_dir):
     with open(os.path.join(out_dir, "genai_config.json")) as stream:
         config = json.load(stream)
     sections = {key: value for key, value in config["model"].items() if isinstance(value, dict) and "filename" in value}
-    filenames = {
-        os.path.normcase(os.path.abspath(os.path.join(out_dir, value["filename"])))
-        for value in sections.values()
-    }
+    filenames = {os.path.normcase(os.path.abspath(os.path.join(out_dir, value["filename"]))) for value in sections.values()}
     path = os.path.join(out_dir, PIPELINE_FILENAME)
     canonical_path = os.path.normcase(os.path.abspath(path))
     if len(filenames) < 2:
@@ -99,7 +96,9 @@ def save_pipeline(out_dir):
         sections["prefill"] = sections.pop("decode")
     if "prefill" not in sections:
         raise ValueError("A PipelineProto requires a prefill/decoder component.")
-    shared_decode = "decode" in sections and os.path.normpath(sections["decode"]["filename"]) == os.path.normpath(sections["prefill"]["filename"])
+    shared_decode = "decode" in sections and os.path.normpath(sections["decode"]["filename"]) == os.path.normpath(
+        sections["prefill"]["filename"]
+    )
 
     pipeline = PipelineProto(name="mbext", producer_name="mbext", pipeline_version=1)
     for role, section in sections.items():
