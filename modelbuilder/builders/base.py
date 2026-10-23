@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import ast
+import heapq
 import json
 import os
 import struct
@@ -936,8 +937,47 @@ class Model(LocalFunctionsMixin):
         model.producer_name = "onnxruntime-genai"
         native_nodes = {node.name: node for node in model.graph.node}
         nodes = [self._deferred_nodes[name] if name in self._deferred_nodes else native_nodes[name] for name in self._node_order]
+        producers = {output: index for index, node in enumerate(nodes) for output in node.output if output}
+        dependents = [[] for _ in nodes]
+        pending = [0] * len(nodes)
+        for index, node in enumerate(nodes):
+            dependencies = {producers[name] for name in node.input if name in producers}
+            pending[index] = len(dependencies)
+            for producer in dependencies:
+                dependents[producer].append(index)
+        ready = [index for index, count in enumerate(pending) if count == 0]
+        heapq.heapify(ready)
+        ordered = []
+        while ready:
+            index = heapq.heappop(ready)
+            ordered.append(nodes[index])
+            for dependent in dependents[index]:
+                pending[dependent] -= 1
+                if pending[dependent] == 0:
+                    heapq.heappush(ready, dependent)
+        if len(ordered) != len(nodes):
+            raise ValueError("The ONNX graph contains a cycle.")
+        # The native builder annotates lifetimes before deferred nodes are inserted.
+        last_use = {name: index for index, node in enumerate(ordered) for name in node.input if name}
+        for index, node in enumerate(ordered):
+            metadata = []
+            for prop in node.metadata_props:
+                if prop.key in {"onnx_light.release_after", "onnx_light.release_after_shape_tag"}:
+                    names = [name for name in prop.value.split(";") if last_use.get(name, index) <= index]
+                    if names:
+                        metadata.append((prop.key, ";".join(names)))
+                elif prop.key != "onnx_light.inplace_reuse" or all(last_use.get(name, index) <= index for name in node.input):
+                    metadata.append((prop.key, prop.value))
+            if len(metadata) != len(node.metadata_props) or any(
+                value != prop.value for (_, value), prop in zip(metadata, node.metadata_props)
+            ):
+                node.metadata_props.clear()
+                for key, value in metadata:
+                    prop = node.metadata_props.add()
+                    prop.key = key
+                    prop.value = value
         model.graph.node.clear()
-        model.graph.node.extend(nodes)
+        model.graph.node.extend(ordered)
         outputs = [output for output in model.graph.output if output.name in self._graph_outputs]
         model.graph.output.clear()
         model.graph.output.extend(outputs)
