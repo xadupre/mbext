@@ -62,14 +62,18 @@ def save_pipeline(out_dir):
     with open(os.path.join(out_dir, "genai_config.json")) as stream:
         config = json.load(stream)
     sections = {key: value for key, value in config["model"].items() if isinstance(value, dict) and "filename" in value}
-    filenames = {os.path.normpath(value["filename"]) for value in sections.values()}
+    filenames = {
+        os.path.normcase(os.path.abspath(os.path.join(out_dir, value["filename"])))
+        for value in sections.values()
+    }
     path = os.path.join(out_dir, PIPELINE_FILENAME)
+    canonical_path = os.path.normcase(os.path.abspath(path))
     if len(filenames) < 2:
-        if PIPELINE_FILENAME not in filenames and os.path.exists(path):
+        if canonical_path not in filenames and os.path.exists(path):
             os.remove(path)
         return None
 
-    if any(os.path.normpath(value["filename"]) == PIPELINE_FILENAME for value in sections.values()):
+    if canonical_path in filenames:
         raise ValueError(f"{PIPELINE_FILENAME!r} is reserved for the PipelineProto.")
     unsupported = sorted(set(sections) - {"embedding", "decoder", "prefill", "decode"})
     if unsupported:
