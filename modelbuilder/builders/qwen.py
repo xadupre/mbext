@@ -2954,6 +2954,15 @@ class Qwen35TextModel(Model):
         return gated_output
 
     def load_weights(self, input_path):
+        if self.quant_type == "compressed-tensors":
+            from ..helpers.compressed_tensors import QwenCompressedTensorsModel
+
+            q_size = self.num_attn_heads * self.head_size
+            kv_size = self.num_kv_heads * self.head_size
+            return QwenCompressedTensorsModel(input_path, self.quant_attrs, q_size, kv_size, self.intermediate_size, self.num_layers)
+        if self.quant_type is not None:
+            return super().load_weights(input_path)
+
         # Qwen3_5ForConditionalGeneration is not registered with AutoModelForCausalLM.
         # Load the full multimodal model directly; make_model will find the
         # embedded language-model sub-modules (embed_tokens, Qwen3_5TextModel

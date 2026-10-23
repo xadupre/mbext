@@ -9,7 +9,7 @@ import unittest
 
 import numpy as np
 
-from modelbuilder.ext_test_case import ExtTestCase, hide_stdout, requires_genai, requires_transformers
+from modelbuilder.ext_test_case import ExtTestCase, hide_stdout, requires_cuda, requires_genai, requires_transformers
 
 QWEN3_8_MODEL_NAME = "Qwen/Qwen3.8-27B"
 TERNARY_BONSAI_MODEL_NAME = "prism-ml/Ternary-Bonsai-27B-unpacked"
@@ -78,6 +78,68 @@ def _make_qwen3_8_config():
 
 @requires_transformers("5")
 class TestRandomQwen3_8(ExtTestCase):
+    @staticmethod
+    def _quantize_fp8(weight):
+        import torch
+
+        scale = weight.abs().amax(dim=1, keepdim=True).float() / torch.finfo(torch.float8_e4m3fn).max
+        scale = scale.clamp_min(torch.finfo(torch.float8_e4m3fn).tiny)
+        quantized = (weight.float() / scale).clamp(min=torch.finfo(torch.float8_e4m3fn).min, max=torch.finfo(torch.float8_e4m3fn).max)
+        quantized = quantized.to(torch.float8_e4m3fn)
+        return quantized, scale
+
+    @staticmethod
+    def _quantize_nvfp4(weight):
+        import torch
+
+        if weight.shape[1] % 16:
+            raise ValueError(f"NVFP4 requires an input dimension divisible by 16, got {weight.shape}.")
+        levels = torch.tensor([0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0], dtype=torch.float32)
+        blocks = weight.float().reshape(weight.shape[0], -1, 16)
+        scale = (blocks.abs().amax(dim=-1) / 6).clamp_min(torch.finfo(torch.float8_e4m3fn).tiny)
+        scale = scale.to(torch.float8_e4m3fn)
+        normalized = blocks / scale.float().unsqueeze(-1)
+        distances = (normalized.abs().unsqueeze(-1) - levels.reshape(1, 1, 1, -1)).abs()
+        codes = distances.argmin(dim=-1).to(torch.uint8)
+        codes |= (normalized < 0).to(torch.uint8) << 3
+        codes = codes.reshape(weight.shape)
+        packed = codes[:, 0::2] | (codes[:, 1::2] << 4)
+        return packed.contiguous(), scale.contiguous()
+
+    def _make_native_nvfp4_checkpoint(self):
+        import torch
+        from safetensors.torch import save_file
+        from transformers import Qwen3_5ForConditionalGeneration
+
+        config = _make_qwen3_8_config()
+        prefix = "test_random_qwen3_8_native_nvfp4"
+        model_dir = self.get_model_dir(prefix)
+
+        torch.manual_seed(42)
+        model = Qwen3_5ForConditionalGeneration(config)
+        model.eval()
+        linear_names = {name for name, module in model.named_modules() if isinstance(module, torch.nn.Linear)}
+        state = {}
+        for name, value in model.state_dict().items():
+            module_name, separator, parameter_name = name.rpartition(".")
+            if separator and parameter_name == "weight" and module_name in linear_names and ".mlp." in module_name:
+                packed, scale = self._quantize_nvfp4(value)
+                state[f"{module_name}.weight_packed"] = packed
+                state[f"{module_name}.weight_scale"] = scale
+                state[f"{module_name}.weight_global_scale"] = torch.ones(1, dtype=torch.float32)
+            elif separator and parameter_name == "weight" and module_name in linear_names:
+                quantized, scale = self._quantize_fp8(value)
+                state[name] = quantized
+                state[f"{module_name}.weight_scale"] = scale
+            else:
+                state[name] = value
+
+        config.quantization_config = {"quant_method": "compressed-tensors", "format": "pack-quantized"}
+        config.save_pretrained(model_dir)
+        self.make_word_level_tokenizer().save_pretrained(model_dir)
+        save_file(state, os.path.join(model_dir, "model.safetensors"))
+        return config, model_dir
+
     @staticmethod
     def _ternarize_language_weights(model):
         import torch
@@ -272,7 +334,7 @@ class TestRandomQwen3_8(ExtTestCase):
                 )
         text_input_names = {value.name for value in text_session.get_inputs()}
         actual_logits, *_ = text_session.run(None, {name: value for name, value in text_inputs.items() if name in text_input_names})
-        atol = 2e-2 if exact_ternary else {"int4": 0.15 if ternary else 0.1, "int2": 0.4}[precision]
+        atol = 2e-2 if exact_ternary else {"int8": 0.05, "int4": 0.15 if ternary else 0.1, "int2": 0.4}[precision]
         np.testing.assert_allclose(actual_logits, expected_logits, rtol=2e-2, atol=atol)
 
         embedding_session = self.check_ort(os.path.join(output_dir, "embedding.onnx"))
@@ -291,6 +353,85 @@ class TestRandomQwen3_8(ExtTestCase):
     @hide_stdout()
     def test_qwen3_8_int2_onnxruntime(self):
         self._check_quantized_multimodal_model("int2")
+
+    @hide_stdout()
+    def test_qwen3_8_int8_onnxruntime(self):
+        self._check_quantized_multimodal_model("int8")
+
+    @hide_stdout()
+    def test_qwen3_8_fp16_onnxruntime(self):
+        import torch
+
+        config, model, output_dir = self._build_multimodal_model(precision="fp16")
+        session = self.check_ort(os.path.join(output_dir, "model.onnx"))
+        input_ids = torch.tensor([[5, 6, 7]], dtype=torch.int64)
+        with torch.no_grad():
+            inputs_embeds = model.model.language_model.embed_tokens(input_ids)
+            expected = model(input_ids=input_ids, use_cache=False).logits.numpy()
+        sequence_length = input_ids.shape[1]
+        positions = np.arange(sequence_length, dtype=np.int64)
+        feed = {
+            "inputs_embeds": inputs_embeds.numpy().astype(np.float16),
+            "attention_mask": np.ones((1, sequence_length), dtype=np.int64),
+            "position_ids": np.stack([positions, positions, positions], axis=0)[:, np.newaxis, :],
+        }
+        conv_width = (
+            config.text_config.linear_num_key_heads * config.text_config.linear_key_head_dim * 2
+            + config.text_config.linear_num_value_heads * config.text_config.linear_value_head_dim
+        )
+        for layer_id, layer_type in enumerate(config.text_config.layer_types):
+            if layer_type == "full_attention":
+                feed[f"past_key_values.{layer_id}.key"] = np.zeros(
+                    (1, config.text_config.num_key_value_heads, 0, config.text_config.head_dim), dtype=np.float16
+                )
+                feed[f"past_key_values.{layer_id}.value"] = np.zeros(
+                    (1, config.text_config.num_key_value_heads, 0, config.text_config.head_dim), dtype=np.float16
+                )
+            else:
+                feed[f"past_key_values.{layer_id}.conv_state"] = np.zeros(
+                    (1, conv_width, config.text_config.linear_conv_kernel_dim - 1), dtype=np.float16
+                )
+                feed[f"past_key_values.{layer_id}.recurrent_state"] = np.zeros(
+                    (
+                        1,
+                        config.text_config.linear_num_value_heads,
+                        config.text_config.linear_key_head_dim,
+                        config.text_config.linear_value_head_dim,
+                    ),
+                    dtype=np.float16,
+                )
+        input_names = {value.name for value in session.get_inputs()}
+        actual, *_ = session.run(None, {name: value for name, value in feed.items() if name in input_names})
+        np.testing.assert_allclose(actual, expected, rtol=3e-2, atol=3e-2)
+
+    @hide_stdout()
+    @requires_cuda()
+    def test_qwen3_8_bf16_cuda_build(self):
+        _, _, output_dir = self._build_multimodal_model(precision="bf16")
+        session = self.check_ort(os.path.join(output_dir, "model.onnx"), provider="cuda")
+        input_types = {value.name: value.type for value in session.get_inputs()}
+        self.assertEqual(input_types["inputs_embeds"], "tensor(bfloat16)")
+
+    @hide_stdout()
+    def test_qwen3_8_native_nvfp4_checkpoint(self):
+        import onnx_light.onnx as onnx
+
+        from modelbuilder.builder import create_model
+
+        _, model_dir = self._make_native_nvfp4_checkpoint()
+        output_dir, cache_dir = self.get_dirs("test_random_qwen3_8_native_nvfp4")
+        create_model(
+            model_name=QWEN3_8_MODEL_NAME,
+            input_path=model_dir,
+            output_dir=output_dir,
+            precision="bf16",
+            execution_provider="cuda",
+            cache_dir=cache_dir,
+        )
+        model = onnx.load(os.path.join(output_dir, "model.onnx"), load_external_data=False)
+        op_types = {node.op_type for node in model.graph.node}
+        self.assertIn("MatMulBlockQuantizedFp4Weight", op_types)
+        self.assertIn("MatMulBlockQuantizedFp8Weight", op_types)
 
     @hide_stdout()
     def test_ternary_bonsai_int4_onnxruntime(self):
@@ -318,6 +459,33 @@ class TestRandomQwen3_8(ExtTestCase):
         generator.append_tokens(prompt)
         generator.generate_next_token()
         self.assertEqual(int(generator.get_next_tokens()[0]), expected_token)
+
+    @hide_stdout()
+    @requires_genai("0.16", "Qwen3.5 hybrid states require ONNX Runtime GenAI 0.16 or newer.")
+    def test_qwen3_8_genai_generation(self):
+        import onnxruntime_genai as og
+        import torch
+
+        _, model, output_dir = self._build_multimodal_model()
+        prompt = np.array([5, 6, 7], dtype=np.int64)
+        with torch.no_grad():
+            expected_token = int(model(input_ids=torch.from_numpy(prompt[np.newaxis, :]), use_cache=False).logits[0, -1].argmax())
+
+        genai_model = og.Model(output_dir)
+        params = og.GeneratorParams(genai_model)
+        params.set_search_options(do_sample=False, max_length=len(prompt) + 1, temperature=1.0, top_k=1)
+        generator = og.Generator(genai_model, params)
+        generator.append_tokens(prompt)
+        generator.generate_next_token()
+        self.assertEqual(int(generator.get_next_tokens()[0]), expected_token)
+
+    @hide_stdout()
+    @requires_genai("0.16", "Qwen3.5 hybrid states require ONNX Runtime GenAI 0.16 or newer.")
+    def test_qwen3_8_onnx_light_cpu_genai_generation(self):
+        import onnx_light_cpu
+
+        onnx_light_cpu.register_kernels()
+        self.test_qwen3_8_genai_generation()
 
 
 if __name__ == "__main__":
