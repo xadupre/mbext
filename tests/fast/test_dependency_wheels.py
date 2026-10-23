@@ -31,3 +31,9 @@ class TestDependencyWheels(ExtTestCase):
     def test_ci_onnx_light_cpu_wheel(self):
         workflow = (ROOT / ".github/workflows/fast_tests.yml").read_text(encoding="utf-8")
         self.assertIn("onnx-light-cpu/releases/download/0.2.0/onnx_light_cpu-0.2.0-", workflow)
+
+    def test_ci_onnx_light_wheel_matrix(self):
+        workflow = (ROOT / ".github/workflows/fast_tests.yml").read_text(encoding="utf-8")
+        wheel_job = workflow.split("\n  onnx-light-wheels:", 1)[1].split("\n  tests:", 1)[0]
+        self.assertIn('python-version: ["3.14"]', wheel_job)
+        self.assertIn("os: [ubuntu-latest, macos-latest, windows-latest]", wheel_job)
