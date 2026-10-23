@@ -122,16 +122,31 @@ Reusing downloaded weights
 --------------------------
 
 ``--reuse-weights`` saves disk space by referencing byte ranges in the original
-``.safetensors`` files as ONNX external data. With ``--model_name``, the
-checkpoint is downloaded to ``<output>/.weights``; keep that directory with the
-exported model. Any initializers derived by the builder are still written to
-``model.onnx.data``.
+``.safetensors`` files as ONNX external data. With ``--input``, checkpoint weight
+shards outside the export are **moved** into ``<output>/.weights``: ownership is
+transferred and the source weight files are removed. Unrelated checkpoint files
+are not moved. The original directory is no longer a complete checkpoint.
+With ``--model_name``, the checkpoint is downloaded to ``<output>/.weights``.
+Files already inside the export are not moved again. Safetensors must be regular
+files, not symbolic links; destination collisions are rejected, not overwritten.
+Relocation publishes a complete destination file before removing its source,
+including across filesystems.
 
-The option is only supported for floating-point exports, because quantization
-changes the weight representation. If using ``--input``, the checkpoint must be
-inside the output directory and its ``.safetensors`` files must not be symbolic
-links. When the checkpoint dtype differs from the requested ONNX dtype, the
-export contains ONNX ``Cast`` nodes rather than a copied, converted checkpoint.
+Both floating-point and integer-precision exports can reuse compatible original
+tensor storage. Original shards are never rewritten or resharded, and offsets
+include the safetensors header. Quantization, repacking, and other transformations
+that change the representation produce new payloads in a separate generated
+external-data file (``model.onnx.data`` for a single model). Constants smaller
+than 1024 bytes stay inline. No empty generated-weight file is created.
+``--max-shard-size`` applies only to generated weights. Multi-model exports and
+their additional ``pipeline.onnx`` share the original shards and deduplicated
+generated storage.
+
+Keep the entire export directory together when relocating it: relative external
+locations do not depend on the old checkpoint path or the working directory.
+When a reusable checkpoint dtype differs from the requested ONNX dtype, the
+export contains ONNX ``Cast`` nodes rather than a copied, converted checkpoint;
+transpose views can similarly reuse the original bytes through ``Transpose``.
 
 .. code-block:: bash
 

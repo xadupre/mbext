@@ -8,9 +8,13 @@ Tests for the dtype/token helpers in :mod:`modelbuilder.builder`.
 """
 
 import os
+import shutil
+import struct
 import tempfile
 import unittest
+from pathlib import Path
 
+import numpy as np
 import torch
 from onnx_light.onnx import load
 from onnx_light.onnx.numpy_helper import to_array
@@ -162,6 +166,7 @@ class TestSourceWeightRelease(ExtTestCase):
 
 
 class TestReuseDownloadedWeights(ExtTestCase):
+    @hide_stdout()
     def test_reuses_safetensors_checkpoint(self):
         from transformers import AutoModelForCausalLM, LlamaConfig
 
@@ -208,7 +213,118 @@ class TestReuseDownloadedWeights(ExtTestCase):
             "model.embed_tokens.weight",
             {output for node in model_with_weights.graph.node if node.op_type == "Cast" for output in node.output},
         )
+        self.assertFalse(list(Path(output_dir).glob("*.data*")))
         self._check_with_ort(os.path.join(output_dir, "model.onnx"), cpu=True)
+        original_bytes = (Path(model_dir) / "model.safetensors").read_bytes()
+        create_model(
+            model_name=None,
+            input_path=model_dir,
+            output_dir=output_dir,
+            precision="fp16",
+            execution_provider="cpu",
+            cache_dir=cache_dir,
+            reuse_downloaded_weights=True,
+        )
+        self.assertEqual((Path(model_dir) / "model.safetensors").read_bytes(), original_bytes)
+        self.assertFalse(list(Path(output_dir).glob("*.data*")))
+
+    @hide_stdout()
+    def test_moves_mixed_quantized_shards_and_relocates_export(self):
+        import json
+
+        import onnxruntime as ort
+        from transformers import AutoModelForCausalLM, LlamaConfig
+
+        config = LlamaConfig(
+            architectures=["LlamaForCausalLM"],
+            hidden_size=64,
+            intermediate_size=64,
+            max_position_embeddings=16,
+            num_attention_heads=4,
+            num_hidden_layers=1,
+            num_key_value_heads=2,
+            tie_word_embeddings=True,
+            vocab_size=96,
+        )
+        torch.manual_seed(0)
+        model = AutoModelForCausalLM.from_config(config).eval()
+        with tempfile.TemporaryDirectory() as tmp:
+            source, output, cache = (os.path.join(tmp, name) for name in ("checkpoint", "export", "cache"))
+            model.save_pretrained(source, max_shard_size="20KB")
+            self.make_word_level_tokenizer().save_pretrained(source)
+            shards = {path.name: path.read_bytes() for path in Path(source).glob("*.safetensors")}
+            self.assertGreater(len(shards), 1)
+            (Path(source) / "unrelated.txt").write_text("keep")
+            create_model(
+                model_name=None,
+                input_path=source,
+                output_dir=output,
+                precision="int4",
+                execution_provider="cpu",
+                cache_dir=cache,
+                reuse_downloaded_weights=True,
+                max_shard_size=4096,
+                int4_nodes_to_exclude=["/lm_head/MatMul"],
+            )
+            self.assertFalse(list(Path(source).glob("*.safetensors")))
+            self.assertEqual((Path(source) / "unrelated.txt").read_text(), "keep")
+            for name, content in shards.items():
+                self.assertEqual((Path(output) / ".weights" / name).read_bytes(), content)
+            path = os.path.join(output, "model.onnx")
+            proto = load(path, load_external_data=False)
+            self.assertIn("MatMulNBits", {node.op_type for node in proto.graph.node})
+            original, generated, inline = [], [], []
+            for initializer in proto.graph.initializer:
+                ref = {entry.key: entry.value for entry in initializer.external_data}
+                if not ref:
+                    inline.append(initializer)
+                elif ref["location"].endswith(".safetensors"):
+                    original.append(ref)
+                    content = shards[os.path.basename(ref["location"])]
+                    header_length = struct.unpack("<Q", content[:8])[0]
+                    header = json.loads(content[8 : 8 + header_length])
+                    start, length = int(ref["offset"]), int(ref["length"])
+                    matching = [
+                        value
+                        for key, value in header.items()
+                        if key != "__metadata__" and 8 + header_length + value["data_offsets"][0] == start
+                    ]
+                    self.assertTrue(matching)
+                    metadata = matching[0]
+                    self.assertEqual(length, metadata["data_offsets"][1] - metadata["data_offsets"][0])
+                    self.assertEqual(tuple(initializer.dims), tuple(metadata["shape"]))
+                    self.assertEqual(initializer.data_type, ir.FLOAT)
+                    self.assertEqual(to_array(initializer, output).tobytes(), content[start : start + length])
+                else:
+                    generated.append(ref)
+                    self.assertIn(".onnx.data", ref["location"])
+                    self.assertGreaterEqual(int(ref["length"]), 1024)
+            self.assertTrue(original)
+            self.assertTrue(generated)
+            self.assertTrue(inline)
+            self.assertLess(len({(r["location"], r["offset"], r["length"]) for r in original}), len(original))
+            self.assertTrue(any("_Q4" in t.name and t.data_location == ir.EXTERNAL for t in proto.graph.initializer))
+            feeds = {
+                "input_ids": np.array([[1, 2, 3]], dtype=np.int64),
+                "attention_mask": np.ones((1, 3), dtype=np.int64),
+                "position_ids": np.arange(3, dtype=np.int64).reshape(1, 3),
+                "past_key_values.0.key": np.zeros((1, 2, 0, 16), dtype=np.float32),
+                "past_key_values.0.value": np.zeros((1, 2, 0, 16), dtype=np.float32),
+            }
+            session = ort.InferenceSession(path, providers=["CPUExecutionProvider"])
+            feeds = {value.name: feeds[value.name] for value in session.get_inputs()}
+            expected = session.run(None, feeds)
+            del session
+            with torch.no_grad():
+                torch_logits = model(torch.tensor([[1, 2, 3]])).logits.numpy()
+            np.testing.assert_allclose(expected[0], torch_logits, atol=0.06, rtol=0.1)
+            relocated = os.path.join(tmp, "relocated")
+            shutil.move(output, relocated)
+            shutil.rmtree(source)
+            session = ort.InferenceSession(os.path.join(relocated, "model.onnx"), providers=["CPUExecutionProvider"])
+            actual = session.run(None, feeds)
+            for a, b in zip(expected, actual):
+                self.assertEqualArray(a, b)
 
 
 if __name__ == "__main__":
