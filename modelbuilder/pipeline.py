@@ -62,10 +62,13 @@ def save_pipeline(out_dir):
     with open(os.path.join(out_dir, "genai_config.json")) as stream:
         config = json.load(stream)
     sections = {key: value for key, value in config["model"].items() if isinstance(value, dict) and "filename" in value}
-    if len({os.path.normpath(value["filename"]) for value in sections.values()}) < 2:
+    filenames = {os.path.normpath(value["filename"]) for value in sections.values()}
+    path = os.path.join(out_dir, PIPELINE_FILENAME)
+    if len(filenames) < 2:
+        if PIPELINE_FILENAME not in filenames and os.path.exists(path):
+            os.remove(path)
         return None
 
-    path = os.path.join(out_dir, PIPELINE_FILENAME)
     if any(os.path.normpath(value["filename"]) == PIPELINE_FILENAME for value in sections.values()):
         raise ValueError(f"{PIPELINE_FILENAME!r} is reserved for the PipelineProto.")
     unsupported = sorted(set(sections) - {"embedding", "decoder", "prefill", "decode"})
@@ -92,11 +95,12 @@ def save_pipeline(out_dir):
         sections["prefill"] = sections.pop("decode")
     if "prefill" not in sections:
         raise ValueError("A PipelineProto requires a prefill/decoder component.")
-    if "decode" in sections and os.path.normpath(sections["decode"]["filename"]) == os.path.normpath(sections["prefill"]["filename"]):
-        del sections["decode"]
+    shared_decode = "decode" in sections and os.path.normpath(sections["decode"]["filename"]) == os.path.normpath(sections["prefill"]["filename"])
 
     pipeline = PipelineProto(name="mbext", producer_name="mbext", pipeline_version=1)
     for role, section in sections.items():
+        if role == "decode" and shared_decode:
+            continue
         filename = section["filename"]
         if os.path.dirname(filename) not in {"", "."}:
             raise ValueError(
@@ -105,6 +109,8 @@ def save_pipeline(out_dir):
         model = load_model(os.path.join(out_dir, filename), load_external_data=False)
         _bind_state(model, section)
         getattr(pipeline, role).CopyFrom(model)
+    if shared_decode:
+        _bind_state(pipeline.prefill, sections["decode"])
 
     decoder = sections["prefill"]
     token_model = sections.get("embedding", decoder)
@@ -115,7 +121,7 @@ def save_pipeline(out_dir):
         declared_logits = section.get("outputs", {}).get("logits")
         if declared_logits is not None and declared_logits != pipeline.logits_name:
             raise ValueError("PipelineProto requires identical prefill/decode logits names.")
-    token_roles = ("embedding",) if pipeline.has_embedding() else tuple(role for role in ("prefill", "decode") if role in sections)
+    token_roles = ("embedding",) if pipeline.has_embedding() else ("prefill", "decode") if pipeline.has_decode() else ("prefill",)
     for role in token_roles:
         if pipeline.input_ids_name not in {value.name for value in getattr(pipeline, role).graph.input}:
             raise ValueError(f"Missing pipeline token input {pipeline.input_ids_name!r} in {role}.")
@@ -133,7 +139,8 @@ def save_pipeline(out_dir):
         for role in ("prefill", "decode"):
             if role not in sections:
                 continue
-            consumed = {value.name for value in getattr(pipeline, role).graph.input}
+            component_role = "prefill" if role == "decode" and shared_decode else role
+            consumed = {value.name for value in getattr(pipeline, component_role).graph.input}
             embedding_input = sections[role].get("inputs", {}).get("inputs_embeds")
             if embedding_input not in produced or embedding_input not in consumed:
                 raise ValueError(f"Embedding outputs do not match {role} inputs; " "PipelineProto does not support interface renaming.")

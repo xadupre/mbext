@@ -347,6 +347,31 @@ class TestPipeline(ExtTestCase):
             self.assertIsNone(save_pipeline(folder))
             self.assertEqual(before, self._snapshot(folder))
 
+    def test_single_model_overwrite_removes_stale_pipeline(self):
+        with tempfile.TemporaryDirectory() as folder:
+            config, _, _ = self._export(folder)
+            save_pipeline(folder)
+            pipeline_path = os.path.join(folder, PIPELINE_FILENAME)
+            self.assertTrue(os.path.exists(pipeline_path))
+            del config["model"]["embedding"]
+            self._write_config(folder, config)
+            self.assertIsNone(save_pipeline(folder))
+            self.assertFalse(os.path.exists(pipeline_path))
+
+    def test_single_standalone_pipeline_filename_is_preserved(self):
+        with tempfile.TemporaryDirectory() as folder:
+            config, _, _ = self._export(folder)
+            del config["model"]["embedding"]
+            config["model"]["decoder"]["filename"] = PIPELINE_FILENAME
+            pipeline_path = os.path.join(folder, PIPELINE_FILENAME)
+            shutil.copyfile(os.path.join(folder, "prefill.onnx"), pipeline_path)
+            with open(pipeline_path, "rb") as stream:
+                standalone = stream.read()
+            self._write_config(folder, config)
+            self.assertIsNone(save_pipeline(folder))
+            with open(pipeline_path, "rb") as stream:
+                self.assertEqual(stream.read(), standalone)
+
     @hide_stdout()
     def test_prefill_decode_without_separate_embedding(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -385,6 +410,7 @@ class TestPipeline(ExtTestCase):
         with tempfile.TemporaryDirectory() as folder:
             config, _, _ = self._export(folder)
             config["model"]["prefill"] = dict(config["model"]["decoder"])
+            config["model"]["prefill"]["outputs"] = {"present_key_names": ["present"]}
             config["model"]["decoder"]["filename"] = "./prefill.onnx"
             config["model"]["eos_token_id"] = [2, 3]
             config["search"].update(do_sample=True, temperature=0.75)
@@ -396,6 +422,7 @@ class TestPipeline(ExtTestCase):
             pipeline.ParseFromFile(os.path.join(folder, PIPELINE_FILENAME))
             self.assertFalse(pipeline.has_decode())
             self.assertEqual(pipeline.temperature, 0.75)
+            self.assertEqual(pipeline.logits_name, "scores")
             self.assertEqual(pipeline.eos_token_id, 2)
             self.assertIn("Multiple stop IDs", output.getvalue())
 
