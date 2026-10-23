@@ -5,6 +5,7 @@
 # --------------------------------------------------------------------------
 """Offline checks for MLX groupwise checkpoint conversion."""
 
+import json
 import os
 import tempfile
 
@@ -150,9 +151,10 @@ class TestMLXCheckpoint(ExtTestCase):
 
     @requires_transformers("5")
     def test_tiny_qwen_components(self):
-        from transformers import Qwen3_5ForConditionalGeneration
+        from transformers import Qwen2VLImageProcessor, Qwen3VLProcessor, Qwen3VLVideoProcessor, Qwen3_5ForConditionalGeneration
         from transformers.models.qwen3_5.configuration_qwen3_5 import Qwen3_5Config, Qwen3_5TextConfig, Qwen3_5VisionConfig
 
+        from modelbuilder.builder import create_model
         from modelbuilder.builders.qwen import Qwen35EmbeddingModel, Qwen35TextModel, Qwen35VisionEncoderModel
 
         rope = {"type": "mrope", "rope_type": "default", "mrope_section": [2, 3, 3], "rope_theta": 10000.0, "partial_rotary_factor": 0.25}
@@ -165,6 +167,8 @@ class TestMLXCheckpoint(ExtTestCase):
             head_dim=64,
             max_position_embeddings=256,
             vocab_size=64,
+            bos_token_id=1,
+            eos_token_id=2,
             layer_types=["full_attention", "linear_attention"],
             linear_num_key_heads=2,
             linear_num_value_heads=2,
@@ -378,3 +382,32 @@ class TestMLXCheckpoint(ExtTestCase):
                     mlx_decode = self._decoder_step(session, decode_embeddings, decode_positions, decode_mask, mlx_prefill)
                     dense_decode = self._decoder_step(reference_session, decode_embeddings, decode_positions, decode_mask, dense_prefill)
                     np.testing.assert_allclose(mlx_decode["logits"], dense_decode["logits"], rtol=1e-3, atol=2e-3)
+
+            config.quantization_config = {"quant_method": "mlx", "bits": 2, "group_size": 128}
+            config.save_pretrained(directory)
+            processor = Qwen3VLProcessor(
+                image_processor=Qwen2VLImageProcessor(patch_size=2, temporal_patch_size=2, merge_size=2),
+                tokenizer=self.make_word_level_tokenizer(),
+                video_processor=Qwen3VLVideoProcessor(patch_size=2, temporal_patch_size=2, merge_size=2),
+            )
+            processor.save_pretrained(directory)
+            package_directory = f"{directory}/package"
+            for precision, extra, message in (
+                ("int4", {}, "requires --precision int2"),
+                ("int2", {"use_qdq": True}, "requires MatMulNBits"),
+            ):
+                with self.subTest(precision=precision, extra=extra):
+                    with self.assertRaisesRegex(ValueError, message):
+                        create_model(
+                            "offline-mlx", directory, package_directory, precision, "cpu", f"{directory}/cache", mlx_quantized=True, **extra
+                        )
+            create_model("offline-mlx", directory, package_directory, "int2", "cpu", f"{directory}/cache", mlx_quantized=True)
+            with open(f"{package_directory}/genai_config.json") as stream:
+                genai_config = json.load(stream)
+            for component in ("vision", "embedding", "decoder"):
+                path = os.path.join(package_directory, genai_config["model"][component]["filename"])
+                package_session = ort.InferenceSession(path, providers=["CPUExecutionProvider"])
+                self.assertTrue(package_session.get_outputs())
+            self.assertTrue(os.path.isfile(f"{package_directory}/processor_config.json"))
+            package_prefill = self._decoder_step(package_session, embeddings, positions, mask)
+            np.testing.assert_allclose(package_prefill["logits"], dense_prefill["logits"], rtol=1e-3, atol=2e-3)
