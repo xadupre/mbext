@@ -33,7 +33,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
-    "black==26.5.1",
+    "black==26.10.1",
     "huggingface_hub>=1.5.0",
     "mypy==2.3.0",
     "onnx-light-cpu @ https://github.com/xadupre/onnx-light-cpu/releases/download/0.1.21/onnx_light_cpu-0.1.21-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl ; python_version == '3.12' and sys_platform == 'linux' and platform_machine == 'x86_64'",
