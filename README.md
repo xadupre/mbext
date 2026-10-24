@@ -1,5 +1,7 @@
 # ModelBuilder for onnxruntime-genai
 
+Fast Experimental Exporter for transformers.
+
 <p align="center">
   <a href="https://github.com/xadupre/mbext">
     <img src="docs/_static/logo.svg" alt="mbext logo" width="320">

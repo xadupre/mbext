@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "modelbuilder"
 version = "0.1.0"
-description = "Writes LLM in ONNX format."
+description = "Fast Experimental Exporter for transformers"
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
