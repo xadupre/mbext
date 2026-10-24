@@ -37,6 +37,20 @@ It covers the design, the command lines, an automatically generated list of the
 onnxruntime-genai model builder and with Mobius, the `--private` scenario, and a
 gallery with a runnable `create_model` example on random weights.
 
+## Releases
+
+Every pushed Git tag triggers the
+[`Build Release Wheels`](.github/workflows/build_release_wheel.yml) workflow.
+It builds the pure-Python `modelbuilder` wheel and source distribution, creates
+the corresponding GitHub Release if needed, and attaches both distributions.
+The wheel is platform-independent; native dependencies are installed separately
+according to the package metadata.
+
+To rebuild an existing release, run the workflow manually with its `tag` input
+(for example, `0.1.0`, without the `refs/tags/` prefix). Reruns replace matching
+assets without changing existing release notes. See [CHANGELOGS.md](CHANGELOGS.md)
+for release changes.
+
 ## Convert a model
 
 Example converting ``Qwen/Qwen3-8B`` to ONNX for CPU with int4 precision:
