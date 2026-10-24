@@ -1076,7 +1076,8 @@ class Model(LocalFunctionsMixin):
     def _save_with_reused_weights(
         model: ModelProto, out_path: str, data_path: str, max_shard_size: int | None, *, exports=None, payloads=None
     ) -> None:
-        exports = exports or [(model, out_path, data_path, max_shard_size)]
+        if exports is None:
+            exports = [(model, out_path, data_path, max_shard_size)]
         generated = ModelProto()
         generated.graph.name = "generated_initializers"
         initializers = []
