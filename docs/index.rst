@@ -1,7 +1,8 @@
 mbext documentation
 ====================
 
-**mbext** (``modelbuilder``) writes large language models in the ONNX format so
+**mbext** (``modelbuilder``) is a Fast Experimental Exporter for transformers.
+It writes large language models in the ONNX format so
 they can run with `onnxruntime-genai
 <https://github.com/microsoft/onnxruntime-genai>`_. The code base started as a
 fork of the model builder shipped in `onnxruntime-genai
