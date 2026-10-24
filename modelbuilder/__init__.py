@@ -4,5 +4,5 @@
 # license information.
 # --------------------------------------------------------------------------
 
-# Version of onnxruntime-genai this repository was created against.
-__version__ = "0.13.0"
+# Version of this package.
+__version__ = "0.2.1"
