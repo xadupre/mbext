@@ -1076,6 +1076,7 @@ class Model(LocalFunctionsMixin):
     def _save_with_reused_weights(
         model: ModelProto, out_path: str, data_path: str, max_shard_size: int | None, *, exports=None, payloads=None
     ) -> None:
+        """Saves components without pruning potentially shared external-data files."""
         if exports is None:
             exports = [(model, out_path, data_path, max_shard_size)]
         generated = ModelProto()

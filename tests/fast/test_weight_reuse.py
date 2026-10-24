@@ -8,6 +8,7 @@ import hashlib
 import json
 import os
 import shutil
+import stat
 import struct
 import tempfile
 import unittest
@@ -163,11 +164,19 @@ class TestWeightRelocation(ExtTestCase):
         with tempfile.TemporaryDirectory(dir="/dev/shm") as source_tmp, tempfile.TemporaryDirectory() as output:
             source = Path(source_tmp) / "source"
             paths = self.checkpoint(source)
+            for index, path in enumerate(paths):
+                path.chmod(0o640 if index == 0 else 0o644)
+                timestamp = 1_700_000_000_123456789 + index
+                os.utime(path, ns=(timestamp, timestamp))
             original = {path.name: path.read_bytes() for path in paths}
+            metadata = {path.name: path.stat() for path in paths}
             WeightReuse(source, output).relocate()
             self.assertFalse(any(path.exists() for path in paths))
             for name, data in original.items():
-                self.assertEqual((Path(output) / ".weights" / name).read_bytes(), data)
+                destination = Path(output) / ".weights" / name
+                self.assertEqual(destination.read_bytes(), data)
+                self.assertEqual(stat.S_IMODE(destination.stat().st_mode), stat.S_IMODE(metadata[name].st_mode))
+                self.assertEqual(destination.stat().st_mtime_ns, metadata[name].st_mtime_ns)
             self.assertEqual(sorted(path.name for path in (Path(output) / ".weights").iterdir()), sorted(original))
 
 

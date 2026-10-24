@@ -111,15 +111,20 @@ Both floating-point and integer-precision exports are supported. Original
 safetensors are preserved byte-for-byte, including their headers. Quantized,
 repacked, or otherwise newly materialized weights use a separate generated
 external-data file (`model.onnx.data` for a single model), while constants below
-the existing 1024-byte threshold remain inline. No generated-weight file is
+the existing 1024-byte threshold remain inline. No new generated-weight file is
 created when none is needed. Component models and `pipeline.onnx` share weight
 files and identical generated payloads rather than duplicating them.
+
+Use a clean output directory for each independent export. Shared-weight
+finalization does not prune existing generated data files, because other
+components may still reference them.
 
 Keep the **complete export directory**, including `.weights` and generated data
 shards, together when moving it. All external references are relative to the
 export, not the old checkpoint or the working directory. Moving weights across
-filesystems temporarily copies each shard before removing its source; an
-interrupted relocation leaves a complete weight file at the source or destination.
+filesystems temporarily copies each shard, preserving its permissions and
+timestamps, before removing its source; an interrupted relocation leaves a
+complete weight file at the source or destination.
 After relocation the original checkpoint directory is no longer a complete
 checkpoint.
 

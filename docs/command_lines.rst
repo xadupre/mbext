@@ -130,7 +130,7 @@ With ``--model_name``, the checkpoint is downloaded to ``<output>/.weights``.
 Files already inside the export are not moved again. Safetensors must be regular
 files, not symbolic links; destination collisions are rejected, not overwritten.
 Relocation publishes a complete destination file before removing its source,
-including across filesystems.
+including across filesystems, and preserves source permissions and timestamps.
 
 Both floating-point and integer-precision exports can reuse compatible original
 tensor storage. Original shards are never rewritten or resharded, and offsets
@@ -144,6 +144,10 @@ generated storage. Each component writes only its new generated payloads through
 onnx-light external storage; component protos never stage those bytes inline.
 Finalization also reuses this generated-storage index for additional components
 discovered through ``genai_config.json``.
+
+Use a clean output directory for each independent export. Shared-weight
+finalization does not prune existing generated data files, because other
+components may still reference them.
 
 Configuration-only exports do not inspect or relocate checkpoint weight files,
 even when ``--reuse-weights`` is enabled.

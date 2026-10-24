@@ -82,7 +82,7 @@ class WeightReuse:
         return exports
 
     def relocate(self):
-        """Publish a complete file before removing its source, even across devices."""
+        """Publishes complete files with source permissions and timestamps before removing their sources."""
         for source, destination in self.destinations.items():
             if source == destination:
                 continue
@@ -100,7 +100,7 @@ class WeightReuse:
                 with tempfile.NamedTemporaryFile(dir=os.path.dirname(destination), delete=False) as temporary:
                     temporary_path = temporary.name
                 try:
-                    shutil.copyfile(source, temporary_path)
+                    shutil.copy2(source, temporary_path)
                     # Hard-link publication never replaces an existing destination.
                     os.link(temporary_path, destination)
                 finally:
