@@ -143,7 +143,9 @@ their additional ``pipeline.onnx`` share the original shards and deduplicated
 generated storage. Each component writes only its new generated payloads through
 onnx-light external storage; component protos never stage those bytes inline.
 Finalization also reuses this generated-storage index for additional components
-discovered through ``genai_config.json``.
+discovered through ``genai_config.json``. New payloads discovered at that stage
+use fresh onnx-light-assigned external-data filenames, preserving the contents
+and offsets of all previously referenced shards.
 
 Use a clean output directory for each independent export. Shared-weight
 finalization does not prune existing generated data files, because other

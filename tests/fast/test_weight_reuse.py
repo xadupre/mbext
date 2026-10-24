@@ -58,11 +58,19 @@ class SplitStorageModel(StorageModel):
         tensor.raw_data = onh.to_array(tensor, output_dir).tobytes()
         tensor.external_data.clear()
         tensor.data_location = onnx.TensorProto.DEFAULT
+        model.graph.node[0].output.clear()
+        model.graph.node[0].output.append("sum")
+        for index in range(2):
+            name = f"new_weight_{index}"
+            value = np.full((32, 32), index + 2, dtype=np.float32)
+            model.graph.initializer.append(onh.from_array(value, name=name))
+        model.graph.node.append(oh.make_node("Add", ["sum", "new_weight_0"], ["sum_new"]))
+        model.graph.node.append(oh.make_node("Add", ["sum_new", "new_weight_1"], ["logits"]))
         onnx.save_model(model, os.path.join(output_dir, "decode.onnx"))
         config = {"model": {"prefill": {"filename": self.filename}, "decode": {"filename": "decode.onnx"}}}
         Path(output_dir, "genai_config.json").write_text(json.dumps(config))
-        data_path = Path(output_dir, self.filename + ".data")
-        Path(output_dir, "staged.sha256").write_text(hashlib.sha256(data_path.read_bytes()).hexdigest())
+        hashes = {path.name: hashlib.sha256(path.read_bytes()).hexdigest() for path in Path(output_dir).glob("*.data*")}
+        Path(output_dir, "staged.sha256.json").write_text(json.dumps(hashes))
 
     def save_processing(self, hf_name, extra_kwargs, output_dir):
         pass
@@ -317,11 +325,15 @@ class TestSharedGeneratedWeights(ExtTestCase):
                 execution_provider="cpu",
                 cache_dir=os.path.join(tmp, "cache"),
                 reuse_downloaded_weights=True,
+                max_shard_size=4096,
                 private=f";{converter};",
             )
-            data_path = output / "prefill.onnx.data"
-            self.assertEqual(hashlib.sha256(data_path.read_bytes()).hexdigest(), (output / "staged.sha256").read_text())
-            self.assertEqual(list(output.glob("*.data*")), [data_path])
+            staged_hashes = json.loads((output / "staged.sha256.json").read_text())
+            for name, digest in staged_hashes.items():
+                self.assertEqual(hashlib.sha256((output / name).read_bytes()).hexdigest(), digest)
+            data_paths = list(output.glob("*.data*"))
+            self.assertEqual(len(data_paths), 4)
+            self.assertTrue(all(path.stat().st_size == 4096 for path in data_paths))
             models = [onnx.load_model(output / name, load_external_data=False) for name in ("prefill.onnx", "decode.onnx")]
             refs = [dict((entry.key, entry.value) for entry in model.graph.initializer[0].external_data) for model in models]
             self.assertEqual(refs[0], refs[1])
@@ -329,6 +341,28 @@ class TestSharedGeneratedWeights(ExtTestCase):
             for model in models:
                 self.assertEqualArray(onh.to_array(model.graph.initializer[0], str(output)), weight)
                 self.assertEqualArray(onh.to_array(model.graph.initializer[1], str(output)), np.ones((32, 32), dtype=np.float32))
+            for index in range(2):
+                tensor = models[1].graph.initializer[index + 2]
+                self.assertEqualArray(onh.to_array(tensor, str(output)), np.full((32, 32), index + 2, dtype=np.float32))
+            pipeline = onnx.PipelineProto()
+            pipeline.ParseFromFile(str(output / "pipeline.onnx"))
+            for index in range(2):
+                tensor = pipeline.decode.graph.initializer[index + 2]
+                self.assertEqualArray(onh.to_array(tensor, str(output)), np.full((32, 32), index + 2, dtype=np.float32))
+            hashes = {path.name: hashlib.sha256(path.read_bytes()).hexdigest() for path in data_paths}
+            exports = [
+                (model, str(output / name), str(output / "prefill.onnx.data"), 4096)
+                for model, name in zip(models, ("prefill.onnx", "decode.onnx"))
+            ]
+            Model._save_with_reused_weights(*exports[0], exports=exports)
+            self.assertEqual({path.name: hashlib.sha256(path.read_bytes()).hexdigest() for path in output.glob("*.data*")}, hashes)
+            relocated = Path(tmp, "relocated")
+            shutil.move(output, relocated)
+            shutil.rmtree(source)
+            for name, increment in (("prefill.onnx", 0), ("decode.onnx", 5)):
+                session = ort.InferenceSession(str(relocated / name), providers=["CPUExecutionProvider"])
+                result = session.run(None, {"input_ids": np.ones((32, 32), dtype=np.float32)})
+                self.assertEqualArray(result[0], weight + 1 + increment)
 
 
 if __name__ == "__main__":

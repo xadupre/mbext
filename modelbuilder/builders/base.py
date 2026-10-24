@@ -1077,6 +1077,8 @@ class Model(LocalFunctionsMixin):
         model: ModelProto, out_path: str, data_path: str, max_shard_size: int | None, *, exports=None, payloads=None
     ) -> None:
         """Saves components without pruning potentially shared external-data files."""
+        # Finalization may discover new payloads after the staged data files are referenced.
+        location = os.path.basename(data_path) if exports is None else None
         if exports is None:
             exports = [(model, out_path, data_path, max_shard_size)]
         generated = ModelProto()
@@ -1116,7 +1118,7 @@ class Model(LocalFunctionsMixin):
                 generated,
                 temp_path,
                 save_as_external_data=True,
-                location=os.path.basename(data_path),
+                location=location,
                 size_threshold=1024,
                 max_external_file_size=max_shard_size or 0,
             )
