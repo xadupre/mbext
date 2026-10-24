@@ -19,8 +19,8 @@ class TestDependencyWheels(ExtTestCase):
             project = tomllib.load(f)["project"]
 
         for requirements, package, version in (
-            (project["dependencies"], "onnx-light", "0.2.0"),
-            (project["optional-dependencies"]["dev"], "onnx-light-cpu", "0.2.0"),
+            (project["dependencies"], "onnx-light", "0.2.1"),
+            (project["optional-dependencies"]["dev"], "onnx-light-cpu", "0.2.1"),
         ):
             wheels = [requirement for requirement in requirements if requirement.startswith(f"{package} @ ")]
             self.assertTrue(wheels)
