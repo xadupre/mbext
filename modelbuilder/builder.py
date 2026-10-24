@@ -652,7 +652,9 @@ def create_model(model_name, input_path, output_dir, precision, execution_provid
             reuse.relocate()
             if exports:
                 model, out_path, data_path, max_shard_size = exports[0]
-                Model._save_with_reused_weights(model, out_path, data_path, max_shard_size, exports=exports)
+                Model._save_with_reused_weights(
+                    model, out_path, data_path, max_shard_size, exports=exports, payloads=reuse.generated_payloads
+                )
         save_pipeline(output_dir)
 
     # Copy Hugging Face processing files to output folder

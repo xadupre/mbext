@@ -15,15 +15,16 @@ from pathlib import Path
 
 import numpy as np
 import onnx_light.onnx as onnx
-import onnx_light.onnx.helper as helper
+import onnx_light.onnx.helper as oh
+import onnx_light.onnx.numpy_helper as onh
 import onnxruntime as ort
-from onnx_light.onnx.numpy_helper import from_array, to_array
 from safetensors.torch import save_file
 import torch
 
+from modelbuilder.builder import create_model
 from modelbuilder.builders.base import Model
 from modelbuilder.ext_test_case import ExtTestCase, hide_stdout
-from modelbuilder.helpers.weight_reuse import WeightReuse
+from modelbuilder.helpers.weight_reuse import WeightReuse, checkpoint_paths
 from modelbuilder.pipeline import save_pipeline
 
 
@@ -32,7 +33,52 @@ class StorageModel(Model):
         return self.proto
 
 
+class SplitStorageModel(StorageModel):
+    def __init__(self, config, io_dtype, onnx_dtype, execution_provider, cache_dir, extra_options):
+        self.filename = "prefill.onnx"
+        self.cache_dir = cache_dir
+        self.quant_type = None
+        self.onnx_dtype = onnx_dtype
+        self.extra_options = extra_options
+        self.reuse_downloaded_weights = True
+        self._used_source_weight_files = set()
+
+    def make_model(self, input_path):
+        weight = onh.from_array(np.arange(1024, dtype=np.float32).reshape(32, 32), name="weight")
+        other = onh.from_array(np.ones((32, 32), dtype=np.float32), name="other")
+        info = oh.make_tensor_value_info("input_ids", onnx.TensorProto.FLOAT, [32, 32])
+        output = oh.make_tensor_value_info("logits", onnx.TensorProto.FLOAT, [32, 32])
+        graph = oh.make_graph([oh.make_node("Add", ["input_ids", "weight"], ["logits"])], "split", [info], [output], [weight, other])
+        self.proto = oh.make_model(graph, ir_version=10, opset_imports=[oh.make_opsetid("", 21)])
+
+    def make_genai_config(self, hf_name, extra_kwargs, output_dir):
+        model = onnx.load_model(os.path.join(output_dir, self.filename), load_external_data=False)
+        tensor = model.graph.initializer[0]
+        tensor.raw_data = onh.to_array(tensor, output_dir).tobytes()
+        tensor.external_data.clear()
+        tensor.data_location = onnx.TensorProto.DEFAULT
+        onnx.save_model(model, os.path.join(output_dir, "decode.onnx"))
+        config = {"model": {"prefill": {"filename": self.filename}, "decode": {"filename": "decode.onnx"}}}
+        Path(output_dir, "genai_config.json").write_text(json.dumps(config))
+        data_path = Path(output_dir, self.filename + ".data")
+        Path(output_dir, "staged.sha256").write_text(hashlib.sha256(data_path.read_bytes()).hexdigest())
+
+    def save_processing(self, hf_name, extra_kwargs, output_dir):
+        pass
+
+
 class TestWeightRelocation(ExtTestCase):
+    def test_missing_checkpoint_is_reported_before_metadata_or_relocation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            Path(tmp, "optimizer.safetensors").write_bytes(b"unrelated")
+            model = Model.__new__(Model)
+            model.source_model_path = tmp
+            model.external_data_base_dir = tmp
+            for action in (lambda: checkpoint_paths(tmp), lambda: WeightReuse(tmp, tmp), model._read_safetensors_metadata):
+                with self.subTest(action=action), self.assertRaisesRegex(ValueError, "No safetensors checkpoint was found"):
+                    action()
+            self.assertEqual(Path(tmp, "optimizer.safetensors").read_bytes(), b"unrelated")
+
     def checkpoint(self, directory):
         os.makedirs(directory)
         paths = []
@@ -131,12 +177,12 @@ class TestSharedGeneratedWeights(ExtTestCase):
         model.ir_version = 10
         model.opset_import.add(domain="", version=21)
         model.graph.name = "test"
-        model.graph.input.append(helper.make_tensor_value_info("input_ids", onnx.TensorProto.FLOAT, [32, 32]))
-        model.graph.output.append(helper.make_tensor_value_info("logits", onnx.TensorProto.FLOAT, [32, 32]))
-        model.graph.initializer.append(from_array(weight, name="weight"))
-        model.graph.initializer.append(from_array(weight, name="alias"))
-        model.graph.initializer.append(from_array(np.array([1], dtype=np.float32), name="small"))
-        model.graph.node.append(helper.make_node("Add", ["input_ids", "weight"], ["logits"]))
+        model.graph.input.append(oh.make_tensor_value_info("input_ids", onnx.TensorProto.FLOAT, [32, 32]))
+        model.graph.output.append(oh.make_tensor_value_info("logits", onnx.TensorProto.FLOAT, [32, 32]))
+        model.graph.initializer.append(onh.from_array(weight, name="weight"))
+        model.graph.initializer.append(onh.from_array(weight, name="alias"))
+        model.graph.initializer.append(onh.from_array(np.array([1], dtype=np.float32), name="small"))
+        model.graph.node.append(oh.make_node("Add", ["input_ids", "weight"], ["logits"]))
         return model
 
     @hide_stdout()
@@ -155,10 +201,10 @@ class TestSharedGeneratedWeights(ExtTestCase):
             paths = [os.path.join(tmp, name) for name in ("prefill.onnx", "decode.onnx")]
             models = [self.component(a), self.component(b)]
             # One identical tensor under different names and in both components.
-            models[1].graph.initializer[1].CopyFrom(from_array(a.reshape(16, 64), name="shared"))
+            models[1].graph.initializer[1].CopyFrom(onh.from_array(a.reshape(16, 64), name="shared"))
             for model, path in zip(models, paths):
                 original = model.graph.initializer.add()
-                original.CopyFrom(from_array(a, name="original"))
+                original.CopyFrom(onh.from_array(a, name="original"))
                 original.raw_data = b""
                 original.data_location = onnx.TensorProto.EXTERNAL
                 for key, value in (("location", ".weights/model.safetensors"), ("offset", str(offset)), ("length", str(a.nbytes))):
@@ -166,7 +212,7 @@ class TestSharedGeneratedWeights(ExtTestCase):
                     entry.key, entry.value = key, value
                 model.graph.node[0].output.clear()
                 model.graph.node[0].output.append("sum")
-                model.graph.node.append(helper.make_node("Add", ["sum", "original"], ["logits"]))
+                model.graph.node.append(oh.make_node("Add", ["sum", "original"], ["logits"]))
                 builder = StorageModel.__new__(StorageModel)
                 builder.proto = model
                 builder.filename = os.path.basename(path)
@@ -207,8 +253,8 @@ class TestSharedGeneratedWeights(ExtTestCase):
             self.assertEqual({e.key: e.value for e in pipeline.decode.graph.initializer[1].external_data}, refs[0][0])
             self.assertEqual(hashes, {name: hashlib.sha256(Path(tmp, name).read_bytes()).digest() for name in files})
             for path, expected in zip(paths, (a, b)):
-                self.assertEqualArray(to_array(onnx.load_model(path).graph.initializer[0], tmp), expected)
-                self.assertEqualArray(to_array(onnx.load_model(path).graph.initializer[3], tmp), a)
+                self.assertEqualArray(onh.to_array(onnx.load_model(path).graph.initializer[0], tmp), expected)
+                self.assertEqualArray(onh.to_array(onnx.load_model(path).graph.initializer[3], tmp), a)
             Model._save_with_reused_weights(*exports[0], exports=exports)
             self.assertEqual(files, sorted(name for name in os.listdir(tmp) if ".data" in name))
             self.assertEqual(hashes, {name: hashlib.sha256(Path(tmp, name).read_bytes()).digest() for name in files})
@@ -218,7 +264,7 @@ class TestSharedGeneratedWeights(ExtTestCase):
             pipeline.ParseFromFile(os.path.join(relocated, "pipeline.onnx"))
             for role, path, weight in zip(("prefill", "decode"), paths, (a, b)):
                 component = getattr(pipeline, role)
-                self.assertEqualArray(to_array(component.graph.initializer[3], relocated), a)
+                self.assertEqualArray(onh.to_array(component.graph.initializer[3], relocated), a)
                 session = ort.InferenceSession(os.path.join(relocated, os.path.basename(path)), providers=["CPUExecutionProvider"])
                 result = session.run(None, {"input_ids": np.ones((32, 32), dtype=np.float32)})
                 self.assertEqualArray(result[0], 1 + weight + a)
@@ -241,7 +287,39 @@ class TestSharedGeneratedWeights(ExtTestCase):
             self.assertEqual(sorted(Path(tmp).glob("*.data*")), [Path(paths[0] + ".data")])
             self.assertEqual(os.path.getsize(paths[0] + ".data"), weight.nbytes)
             for path in paths:
-                self.assertEqualArray(to_array(onnx.load_model(path).graph.initializer[0], tmp), weight)
+                self.assertEqualArray(onh.to_array(onnx.load_model(path).graph.initializer[0], tmp), weight)
+
+    @hide_stdout()
+    def test_final_export_reuses_payloads_for_discovered_components(self):
+        from transformers import LlamaConfig
+
+        with tempfile.TemporaryDirectory() as tmp:
+            source, output = Path(tmp, "source"), Path(tmp, "export")
+            source.mkdir()
+            LlamaConfig().save_pretrained(source)
+            save_file({"original": torch.ones(1)}, source / "model.safetensors")
+            converter = Path(tmp, "convert.py")
+            converter.write_text("from test_weight_reuse import SplitStorageModel as MODEL_BUILDER\n")
+            create_model(
+                model_name=None,
+                input_path=str(source),
+                output_dir=str(output),
+                precision="fp32",
+                execution_provider="cpu",
+                cache_dir=os.path.join(tmp, "cache"),
+                reuse_downloaded_weights=True,
+                private=f";{converter};",
+            )
+            data_path = output / "prefill.onnx.data"
+            self.assertEqual(hashlib.sha256(data_path.read_bytes()).hexdigest(), (output / "staged.sha256").read_text())
+            self.assertEqual(list(output.glob("*.data*")), [data_path])
+            models = [onnx.load_model(output / name, load_external_data=False) for name in ("prefill.onnx", "decode.onnx")]
+            refs = [dict((entry.key, entry.value) for entry in model.graph.initializer[0].external_data) for model in models]
+            self.assertEqual(refs[0], refs[1])
+            weight = np.arange(1024, dtype=np.float32).reshape(32, 32)
+            for model in models:
+                self.assertEqualArray(onh.to_array(model.graph.initializer[0], str(output)), weight)
+                self.assertEqualArray(onh.to_array(model.graph.initializer[1], str(output)), np.ones((32, 32), dtype=np.float32))
 
 
 if __name__ == "__main__":

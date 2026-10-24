@@ -1089,10 +1089,7 @@ class Model(LocalFunctionsMixin):
                     continue
                 # SHA-256 over large initializer payloads is expensive and unnecessary for this
                 # deduplication key. Use a faster stdlib hash with a small digest.
-                key = (
-                    len(initializer.raw_data),
-                    hashlib.blake2b(initializer.raw_data, digest_size=16).digest(),
-                )
+                key = (len(initializer.raw_data), hashlib.blake2b(initializer.raw_data, digest_size=16).digest())
                 if key in payloads:
                     initializer.raw_data = b""
                     initializer.data_location = TensorProto.EXTERNAL

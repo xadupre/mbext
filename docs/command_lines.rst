@@ -142,9 +142,12 @@ than 1024 bytes stay inline. No empty generated-weight file is created.
 their additional ``pipeline.onnx`` share the original shards and deduplicated
 generated storage. Each component writes only its new generated payloads through
 onnx-light external storage; component protos never stage those bytes inline.
+Finalization also reuses this generated-storage index for additional components
+discovered through ``genai_config.json``.
 
 Configuration-only exports do not inspect or relocate checkpoint weight files,
 even when ``--reuse-weights`` is enabled.
+Otherwise, a missing safetensors checkpoint is reported before relocation.
 
 Keep the entire export directory together when relocating it: relative external
 locations do not depend on the old checkpoint path or the working directory.

@@ -15,13 +15,15 @@ from onnx_light.onnx import load_model
 
 
 def checkpoint_paths(directory):
-    """Select checkpoint shards, not unrelated safetensors files."""
+    """Selects checkpoint shards, not unrelated safetensors files."""
     index = os.path.join(directory, "model.safetensors.index.json")
     if os.path.isfile(index):
         with open(index) as stream:
             names = sorted(set(json.load(stream)["weight_map"].values()))
-    else:
+    elif os.path.isfile(os.path.join(directory, "model.safetensors")):
         names = ["model.safetensors"]
+    else:
+        raise ValueError(f"No safetensors checkpoint was found in {os.fspath(directory)!r}.")
     for name in names:
         if os.path.basename(name) != name or not name.endswith(".safetensors"):
             raise ValueError(f"Invalid checkpoint shard name {name!r}.")
@@ -68,9 +70,7 @@ class WeightReuse:
             )
 
         # Preserve per-component external data settings when available.
-        export_settings = {
-            os.path.abspath(path): (data_path, limit) for path, data_path, limit in self.exports
-        }
+        export_settings = {os.path.abspath(path): (data_path, limit) for path, data_path, limit in self.exports}
         default_data_path, default_limit = self.exports[0][1:]
 
         exports = []
