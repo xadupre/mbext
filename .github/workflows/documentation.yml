@@ -1,10 +1,9 @@
 name: Documentation
 
 on:
-  push:
-    branches: ["main"]
-  pull_request:
-    branches: ["main"]
+  schedule:
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -40,3 +39,27 @@ jobs:
           name: documentation-html
           path: docs/_build/html
           if-no-files-found: warn
+
+  report-failure:
+    name: Report documentation failure
+    needs: build-docs
+    if: ${{ failure() && needs.build-docs.result == 'failure' }}
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - name: Create failure issue
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            await github.rest.issues.create({
+              ...context.repo,
+              title: "Documentation build failed",
+              body: [
+                "The documentation workflow failed.",
+                "",
+                `Workflow run: ${runUrl}`,
+                `Commit: ${context.sha}`,
+              ].join("\n"),
+            });
