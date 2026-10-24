@@ -1087,7 +1087,12 @@ class Model(LocalFunctionsMixin):
             for initializer in component.graph.initializer:
                 if initializer.data_location == TensorProto.EXTERNAL or len(initializer.raw_data) < 1024:
                     continue
-                key = (len(initializer.raw_data), hashlib.sha256(initializer.raw_data).digest())
+                # SHA-256 over large initializer payloads is expensive and unnecessary for this
+                # deduplication key. Use a faster stdlib hash with a small digest.
+                key = (
+                    len(initializer.raw_data),
+                    hashlib.blake2b(initializer.raw_data, digest_size=16).digest(),
+                )
                 if key in payloads:
                     initializer.raw_data = b""
                     initializer.data_location = TensorProto.EXTERNAL
