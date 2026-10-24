@@ -19,6 +19,27 @@ folder), a target precision and an execution provider, it:
 #. builds the ONNX graph, saves it, and writes the companion files
    (``genai_config.json``, tokenizer, pre/post-processing, VS Code settings).
 
+Fast export with onnx-light
+--------------------------
+
+mbext uses `onnx-light <https://github.com/xadupre/onnx-light>`_ as its ONNX
+export backend. The shared builder constructs graphs with
+``onnx_light.onnx_core.graph_builder.GraphBuilder`` and finalizes them into
+onnx-light ONNX model objects. This builds the graph directly rather than
+tracing a PyTorch forward pass.
+
+For eligible CPU tensors, initializers borrow PyTorch storage through DLPack or
+NumPy storage through ``GraphBuilder.init(copy=False)``. Avoiding unnecessary
+weight copies reduces graph-construction overhead, especially for large models;
+conversions that require a different dtype or layout may still copy data.
+
+Model loading, saving and external-data sharding use ``onnx_light.onnx`` APIs.
+The ``--max-shard-size`` option delegates shard creation to onnx-light, while
+``--reuse-weights`` can reference existing safetensors checkpoint bytes for
+floating-point exports (see :doc:`command_lines`). These mechanisms reduce
+export I/O and copying; they do not change the target inference runtime:
+the resulting ONNX files are consumed by onnxruntime-genai.
+
 Builders
 --------
 
