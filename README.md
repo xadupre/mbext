@@ -1,6 +1,8 @@
 # ModelBuilder for onnxruntime-genai
 
-Fast Experimental Exporter for transformers.
+Fast Experimental Exporter for transformers, powered by
+[onnx-light](https://github.com/xadupre/onnx-light) for fast ONNX graph
+construction and serialization.
 
 <p align="center">
   <a href="https://github.com/xadupre/mbext">
@@ -14,8 +16,13 @@ The code base comes from https://github.com/microsoft/onnxruntime-genai/tree/mai
 It adds fast unit tests checking discrepancies, end to end test with the trained model.
 It supports more architectures.
 
-**Why mbext?** Its main advantage is a **short CI and fast tests**: every
-supported architecture is validated with a tiny, randomly-initialised model that
+**Why mbext?** It combines **fast export with onnx-light** and a **short CI
+and fast tests**. onnx-light provides the native graph builder, ONNX model
+loading and saving, and external-data sharding. Eligible CPU weights can be
+borrowed without copying during graph construction, reducing export overhead.
+The exported models remain ONNX models for onnxruntime-genai.
+
+Every supported architecture is validated with a tiny, randomly-initialised model that
 runs fully offline (no weights downloaded) in seconds, while still checking the
 numerical discrepancy between PyTorch and ONNX. See the documentation for
 details.

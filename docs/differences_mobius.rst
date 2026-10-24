@@ -57,6 +57,11 @@ top of a large shared base class that emits the graph imperatively (see
 :doc:`design`). Its scope is deliberately narrower — decoder LLMs and MoE for
 onnxruntime-genai — and its defining features are:
 
+* **Fast export with onnx-light.** The native graph builder and ONNX
+  serialization APIs come from
+  `onnx-light <https://github.com/xadupre/onnx-light>`_. Borrowing eligible CPU
+  weight storage avoids unnecessary copies during graph construction, and
+  onnx-light handles external-data saving and sharding (see :doc:`design`).
 * **Fast, offline discrepancy tests.** Every architecture ships a tiny,
   random-weight test that converts a one-layer model and compares ONNX vs.
   PyTorch logits within a precision-aware tolerance, so CI stays short and
