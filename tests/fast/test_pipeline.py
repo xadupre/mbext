@@ -349,14 +349,13 @@ class TestPipeline(ExtTestCase):
 
     def test_single_model_overwrite_removes_stale_pipeline(self):
         with tempfile.TemporaryDirectory() as folder:
-            config, _, _ = self._export(folder)
             pipeline_path = os.path.join(folder, PIPELINE_FILENAME)
-            del config["model"]["embedding"]
             for filename in ("prefill.onnx", os.path.join(".", "prefill.onnx"), os.path.join(folder, "prefill.onnx")):
                 with self.subTest(filename=filename):
-                    self._export(folder)
+                    config, _, _ = self._export(folder)
                     save_pipeline(folder)
                     self.assertTrue(os.path.exists(pipeline_path))
+                    del config["model"]["embedding"]
                     config["model"]["decoder"]["filename"] = filename
                     self._write_config(folder, config)
                     self.assertIsNone(save_pipeline(folder))
