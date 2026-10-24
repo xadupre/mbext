@@ -66,11 +66,18 @@ class WeightReuse:
                 for section in config["model"].values()
                 if isinstance(section, dict) and "filename" in section
             )
-        data_path, limit = self.exports[0][1:]
+
+        # Preserve per-component external data settings when available.
+        export_settings = {
+            os.path.abspath(path): (data_path, limit) for path, data_path, limit in self.exports
+        }
+        default_data_path, default_limit = self.exports[0][1:]
+
         exports = []
         for path in dict.fromkeys(os.path.abspath(path) for path in paths):
             if os.path.dirname(os.path.realpath(path)) != self.output_dir:
                 raise ValueError("Reused-weight component models must be saved beside the export configuration.")
+            data_path, limit = export_settings.get(path, (default_data_path, default_limit))
             exports.append((load_model(path, load_external_data=False), path, data_path, limit))
         return exports
 
