@@ -177,6 +177,10 @@ class TestSharedGeneratedWeights(ExtTestCase):
                 builder.reuse_downloaded_weights = True
                 builder._used_source_weight_files = set(reuse.paths)
                 builder.save_model(tmp)
+                staged = onnx.load_model(path, load_external_data=False)
+                self.assertTrue(all(not tensor.raw_data for tensor in staged.graph.initializer if tensor.name != "small"))
+                self.assertLess(os.path.getsize(path), a.nbytes)
+            self.assertEqual(sum(path.stat().st_size for path in Path(tmp).glob("*.data*")), a.nbytes + b.nbytes)
             self.assertTrue((source / "model.safetensors").exists())
             self.assertTrue(os.path.exists(paths[0]))
             reuse.relocate()
@@ -185,7 +189,7 @@ class TestSharedGeneratedWeights(ExtTestCase):
             exports = reuse.collect_exports()
             Model._save_with_reused_weights(*exports[0], exports=exports)
             files = sorted(name for name in os.listdir(tmp) if ".data" in name)
-            self.assertEqual(files, ["prefill.onnx.data", "prefill.onnx.data.1"])
+            self.assertEqual(files, ["decode.onnx.data", "prefill.onnx.data"])
             self.assertEqual(sum(os.path.getsize(os.path.join(tmp, name)) for name in files), a.nbytes + b.nbytes)
             saved = [onnx.load_model(path, load_external_data=False) for path in paths]
             refs = [[{e.key: e.value for e in tensor.external_data} for tensor in model.graph.initializer] for model in saved]
@@ -226,6 +230,18 @@ class TestSharedGeneratedWeights(ExtTestCase):
             Model._save_with_reused_weights(model, path, path + ".data", None)
             self.assertEqual(os.listdir(tmp), ["model.onnx"])
             self.assertTrue(all(t.data_location != onnx.TensorProto.EXTERNAL for t in onnx.load_model(path).graph.initializer))
+
+    def test_component_with_only_shared_payloads_creates_no_data_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            payloads = {}
+            weight = np.arange(1024, dtype=np.float32).reshape(32, 32)
+            paths = [os.path.join(tmp, name + ".onnx") for name in ("first", "second")]
+            for path in paths:
+                Model._save_with_reused_weights(self.component(weight), path, path + ".data", 4096, payloads=payloads)
+            self.assertEqual(sorted(Path(tmp).glob("*.data*")), [Path(paths[0] + ".data")])
+            self.assertEqual(os.path.getsize(paths[0] + ".data"), weight.nbytes)
+            for path in paths:
+                self.assertEqualArray(to_array(onnx.load_model(path).graph.initializer[0], tmp), weight)
 
 
 if __name__ == "__main__":

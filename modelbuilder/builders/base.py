@@ -1054,7 +1054,7 @@ class Model(LocalFunctionsMixin):
                 if reuse is None:
                     self._save_with_reused_weights(model, out_path, data_path, max_shard_size)
                 else:
-                    onnx.save_model(model, out_path)
+                    self._save_with_reused_weights(model, out_path, data_path, max_shard_size, payloads=reuse.generated_payloads)
                     reuse.exports.append((out_path, data_path, max_shard_size))
             else:
                 onnx.save_model(
@@ -1073,23 +1073,34 @@ class Model(LocalFunctionsMixin):
             os.rmdir(self.cache_dir)
 
     @staticmethod
-    def _save_with_reused_weights(model: ModelProto, out_path: str, data_path: str, max_shard_size: int | None, *, exports=None) -> None:
+    def _save_with_reused_weights(
+        model: ModelProto, out_path: str, data_path: str, max_shard_size: int | None, *, exports=None, payloads=None
+    ) -> None:
         exports = exports or [(model, out_path, data_path, max_shard_size)]
         generated = ModelProto()
         generated.graph.name = "generated_initializers"
         initializers = []
-        payloads = {}
+        payloads = {} if payloads is None else payloads
+        pending = {}
         for component, _, _, _ in exports:
             for initializer in component.graph.initializer:
                 if initializer.data_location == TensorProto.EXTERNAL or len(initializer.raw_data) < 1024:
                     continue
                 key = (len(initializer.raw_data), hashlib.sha256(initializer.raw_data).digest())
-                if key not in payloads:
-                    payloads[key] = len(generated.graph.initializer)
+                if key in payloads:
+                    initializer.raw_data = b""
+                    initializer.data_location = TensorProto.EXTERNAL
+                    initializer.external_data.clear()
+                    for entry_key, value in payloads[key]:
+                        entry = initializer.external_data.add()
+                        entry.key, entry.value = entry_key, value
+                    continue
+                if key not in pending:
+                    pending[key] = len(generated.graph.initializer)
                     copied = generated.graph.initializer.add()
                     copied.CopyFrom(initializer)
-                    copied.name = f"generated_{payloads[key]}"
-                initializers.append((initializer, payloads[key]))
+                    copied.name = f"generated_{pending[key]}"
+                initializers.append((initializer, key, pending[key]))
         if not initializers:
             for component, component_path, _, _ in exports:
                 onnx.save_model(component, component_path)
@@ -1106,9 +1117,10 @@ class Model(LocalFunctionsMixin):
                 max_external_file_size=max_shard_size or 0,
             )
             saved = onnx.load_model(temp_path, load_external_data=False)
-            for initializer, index in initializers:
+            for initializer, key, index in initializers:
                 externalized = saved.graph.initializer[index]
                 if externalized.data_location == TensorProto.EXTERNAL:
+                    payloads[key] = tuple((entry.key, entry.value) for entry in externalized.external_data)
                     initializer.raw_data = b""
                     initializer.data_location = TensorProto.EXTERNAL
                     initializer.external_data.clear()
@@ -1404,7 +1416,7 @@ class Model(LocalFunctionsMixin):
                 destination = reuse.destinations[path] if reuse else path
                 source_tensors[name] = SourceTensor(
                     path=os.path.abspath(path),
-                    location=os.path.relpath(destination, self.external_data_base_dir),
+                    location=os.path.relpath(os.path.realpath(destination), os.path.realpath(self.external_data_base_dir)),
                     offset=data_start + start,
                     length=end - start,
                     dtype=int(dtype),

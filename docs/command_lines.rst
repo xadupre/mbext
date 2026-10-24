@@ -140,7 +140,11 @@ external-data file (``model.onnx.data`` for a single model). Constants smaller
 than 1024 bytes stay inline. No empty generated-weight file is created.
 ``--max-shard-size`` applies only to generated weights. Multi-model exports and
 their additional ``pipeline.onnx`` share the original shards and deduplicated
-generated storage.
+generated storage. Each component writes only its new generated payloads through
+onnx-light external storage; component protos never stage those bytes inline.
+
+Configuration-only exports do not inspect or relocate checkpoint weight files,
+even when ``--reuse-weights`` is enabled.
 
 Keep the entire export directory together when relocating it: relative external
 locations do not depend on the old checkpoint path or the working directory.

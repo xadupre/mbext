@@ -167,6 +167,83 @@ class TestSourceWeightRelease(ExtTestCase):
 
 class TestReuseDownloadedWeights(ExtTestCase):
     @hide_stdout()
+    def test_config_only_does_not_require_or_move_checkpoint_weights(self):
+        from transformers import LlamaConfig
+
+        with tempfile.TemporaryDirectory() as tmp:
+            source, output = Path(tmp) / "source", Path(tmp) / "export"
+            config = LlamaConfig(
+                architectures=["LlamaForCausalLM"],
+                hidden_size=16,
+                intermediate_size=24,
+                num_attention_heads=2,
+                num_hidden_layers=1,
+                num_key_value_heads=1,
+                vocab_size=32,
+            )
+            config.save_pretrained(source)
+            self.make_word_level_tokenizer().save_pretrained(source)
+            for has_weights in (False, True):
+                with self.subTest(has_weights=has_weights):
+                    if has_weights:
+                        (source / "model.safetensors").write_bytes(b"not needed for config-only")
+                        (output / ".weights").mkdir()
+                        (output / ".weights" / "model.safetensors").write_bytes(b"existing destination")
+                    create_model(
+                        model_name=None,
+                        input_path=str(source),
+                        output_dir=str(output),
+                        precision="fp32",
+                        execution_provider="cpu",
+                        cache_dir=os.path.join(tmp, "cache"),
+                        reuse_downloaded_weights=True,
+                        config_only=True,
+                    )
+                    self.assertTrue((output / "genai_config.json").exists())
+                    self.assertFalse((output / "model.onnx").exists())
+                    if has_weights:
+                        self.assertEqual((source / "model.safetensors").read_bytes(), b"not needed for config-only")
+                        self.assertEqual((output / ".weights" / "model.safetensors").read_bytes(), b"existing destination")
+
+    @hide_stdout()
+    def test_symlinked_export_remains_relocatable(self):
+        from transformers import AutoModelForCausalLM, LlamaConfig
+
+        config = LlamaConfig(
+            architectures=["LlamaForCausalLM"],
+            hidden_size=16,
+            intermediate_size=24,
+            max_position_embeddings=16,
+            num_attention_heads=2,
+            num_hidden_layers=1,
+            num_key_value_heads=1,
+            vocab_size=32,
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            output, alias = Path(tmp) / "export", Path(tmp) / "export_alias"
+            output.mkdir()
+            alias.symlink_to(output, target_is_directory=True)
+            source = alias / ".weights"
+            AutoModelForCausalLM.from_config(config).save_pretrained(source)
+            self.make_word_level_tokenizer().save_pretrained(source)
+            create_model(
+                model_name=None,
+                input_path=str(source),
+                output_dir=str(alias),
+                precision="fp32",
+                execution_provider="cpu",
+                cache_dir=os.path.join(tmp, "cache"),
+                reuse_downloaded_weights=True,
+            )
+            model = load(output / "model.onnx", load_external_data=False)
+            locations = {entry.value for tensor in model.graph.initializer for entry in tensor.external_data if entry.key == "location"}
+            self.assertEqual(locations, {os.path.join(".weights", "model.safetensors")})
+            alias.unlink()
+            relocated = Path(tmp) / "relocated"
+            output.rename(relocated)
+            self._check_with_ort(str(relocated / "model.onnx"), cpu=True)
+
+    @hide_stdout()
     def test_reuses_safetensors_checkpoint(self):
         from transformers import AutoModelForCausalLM, LlamaConfig
 

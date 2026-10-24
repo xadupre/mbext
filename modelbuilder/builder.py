@@ -262,7 +262,8 @@ def create_model(model_name, input_path, output_dir, precision, execution_provid
     hf_name = input_path if os.path.isdir(input_path) else model_name
     hf_token = parse_hf_token(extra_options.get("hf_token", "true"))
     hf_remote = extra_options.get("hf_remote", True)
-    if extra_options.get("reuse_downloaded_weights", False):
+    config_only = "config_only" in extra_options
+    if extra_options.get("reuse_downloaded_weights", False) and not config_only:
         from .helpers.weight_reuse import WeightReuse
 
         if os.path.isdir(input_path):
@@ -312,8 +313,6 @@ def create_model(model_name, input_path, output_dir, precision, execution_provid
         # Carry the number of bits used by the MatMulNBits quantizer. int4 keeps
         # its historical default so only int2/int8/int16 change the value.
         extra_options.setdefault("int4_bits", INT_PRECISION_BITS[precision])
-    config_only = "config_only" in extra_options
-
     # List architecture options in alphabetical order
     if private_builder is not None:
         onnx_model = private_builder(config, io_dtype, onnx_dtype, execution_provider, cache_dir, extra_options)

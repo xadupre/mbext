@@ -36,6 +36,7 @@ class WeightReuse:
         self.paths = checkpoint_paths(source_dir)
         self.destinations = {}
         self.exports = []
+        self.generated_payloads = {}
         for source in self.paths:
             if not os.path.isfile(source) or os.path.islink(source):
                 raise ValueError(f"--reuse-weights requires regular safetensors files: {source!r}.")
