@@ -18,8 +18,14 @@ tracing PyTorch — so a conversion command is almost identical:
 What mbext adds
 ---------------
 
-**Fast, offline tests.** The headline difference is the test suite. mbext
-validates every builder with tiny, randomly-initialised models that run in
+**Fast export with onnx-light.** mbext uses
+`onnx-light <https://github.com/xadupre/onnx-light>`_ for native ONNX graph
+construction, model loading and saving, and external-data sharding. Eligible
+CPU weight storage is borrowed during graph construction to avoid unnecessary
+copies. The output remains ONNX for onnxruntime-genai (see :doc:`design`).
+
+**Fast, offline tests.** mbext validates every builder with tiny,
+randomly-initialised models that run in
 seconds and never download weights, checking numerical discrepancies against the
 PyTorch reference. This gives a short CI and quick, deterministic feedback (see
 :doc:`design`).

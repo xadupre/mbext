@@ -1,14 +1,16 @@
 mbext documentation
 ====================
 
-**mbext** (``modelbuilder``) is a Fast Experimental Exporter for transformers.
+**mbext** (``modelbuilder``) is a Fast Experimental Exporter for transformers,
+powered by `onnx-light <https://github.com/xadupre/onnx-light>`_ for fast ONNX
+graph construction and serialization.
 It writes large language models in the ONNX format so
 they can run with `onnxruntime-genai
 <https://github.com/microsoft/onnxruntime-genai>`_. The code base started as a
 fork of the model builder shipped in `onnxruntime-genai
 <https://github.com/microsoft/onnxruntime-genai/tree/main/src/python/py/models>`_
-and extends it with **many more architectures** and, above all, a **fast and
-short test suite**.
+and extends it with **onnx-light-based fast export**, **many more architectures**
+and a **fast and short test suite**.
 
 The source code is hosted on GitHub: `xadupre/mbext
 <https://github.com/xadupre/mbext>`_.
@@ -16,9 +18,15 @@ The source code is hosted on GitHub: `xadupre/mbext
 Why mbext?
 ----------
 
-The main advantage of mbext is its **short CI and fast tests**. Every supported
-architecture is validated with a tiny, randomly-initialised model (typically a
-single hidden layer) that:
+mbext combines **fast export with onnx-light** and **short CI with fast tests**.
+onnx-light supplies the native graph builder, ONNX model loading and saving, and
+external-data sharding. Borrowing eligible CPU weight storage during graph
+construction avoids unnecessary copies, reducing export overhead. The output
+remains ONNX for onnxruntime-genai; onnx-light is the export backend, not a
+requirement to replace the inference runtime. See :doc:`design` for details.
+
+Every supported architecture is validated with a tiny, randomly-initialised
+model (typically a single hidden layer) that:
 
 * runs **fully offline** — no model weights are downloaded from the Hugging Face
   hub, so tests never fail because of a network hiccup or a gated repository;
