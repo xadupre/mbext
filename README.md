@@ -96,10 +96,12 @@ The arguments are:
 - ``-e/--execution_provider``: execution provider to target (``cpu`` here).
 - ``-c/--cache_dir``: cache directory for Hugging Face files and temporary ONNX
   external data files.
-- ``-r/--reuse-weights``: for float models stored as safetensors, make the
-  ONNX initializers reference the downloaded checkpoint bytes directly. The
-  checkpoint is downloaded once under ``<output>/.weights`` and remains there as
-  the ONNX model's external data.
+- ``-r/--reuse-weights``: move a local safetensors checkpoint's weight shards
+  into ``<output>/.weights`` and reference compatible tensor bytes directly.
+  **This transfers ownership: the source weight files are removed.** Unrelated
+  checkpoint files are not moved. Remote checkpoints are downloaded under
+  ``<output>/.weights``. Files already inside the export are left in place;
+  destination collisions are rejected without overwriting existing data.
 - ``--max-shard-size``: maximum size of each generated ONNX external data file,
   in bytes or with a suffix such as ``2GB`` or ``512MiB``. onnx-light handles
   the sharding. Without it, all generated external data goes into
@@ -121,11 +123,26 @@ python -m modelbuilder.builder \
     --reuse-weights
 ```
 
-The option is limited to floating-point exports because quantization changes the
-weight representation. Initializers which the builder derives rather than reads
-directly from the checkpoint continue to use `model.onnx.data`. With ``--input``,
-the local checkpoint must already be inside the output directory; ``--model_name``
-handles that layout automatically.
+Both floating-point and integer-precision exports are supported. Original
+safetensors are preserved byte-for-byte, including their headers. Quantized,
+repacked, or otherwise newly materialized weights use a separate generated
+external-data file (`model.onnx.data` for a single model), while constants below
+the existing 1024-byte threshold remain inline. No new generated-weight file is
+created when none is needed. Component models and `pipeline.onnx` share weight
+files and identical generated payloads rather than duplicating them.
+
+Use a clean output directory for each independent export. Shared-weight
+finalization does not prune existing generated data files, because other
+components may still reference them.
+
+Keep the **complete export directory**, including `.weights` and generated data
+shards, together when moving it. All external references are relative to the
+export, not the old checkpoint or the working directory. Moving weights across
+filesystems temporarily copies each shard, preserving its permissions and
+timestamps, before removing its source; an interrupted relocation leaves a
+complete weight file at the source or destination.
+After relocation the original checkpoint directory is no longer a complete
+checkpoint.
 
 When the checkpoint dtype differs from the requested ONNX dtype, the model uses
 ONNX ``Cast`` nodes so the checkpoint bytes can still be reused. This avoids a

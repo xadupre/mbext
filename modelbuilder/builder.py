@@ -262,9 +262,10 @@ def create_model(model_name, input_path, output_dir, precision, execution_provid
     hf_name = input_path if os.path.isdir(input_path) else model_name
     hf_token = parse_hf_token(extra_options.get("hf_token", "true"))
     hf_remote = extra_options.get("hf_remote", True)
-    if extra_options.get("reuse_downloaded_weights", False):
-        if precision in INT_PRECISION_BITS:
-            raise ValueError("--reuse-weights is only supported for float models.")
+    config_only = "config_only" in extra_options
+    if extra_options.get("reuse_downloaded_weights", False) and not config_only:
+        from .helpers.weight_reuse import WeightReuse
+
         if os.path.isdir(input_path):
             source_model_path = os.path.abspath(input_path)
         else:
@@ -272,19 +273,8 @@ def create_model(model_name, input_path, output_dir, precision, execution_provid
 
             source_model_path = snapshot_download(repo_id=model_name, local_dir=os.path.join(output_dir, ".weights"), token=hf_token)
         source_model_path = os.path.abspath(source_model_path)
-        output_path = os.path.abspath(output_dir)
-        if os.path.commonpath((source_model_path, output_path)) != output_path:
-            raise ValueError(
-                "--reuse-weights requires the source checkpoint to be inside the output directory. "
-                "Use --model_name to download it there automatically."
-            )
-        linked_shards = [
-            filename
-            for filename in os.listdir(source_model_path)
-            if filename.endswith(".safetensors") and os.path.islink(os.path.join(source_model_path, filename))
-        ]
-        if linked_shards:
-            raise ValueError("--reuse-weights requires regular safetensors files, not symbolic links.")
+        output_path = os.path.realpath(output_dir)
+        extra_options["_weight_reuse"] = WeightReuse(source_model_path, output_path)
         extra_options["_source_model_path"] = source_model_path
         extra_options["_external_data_base_dir"] = output_path
         config_source = source_model_path
@@ -323,8 +313,6 @@ def create_model(model_name, input_path, output_dir, precision, execution_provid
         # Carry the number of bits used by the MatMulNBits quantizer. int4 keeps
         # its historical default so only int2/int8/int16 change the value.
         extra_options.setdefault("int4_bits", INT_PRECISION_BITS[precision])
-    config_only = "config_only" in extra_options
-
     # List architecture options in alphabetical order
     if private_builder is not None:
         onnx_model = private_builder(config, io_dtype, onnx_dtype, execution_provider, cache_dir, extra_options)
@@ -658,6 +646,15 @@ def create_model(model_name, input_path, output_dir, precision, execution_provid
     if not config_only:
         from .pipeline import save_pipeline
 
+        if extra_options.get("reuse_downloaded_weights", False):
+            reuse = extra_options["_weight_reuse"]
+            exports = reuse.collect_exports() if reuse.exports else []
+            reuse.relocate()
+            if exports:
+                model, out_path, data_path, max_shard_size = exports[0]
+                Model._save_with_reused_weights(
+                    model, out_path, data_path, max_shard_size, exports=exports, payloads=reuse.generated_payloads
+                )
         save_pipeline(output_dir)
 
     # Copy Hugging Face processing files to output folder
@@ -740,9 +737,9 @@ def get_args():
         dest="reuse_downloaded_weights",
         action="store_true",
         help=textwrap.dedent("""\
-            Reference float weights directly from the downloaded safetensors checkpoint instead of copying them
-            into the ONNX external data file. Hugging Face checkpoint shards are downloaded under the output
-            directory so ONNX Runtime can load them directly.
+            Move local checkpoint safetensors into the export (ownership is transferred; source files are removed).
+            Reuse compatible original tensor bytes; store transformed/quantized weights separately and small constants
+            inline. Remote checkpoints are downloaded under the output directory. Existing destination files are not overwritten.
             """),
     )
 

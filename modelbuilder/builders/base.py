@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import ast
+import hashlib
 import heapq
 import json
 import os
@@ -30,6 +31,7 @@ from transformers import AutoConfig, AutoModelForCausalLM, AutoModelForSpeechSeq
 
 from ..helpers.onnx_helper import get_default_onnx_opset, onnx, to_torch_dtype, torch_tensor_to_numpy
 from ..helpers.quantization import quantize_matmul_nbits
+from ..helpers.weight_reuse import checkpoint_paths
 from .local_functions import LocalFunctionsMixin, normalize_function_opsets
 
 
@@ -1048,7 +1050,12 @@ class Model(LocalFunctionsMixin):
         self._validate_source_weight_files(out_dir)
         with tqdm(total=len(model.graph.initializer), desc="Saving initializers") as pbar:
             if self.reuse_downloaded_weights:
-                self._save_with_reused_weights(model, out_path, data_path, max_shard_size)
+                reuse = self.extra_options.get("_weight_reuse")
+                if reuse is None:
+                    self._save_with_reused_weights(model, out_path, data_path, max_shard_size)
+                else:
+                    self._save_with_reused_weights(model, out_path, data_path, max_shard_size, payloads=reuse.generated_payloads)
+                    reuse.exports.append((out_path, data_path, max_shard_size))
             else:
                 onnx.save_model(
                     model,
@@ -1066,13 +1073,44 @@ class Model(LocalFunctionsMixin):
             os.rmdir(self.cache_dir)
 
     @staticmethod
-    def _save_with_reused_weights(model: ModelProto, out_path: str, data_path: str, max_shard_size: int | None) -> None:
+    def _save_with_reused_weights(
+        model: ModelProto, out_path: str, data_path: str, max_shard_size: int | None, *, exports=None, payloads=None
+    ) -> None:
+        """Saves components without pruning potentially shared external-data files."""
+        # Finalization may discover new payloads after the staged data files are referenced.
+        location = os.path.basename(data_path) if exports is None else None
+        if exports is None:
+            exports = [(model, out_path, data_path, max_shard_size)]
         generated = ModelProto()
         generated.graph.name = "generated_initializers"
-        initializers = [initializer for initializer in model.graph.initializer if initializer.data_location != TensorProto.EXTERNAL]
-        for initializer in initializers:
-            generated.graph.initializer.add().CopyFrom(initializer)
-            initializer.raw_data = b""
+        initializers = []
+        payloads = {} if payloads is None else payloads
+        pending = {}
+        for component, _, _, _ in exports:
+            for initializer in component.graph.initializer:
+                if initializer.data_location == TensorProto.EXTERNAL or len(initializer.raw_data) < 1024:
+                    continue
+                # SHA-256 over large initializer payloads is expensive and unnecessary for this
+                # deduplication key. Use a faster stdlib hash with a small digest.
+                key = (len(initializer.raw_data), hashlib.blake2b(initializer.raw_data, digest_size=16).digest())
+                if key in payloads:
+                    initializer.raw_data = b""
+                    initializer.data_location = TensorProto.EXTERNAL
+                    initializer.external_data.clear()
+                    for entry_key, value in payloads[key]:
+                        entry = initializer.external_data.add()
+                        entry.key, entry.value = entry_key, value
+                    continue
+                if key not in pending:
+                    pending[key] = len(generated.graph.initializer)
+                    copied = generated.graph.initializer.add()
+                    copied.CopyFrom(initializer)
+                    copied.name = f"generated_{pending[key]}"
+                initializers.append((initializer, key, pending[key]))
+        if not initializers:
+            for component, component_path, _, _ in exports:
+                onnx.save_model(component, component_path)
+            return
         with tempfile.NamedTemporaryFile(suffix=".onnx", dir=os.path.dirname(out_path), delete=False) as temporary:
             temp_path = temporary.name
         try:
@@ -1080,13 +1118,16 @@ class Model(LocalFunctionsMixin):
                 generated,
                 temp_path,
                 save_as_external_data=True,
-                location=os.path.basename(data_path),
+                location=location,
                 size_threshold=1024,
                 max_external_file_size=max_shard_size or 0,
             )
             saved = onnx.load_model(temp_path, load_external_data=False)
-            for initializer, externalized in zip(initializers, saved.graph.initializer):
+            for initializer, key, index in initializers:
+                externalized = saved.graph.initializer[index]
                 if externalized.data_location == TensorProto.EXTERNAL:
+                    payloads[key] = tuple((entry.key, entry.value) for entry in externalized.external_data)
+                    initializer.raw_data = b""
                     initializer.data_location = TensorProto.EXTERNAL
                     initializer.external_data.clear()
                     for entry in externalized.external_data:
@@ -1095,7 +1136,8 @@ class Model(LocalFunctionsMixin):
                     initializer.raw_data = externalized.raw_data
         finally:
             os.remove(temp_path)
-        onnx.save_model(model, out_path)
+        for component, component_path, _, _ in exports:
+            onnx.save_model(component, component_path)
 
     def save_quant_weight_stats(self, out_dir, model=None):
         """Write distribution statistics of the quantized weight tensors to a
@@ -1129,7 +1171,13 @@ class Model(LocalFunctionsMixin):
 
     def _make_external_initializer(self, tensor: torch.Tensor, name: str, to: int | None) -> bool:
         source = self._source_tensors_by_data_ptr.get(tensor.data_ptr())
-        if source is None or tensor.numel() != int(np.prod(source.shape)):
+        if (
+            source is None
+            or tensor.dtype != to_torch_dtype(source.dtype)
+            or tensor.numel() != int(np.prod(source.shape))
+            or tensor.is_conj()
+            or tensor.is_neg()
+        ):
             return False
 
         source_stride = tuple(np.cumprod((1, *reversed(source.shape)))[:-1][::-1])
@@ -1169,14 +1217,19 @@ class Model(LocalFunctionsMixin):
         self._initializer_names.add(name)
         return True
 
-    def make_initializer(self, tensor: torch.Tensor | np.ndarray, /, name: str, to: int | None = None):
+    def make_initializer(self, tensor: torch.Tensor | np.ndarray, /, name: str, to: int | None = None, *, allow_reuse=True):
         """Borrow eligible CPU weights; copy small shape constants for native inference.
 
         Callers must not mutate borrowed weights after insertion.
         """
         if name in self._initializer_names:
             return
-        if self.reuse_downloaded_weights and isinstance(tensor, torch.Tensor) and self._make_external_initializer(tensor, name, to):
+        if (
+            allow_reuse
+            and self.reuse_downloaded_weights
+            and isinstance(tensor, torch.Tensor)
+            and self._make_external_initializer(tensor, name, to)
+        ):
             return
         if to is not None:
             if isinstance(tensor, torch.Tensor):
@@ -1346,11 +1399,7 @@ class Model(LocalFunctionsMixin):
             raise ValueError("The ONNX output directory is required to reuse downloaded weights.")
 
         source_tensors = {}
-        safetensor_paths = sorted(
-            os.path.join(self.source_model_path, filename)
-            for filename in os.listdir(self.source_model_path)
-            if filename.endswith(".safetensors")
-        )
+        safetensor_paths = checkpoint_paths(self.source_model_path)
         if not safetensor_paths:
             raise ValueError(f"No safetensors checkpoint was found in {self.source_model_path!r}.")
 
@@ -1369,9 +1418,11 @@ class Model(LocalFunctionsMixin):
                 if dtype is None:
                     continue
                 start, end = metadata["data_offsets"]
+                reuse = self.extra_options.get("_weight_reuse")
+                destination = reuse.destinations[path] if reuse else path
                 source_tensors[name] = SourceTensor(
                     path=os.path.abspath(path),
-                    location=os.path.relpath(path, self.external_data_base_dir),
+                    location=os.path.relpath(os.path.realpath(destination), os.path.realpath(self.external_data_base_dir)),
                     offset=data_start + start,
                     length=end - start,
                     dtype=int(dtype),
@@ -1382,7 +1433,9 @@ class Model(LocalFunctionsMixin):
     def _validate_source_weight_files(self, out_dir: str) -> None:
         output_path = os.path.realpath(out_dir)
         for source_path in self._used_source_weight_files:
-            resolved_source_path = os.path.realpath(source_path)
+            reuse = self.extra_options.get("_weight_reuse")
+            destination = reuse.destinations.get(source_path, source_path) if reuse else source_path
+            resolved_source_path = os.path.realpath(destination)
             if os.path.commonpath((resolved_source_path, output_path)) != output_path:
                 raise ValueError(f"Source weight {source_path!r} is outside the ONNX output directory.")
             if os.path.islink(source_path):
@@ -1843,7 +1896,13 @@ class Model(LocalFunctionsMixin):
 
     def make_matmul_float(self, matmul, name, root_input, **kwargs):
         weight = name[1:].replace("/", ".") + ".weight"
-        self.make_initializer(matmul.weight.T, weight, to=self.io_dtype)
+        quantizing = (
+            self.onnx_dtype in {TensorProto.INT4, TensorProto.UINT4}
+            and self.quant_type is None
+            and name not in self.quant_attrs["int4"]["nodes_to_exclude"]
+            and "MatMul" in self.quant_attrs["int4"]["op_types_to_quantize"]
+        )
+        self.make_initializer(matmul.weight.T, weight, to=self.io_dtype, allow_reuse=not quantizing)
 
         last_dim = matmul.weight.shape[0]
         seq_dim = kwargs.get("seq_dim", "sequence_length")
@@ -2128,7 +2187,7 @@ class Model(LocalFunctionsMixin):
     def make_embedding(self, embedding):
         basename = "/model/embed_tokens"
         # Use GatherBlockQuantized if and only if tied embeddings are enabled and export model is quantized. quantized d_type in set_onnx_dtype is INT4/UINT4
-        if self.shared_embeddings and self.onnx_dtype in {TensorProto.INT4, TensorProto.UINT4}:
+        if self.shared_embeddings and not self.unquantized_lm_head and self.onnx_dtype in {TensorProto.INT4, TensorProto.UINT4}:
             gather_name = f"{basename}/GatherBlockQuantized"
             gather_output = f"{gather_name}/output_0"
 
