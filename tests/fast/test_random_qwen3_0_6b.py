@@ -12,6 +12,40 @@ QWEN3_MODEL_NAME = "Qwen/Qwen3-0.6B"
 
 
 class TestRandomQwen3(ExtTestCase):
+    @hide_stdout()
+    def test_parallel_qwen3_multilayer(self):
+        import torch
+        from transformers import Qwen3Config, Qwen3ForCausalLM
+
+        config = Qwen3Config(
+            architectures=["Qwen3ForCausalLM"],
+            hidden_size=64,
+            intermediate_size=160,
+            num_attention_heads=4,
+            num_key_value_heads=2,
+            head_dim=16,
+            num_hidden_layers=2,
+            vocab_size=97,
+            max_position_embeddings=128,
+            attn_implementation="eager",
+        )
+        for precision in ("fp32", "fp16", "int4"):
+            with self.subTest(precision=precision):
+                model = Qwen3ForCausalLM(config).eval().to(torch.bfloat16)
+                self.run_random_weights_test(
+                    model=model,
+                    tokenizer=self.make_word_level_tokenizer(),
+                    model_name=QWEN3_MODEL_NAME,
+                    basename=f"test_parallel_qwen3_multilayer_{precision}",
+                    precision=precision,
+                    provider="cpu",
+                    num_hidden_layers=config.num_hidden_layers,
+                    num_key_value_heads=config.num_key_value_heads,
+                    head_size=config.head_dim,
+                    vocab_size=config.vocab_size,
+                    reference_dtype=torch.float32,
+                )
+
     def common_fast_qwen3_random_weights(self, precision, provider, model_dtype=None, reference_dtype=None):
         from transformers import AutoModelForCausalLM, Qwen3Config
 

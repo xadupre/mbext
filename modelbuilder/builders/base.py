@@ -16,8 +16,10 @@ import os
 import struct
 import sys
 import tempfile
-from collections import Counter
+from collections import Counter, deque
 from collections.abc import Mapping, Sequence
+from concurrent.futures import Future, ThreadPoolExecutor
+from contextlib import contextmanager
 from dataclasses import dataclass
 
 import numpy as np
@@ -29,7 +31,7 @@ from onnx_light.onnx_core.graph_builder import GraphBuilder
 from tqdm import tqdm
 from transformers import AutoConfig, AutoModelForCausalLM, AutoModelForSpeechSeq2Seq, AutoTokenizer, GenerationConfig
 
-from ..helpers.onnx_helper import get_default_onnx_opset, onnx, to_torch_dtype, torch_tensor_to_numpy
+from ..helpers.onnx_helper import from_torch_dtype, get_default_onnx_opset, onnx, to_torch_dtype, torch_tensor_to_numpy
 from ..helpers.quantization import quantize_matmul_nbits
 from ..helpers.weight_reuse import checkpoint_paths
 from .local_functions import LocalFunctionsMixin, normalize_function_opsets
@@ -1231,6 +1233,21 @@ class Model(LocalFunctionsMixin):
             and self._make_external_initializer(tensor, name, to)
         ):
             return
+        executor = getattr(self, "_initializer_executor", None)
+        if executor is not None and isinstance(tensor, torch.Tensor) and tensor.ndim > 1 and tensor.numel() > _MAX_SHAPE_CONSTANT_ELEMENTS:
+            # Retain storage independently of Parameter.data, which is released per layer.
+            future = executor.submit(self._prepare_initializer, tensor.detach(), name, to)
+            self._pending_initializers.append((name, future))
+            self._initializer_names.add(name)
+            self.make_value(name, to if to is not None else from_torch_dtype(tensor.dtype), tensor.shape)
+            if len(self._pending_initializers) >= self._initializer_queue_limit:
+                self._finish_initializer()
+            return
+        self._register_initializer(self._prepare_initializer(tensor, name, to), name)
+        self._initializer_names.add(name)
+
+    def _prepare_initializer(self, tensor: torch.Tensor | np.ndarray, name: str, to: int | None) -> TensorProto | np.ndarray:
+        """Prepare tensor storage without accessing the shared graph builder."""
         if to is not None:
             if isinstance(tensor, torch.Tensor):
                 tensor = tensor.to(to_torch_dtype(to))
@@ -1254,11 +1271,7 @@ class Model(LocalFunctionsMixin):
             )
         ):
             tensor_proto = TensorProto.from_dlpack(tensor.detach(), name=name)
-            dtype, shape = tensor_proto.data_type, tuple(tensor_proto.dims)
-            self.graph.make_initializer_move(tensor_proto)
-            self._initializer_names.add(name)
-            self.make_value(name, dtype, shape)
-            return
+            return tensor_proto
         array = torch_tensor_to_numpy(tensor) if isinstance(tensor, torch.Tensor) else np.asarray(tensor)
         if not array.dtype.isnative:
             raise ValueError(f"Initializer {name!r} requires native-endian storage, got {array.dtype}.")
@@ -1270,15 +1283,42 @@ class Model(LocalFunctionsMixin):
             and array.dtype.name in _BORROWED_NUMPY_DTYPES
             and (array.ndim > 1 or array.size > _MAX_SHAPE_CONSTANT_ELEMENTS or array.dtype.kind not in "biu")
         ):
-            self.graph.init(array, name=name, copy=False)
-            self._initializer_names.add(name)
-            self.make_value(name, onnx_helper.np_dtype_to_tensor_dtype(array.dtype), array.shape)
-            return
-        tensor_proto = numpy_helper.from_array(array, name=name)
-        dtype, shape = tensor_proto.data_type, tuple(tensor_proto.dims)
-        self.graph.make_initializer_move(tensor_proto)
-        self._initializer_names.add(name)
+            return array
+        return numpy_helper.from_array(array, name=name)
+
+    def _register_initializer(self, prepared: TensorProto | np.ndarray, name: str) -> None:
+        if isinstance(prepared, np.ndarray):
+            dtype, shape = onnx_helper.np_dtype_to_tensor_dtype(prepared.dtype), prepared.shape
+            self.graph.init(prepared, name=name, copy=False)
+        else:
+            dtype, shape = prepared.data_type, tuple(prepared.dims)
+            self.graph.make_initializer_move(prepared)
         self.make_value(name, dtype, shape)
+
+    def _finish_initializer(self) -> None:
+        name, future = self._pending_initializers[0]
+        self._register_initializer(future.result(), name)
+        self._pending_initializers.popleft()
+
+    @contextmanager
+    def _parallel_initializers(self):
+        # Only storage conversion runs concurrently; graph mutations stay on this thread.
+        workers = min(4, os.cpu_count() or 1)
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            self._initializer_executor = executor
+            self._initializer_queue_limit = 2 * workers
+            self._pending_initializers: deque[tuple[str, Future[TensorProto | np.ndarray]]] = deque()
+            try:
+                yield
+                while self._pending_initializers:
+                    self._finish_initializer()
+            finally:
+                self._initializer_executor = None
+                for name, future in self._pending_initializers:
+                    future.cancel()
+                    self._initializer_names.discard(name)
+                    self.values.pop(name, None)
+                self._pending_initializers.clear()
 
     def make_packed_initializer(self, tensor: torch.Tensor | np.ndarray, name: str, dtype: int, shape: Sequence[int]) -> None:
         """Add a packed sub-byte tensor using its logical ONNX shape."""
@@ -4785,41 +4825,42 @@ class Model(LocalFunctionsMixin):
 
         # Loop through model and map each module to ONNX/ORT ops
         self.layer_id = 0
-        for module in self.weights.modules():
-            if (isinstance(module, torch.nn.Embedding) and module.weight.shape[0] == self.vocab_size) or (
-                hasattr(self.weights, "embedding") and module == self.weights.embedding
-            ):
-                # Checks (Hugging Face logic) or (GGUF logic)
-                if not self.exclude_embeds:
-                    # Embedding layer
-                    print("Reading embedding layer")
-                    self.make_embedding(module.weight)
-                else:
-                    # Exclude embedding layer from model
-                    self.layernorm_attrs["root_input"] = "inputs_embeds"
-                    self.layernorm_attrs["skip_input"] = "inputs_embeds"
-                self._release_source_module(module)
+        with self._parallel_initializers():
+            for module in self.weights.modules():
+                if (isinstance(module, torch.nn.Embedding) and module.weight.shape[0] == self.vocab_size) or (
+                    hasattr(self.weights, "embedding") and module == self.weights.embedding
+                ):
+                    # Checks (Hugging Face logic) or (GGUF logic)
+                    if not self.exclude_embeds:
+                        # Embedding layer
+                        print("Reading embedding layer")
+                        self.make_embedding(module.weight)
+                    else:
+                        # Exclude embedding layer from model
+                        self.layernorm_attrs["root_input"] = "inputs_embeds"
+                        self.layernorm_attrs["skip_input"] = "inputs_embeds"
+                    self._release_source_module(module)
 
-            elif self.is_layer(module) and self.layer_id < self.num_layers:
-                # Each layer of model
-                print(f"Reading layer {self.layer_id}")
-                self.make_layer(self.layer_id, module)
-                self.layer_id += 1
-                self._release_source_module(module)
+                elif self.is_layer(module) and self.layer_id < self.num_layers:
+                    # Each layer of model
+                    print(f"Reading layer {self.layer_id}")
+                    self.make_layer(self.layer_id, module)
+                    self.layer_id += 1
+                    self._release_source_module(module)
 
-            elif self.layer_id == self.num_layers and self.has_final_norm(module, self.weights):
-                # SkipLayerNorm after last decoder layer (MatMul --> SkipLayerNorm)
-                print("Reading final norm")
-                self.make_layernorm(self.layer_id, module, skip=True, simple=self.layernorm_attrs["simple"], location="final_norm")
-                self._release_source_module(module)
+                elif self.layer_id == self.num_layers and self.has_final_norm(module, self.weights):
+                    # SkipLayerNorm after last decoder layer (MatMul --> SkipLayerNorm)
+                    print("Reading final norm")
+                    self.make_layernorm(self.layer_id, module, skip=True, simple=self.layernorm_attrs["simple"], location="final_norm")
+                    self._release_source_module(module)
 
-            elif self.has_lm_head(module):
-                # Checks (Hugging Face logic) or (GGUF logic)
-                if not self.exclude_lm_head:
-                    # Language modeling head (SkipLayerNorm --> logits)
-                    print("Reading LM head")
-                    self.make_lm_head(module)
-                self._release_source_module(module)
+                elif self.has_lm_head(module):
+                    # Checks (Hugging Face logic) or (GGUF logic)
+                    if not self.exclude_lm_head:
+                        # Language modeling head (SkipLayerNorm --> logits)
+                        print("Reading LM head")
+                        self.make_lm_head(module)
+                    self._release_source_module(module)
 
         # Make post-processing nodes
         self.make_postprocessing_nodes()
