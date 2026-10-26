@@ -9,6 +9,7 @@ import gc
 import os
 import runpy
 import tempfile
+import threading
 import unittest
 import weakref
 from pathlib import Path
@@ -24,8 +25,8 @@ from modelbuilder.builders.base import Model
 from modelbuilder.ext_test_case import ExtTestCase
 
 
-def make_builder():
-    model = Model.__new__(Model)
+def make_builder(cls=Model):
+    model = cls.__new__(cls)
     model.graph = GraphBuilder("weights")
     model.reuse_downloaded_weights = False
     model._initializer_names = set()
@@ -91,6 +92,47 @@ class TestZeroCopyInitializers(ExtTestCase):
         restored = ModelProto()
         restored.ParseFromString(built.SerializeToString())
         np.testing.assert_array_equal(to_array(restored.graph.initializer[0]), to_array(initializer))
+
+    @unittest.skipIf((os.cpu_count() or 1) < 2, "requires two initializer workers")
+    def test_parallel_conversion_survives_source_release(self):
+        started = threading.Barrier(3)
+        proceed = threading.Event()
+
+        class DelayedBuilder(Model):
+            def _prepare_initializer(self, tensor, name, to):
+                started.wait(timeout=10)
+                if not proceed.wait(timeout=10):
+                    raise TimeoutError("Source weights were not released.")
+                return super()._prepare_initializer(tensor, name, to)
+
+        model = make_builder(DelayedBuilder)
+        sources = [torch.nn.Parameter(torch.arange(24, dtype=torch.bfloat16).reshape(4, 6) + i) for i in range(2)]
+        expected = [source.detach().float().numpy().T.astype(np.float16) for source in sources]
+        with model._parallel_initializers():
+            try:
+                for i, source in enumerate(sources):
+                    model.make_initializer(source.T, f"weight_{i}", to=TensorProto.FLOAT16)
+                model.make_initializer(torch.zeros(6, 4), "weight_0")
+                started.wait(timeout=10)
+                for source in sources:
+                    source.data = torch.empty(0, dtype=source.dtype)
+            finally:
+                proceed.set()
+        built = model.graph.to_model()
+        self.assertEqual(len(built.graph.initializer), 2)
+        for i, initializer in enumerate(built.graph.initializer):
+            np.testing.assert_array_equal(to_array(initializer), expected[i])
+        self.assertIsNone(model._initializer_executor)
+
+    def test_parallel_conversion_propagates_errors(self):
+        model = make_builder()
+        with self.assertRaisesRegex(ValueError, "accessible storage"):
+            with model._parallel_initializers():
+                model.make_initializer(torch.empty((4, 6), device="meta"), "weight")
+        self.assertIsNone(model._initializer_executor)
+        self.assertFalse(model._pending_initializers)
+        model.make_initializer(torch.ones(4, 6), "weight")
+        self.assertEqual(model.graph.to_model().graph.initializer[0].name, "weight")
 
     def test_fallback_for_strides_and_special_dtype(self):
         for weight in (
