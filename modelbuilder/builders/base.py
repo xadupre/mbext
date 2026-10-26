@@ -26,7 +26,7 @@ import numpy as np
 import onnx_light.onnx.helper as onnx_helper
 import onnx_light.onnx.numpy_helper as numpy_helper
 import torch
-from onnx_light.onnx import GraphProto, ModelProto, TensorProto, ValueInfoProto
+from onnx_light.onnx import AttributeProto, GraphProto, ModelProto, TensorProto, ValueInfoProto
 from onnx_light.onnx_core.graph_builder import GraphBuilder
 from tqdm import tqdm
 from transformers import AutoConfig, AutoModelForCausalLM, AutoModelForSpeechSeq2Seq, AutoTokenizer, GenerationConfig
@@ -45,6 +45,35 @@ class SourceTensor:
     length: int
     dtype: int
     shape: tuple[int, ...]
+
+
+@dataclass
+class PendingNode:
+    order: int
+    op_type: str
+    inputs: tuple[str, ...]
+    outputs: tuple[str, ...]
+    domain: str
+    attributes: list[AttributeProto]
+    missing: set[str]
+
+
+def _captured_graph_inputs(graph: GraphProto) -> set[str]:
+    """Returns values captured from the enclosing graph."""
+    local = {value.name for value in graph.input}
+    local.update(tensor.name for tensor in graph.initializer)
+    local.update(tensor.values.name for tensor in graph.sparse_initializer)
+    local.update(value.name for value in graph.extended_initializer)
+    used = {value.name for value in graph.output}
+    for node in graph.node:
+        local.update(name for name in node.output if name)
+        used.update(name for name in node.input if name)
+        for attribute in node.attribute:
+            if attribute.HasField("g"):
+                used.update(_captured_graph_inputs(attribute.g))
+            for subgraph in attribute.graphs:
+                used.update(_captured_graph_inputs(subgraph))
+    return used - local
 
 
 _SAFETENSORS_ONNX_DTYPES = {
@@ -188,12 +217,7 @@ class Model(LocalFunctionsMixin):
         self.graph = GraphBuilder("main_graph")
         self.graph.set_opset_version("", onnx_opset)
         self.graph.set_opset_version("com.microsoft", 1)
-        self.values: dict[str, dict[str, object]] = {}
-        self._graph_outputs: set[str] = set()
-        self._deferred_nodes: dict[str, object] = {}
-        self._deferred_outputs: set[str] = set()
-        self._initializer_names: set[str] = set()
-        self._node_order: list[str] = []
+        self._initialize_graph_state()
         self.local_functions: dict[tuple[str, str, str], object] = {}
 
         # EP-specific variables
@@ -291,9 +315,6 @@ class Model(LocalFunctionsMixin):
             ],  # For standard models (note that `present.value` is written this way to match Hugging Face format)
         }
         self.make_outputs_init()
-
-        # Store names of nodes already created
-        self.node_names = set()
 
         # Mask-specific variables
         # TODO: Reconcile differences between `seqlens_k` and `key_total_seq_lens` in the GroupQueryAttention and SparseAttention implementations. Ideally the same subgraph can be shared for both.
@@ -941,59 +962,70 @@ class Model(LocalFunctionsMixin):
         return {"algorithm": algorithm, "customized_weight_config": customized_weight_config}
 
     def to_model_proto(self) -> ModelProto:
-        """Finalize the native graph builder into an ONNX model."""
+        """Finalizes the complete native graph into an ONNX model."""
+        while getattr(self, "_pending_initializers", ()):
+            self._finish_initializer()
+        self._flush_ready_nodes()
+        if self._pending_nodes:
+            missing = {name for node in self._pending_nodes.values() for name in node.missing}
+            unknown = missing - self._pending_outputs.keys()
+            if unknown:
+                raise ValueError(f"The ONNX graph has unresolved inputs: {', '.join(sorted(unknown))}.")
+            raise ValueError("The ONNX graph contains a cycle.")
+        for value in self._pending_graph_outputs.values():
+            if value.name not in self._available_values:
+                raise ValueError(f"The ONNX graph has an unresolved output: {value.name!r}.")
+        for value in self._pending_graph_outputs.values():
+            self.graph.make_output(value)
+        self._pending_graph_outputs.clear()
         model = self.graph.to_model(ir_version=10)
         model.producer_name = "onnxruntime-genai"
-        native_nodes = {node.name: node for node in model.graph.node}
-        nodes = [self._deferred_nodes[name] if name in self._deferred_nodes else native_nodes[name] for name in self._node_order]
-        producers = {output: index for index, node in enumerate(nodes) for output in node.output if output}
-        dependents = [[] for _ in nodes]
-        pending = [0] * len(nodes)
-        for index, node in enumerate(nodes):
-            dependencies = {producers[name] for name in node.input if name in producers}
-            pending[index] = len(dependencies)
-            for producer in dependencies:
-                dependents[producer].append(index)
-        ready = [index for index, count in enumerate(pending) if count == 0]
-        heapq.heapify(ready)
-        ordered = []
-        while ready:
-            index = heapq.heappop(ready)
-            ordered.append(nodes[index])
-            for dependent in dependents[index]:
-                pending[dependent] -= 1
-                if pending[dependent] == 0:
-                    heapq.heappush(ready, dependent)
-        if len(ordered) != len(nodes):
-            raise ValueError("The ONNX graph contains a cycle.")
-        # The native builder annotates lifetimes before deferred nodes are inserted.
-        last_use = {name: index for index, node in enumerate(ordered) for name in node.input if name}
-        for index, node in enumerate(ordered):
-            metadata = []
-            for prop in node.metadata_props:
-                if prop.key in {"onnx_light.release_after", "onnx_light.release_after_shape_tag"}:
-                    names = [name for name in prop.value.split(";") if last_use.get(name, index) <= index]
-                    if names:
-                        metadata.append((prop.key, ";".join(names)))
-                elif prop.key != "onnx_light.inplace_reuse" or all(last_use.get(name, index) <= index for name in node.input):
-                    metadata.append((prop.key, prop.value))
-            if len(metadata) != len(node.metadata_props) or any(
-                value != prop.value for (_, value), prop in zip(metadata, node.metadata_props)
-            ):
-                node.metadata_props.clear()
-                for key, value in metadata:
-                    prop = node.metadata_props.add()
-                    prop.key = key
-                    prop.value = value
-        model.graph.node.clear()
-        model.graph.node.extend(ordered)
-        outputs = [output for output in model.graph.output if output.name in self._graph_outputs]
-        model.graph.output.clear()
-        model.graph.output.extend(outputs)
         model.functions.extend(self.local_functions.values())
         for function in model.functions:
             normalize_function_opsets(function)
         return model
+
+    def _initialize_graph_state(self) -> None:
+        """Initializes construction state for the native graph."""
+        self.values: dict[str, dict[str, object]] = {}
+        self.node_names: set[str] = set()
+        self._pending_graph_outputs: dict[str, ValueInfoProto] = {}
+        self._initializer_names: set[str] = set()
+        self._available_values: set[str] = set()
+        self._pending_nodes: dict[str, PendingNode] = {}
+        self._pending_outputs: dict[str, str] = {}
+        self._node_waiters: dict[str, list[str]] = {}
+        self._ready_nodes: list[tuple[int, str]] = []
+
+    def _make_values_available(self, names: Sequence[str]) -> None:
+        """Wakes only nodes waiting for the newly registered values."""
+        for name in names:
+            if not name:
+                continue
+            self._available_values.add(name)
+            for dependent in self._node_waiters.pop(name, ()):
+                node = self._pending_nodes[dependent]
+                node.missing.remove(name)
+                if not node.missing:
+                    heapq.heappush(self._ready_nodes, (node.order, dependent))
+
+    def _check_source_value(self, name: str) -> None:
+        """Rejects a source that would shadow a pending producer."""
+        if name in self._pending_outputs:
+            raise ValueError(f"Value {name!r} already has a pending node producer.")
+
+    def _flush_ready_nodes(self) -> None:
+        """Inserts ready nodes through GraphBuilder without recursive draining."""
+        while self._ready_nodes:
+            _, name = self._ready_nodes[0]
+            node = self._pending_nodes[name]
+            self.graph.make_node(node.op_type, node.inputs, node.outputs, domain=node.domain, name=name, attributes=node.attributes)
+            heapq.heappop(self._ready_nodes)
+            del self._pending_nodes[name]
+            for output in node.outputs:
+                if output:
+                    del self._pending_outputs[output]
+            self._make_values_available(node.outputs)
 
     def to_int4(self, model: ModelProto) -> ModelProto:
         """Quantize MatMul weights directly on onnx-light protobuf objects."""
@@ -1201,7 +1233,9 @@ class Model(LocalFunctionsMixin):
             entry = tensor_proto.external_data.add()
             entry.key = key
             entry.value = value
+        self._check_source_value(source_name)
         self.graph.make_initializer(tensor_proto)
+        self._make_values_available([source_name])
         self._used_source_weight_files.add(source.path)
         self.make_value(source_name, source.dtype, source.shape)
 
@@ -1287,6 +1321,7 @@ class Model(LocalFunctionsMixin):
         return numpy_helper.from_array(array, name=name)
 
     def _register_initializer(self, prepared: TensorProto | np.ndarray, name: str) -> None:
+        self._check_source_value(name)
         if isinstance(prepared, np.ndarray):
             dtype, shape = onnx_helper.np_dtype_to_tensor_dtype(prepared.dtype), prepared.shape
             self.graph.init(prepared, name=name, copy=False)
@@ -1294,6 +1329,7 @@ class Model(LocalFunctionsMixin):
             dtype, shape = prepared.data_type, tuple(prepared.dims)
             self.graph.make_initializer_move(prepared)
         self.make_value(name, dtype, shape)
+        self._make_values_available([name])
 
     def _finish_initializer(self) -> None:
         name, future = self._pending_initializers[0]
@@ -1329,9 +1365,11 @@ class Model(LocalFunctionsMixin):
         else:
             raw = np.ascontiguousarray(tensor).view(np.uint8).tobytes()
         tensor_proto = onnx_helper.make_tensor(name, int(dtype), list(shape), raw, raw=True)
+        self._check_source_value(name)
         self.graph.make_initializer(tensor_proto)
         self._initializer_names.add(name)
         self.make_value(name, dtype, shape)
+        self._make_values_available([name])
 
     def make_node(self, op_type, inputs: Sequence[str], outputs: Sequence[str], *, name: str, domain="", **kwargs):
         assert name, "Node name must be provided"
@@ -1352,20 +1390,28 @@ class Model(LocalFunctionsMixin):
             if input_name.startswith("/model/constants") and input_name not in self.node_names:
                 self.make_constant(input_name)
 
-        resolved_domain = domain or ""
-        defer = (
-            bool(resolved_domain)
-            or op_type in {"LayerNormalization", "SimplifiedLayerNormalization"}
-            or any(input_name and (input_name in self._deferred_outputs or not self.graph.has_name(input_name)) for input_name in inputs)
-        )
-        if defer:
-            self._deferred_nodes[name] = onnx_helper.make_node(
-                op_type, list(inputs), list(outputs), domain=resolved_domain, name=name, **kwargs
-            )
-            self._deferred_outputs.update(output for output in outputs if output)
-        else:
-            self.graph.make_node(op_type, list(inputs), list(outputs), name=name, attributes=kwargs)
-        self._node_order.append(name)
+        if len({output for output in outputs if output}) != len([output for output in outputs if output]):
+            raise ValueError(f"Node {name!r} has duplicate outputs.")
+        for output in outputs:
+            if output and (output in self._available_values or output in self._pending_outputs or output in self._initializer_names):
+                raise ValueError(f"Node {name!r} would redefine value {output!r}.")
+        attributes = [onnx_helper.make_attribute(key, value) for key, value in kwargs.items() if value is not None]
+        dependencies = {input_name for input_name in inputs if input_name}
+        for attribute in attributes:
+            if attribute.HasField("g"):
+                dependencies.update(_captured_graph_inputs(attribute.g))
+            for subgraph in attribute.graphs:
+                dependencies.update(_captured_graph_inputs(subgraph))
+        missing = dependencies - self._available_values
+        node = PendingNode(len(self.node_names), op_type, tuple(inputs), tuple(outputs), domain or "", attributes, missing)
+        self._pending_nodes[name] = node
+        for output in outputs:
+            if output:
+                self._pending_outputs[output] = name
+        for value in missing:
+            self._node_waiters.setdefault(value, []).append(name)
+        if not missing:
+            heapq.heappush(self._ready_nodes, (node.order, name))
         self.node_names.add(name)
         # When a com.microsoft contrib op with a local-function fallback is added, register it.
         if domain == "com.microsoft" and op_type == "CausalConvWithState":
@@ -1397,15 +1443,16 @@ class Model(LocalFunctionsMixin):
         return onnx_helper.make_tensor_value_info(name, resolved_dtype, resolved_shape)
 
     def make_graph_input(self, name: str, dtype: int, shape: Sequence[int | str | None]) -> None:
-        """Declare a typed graph input."""
+        """Declares a typed graph input."""
         value = self.make_value(name, dtype, shape)
+        self._check_source_value(name)
         self.graph.make_input(value)
+        self._make_values_available([name])
 
     def make_graph_output(self, name: str, dtype: int, shape: Sequence[int | str | None]) -> None:
-        """Declare a typed graph output."""
+        """Records a typed output for native finalization."""
         value = self.make_value(name, dtype, shape)
-        self._graph_outputs.add(name)
-        self.graph.make_output(value)
+        self._pending_graph_outputs[name] = value
 
     def _initialize_source_tensor_tracking(self) -> None:
         """Count aliased source tensors so converted modules can be released."""

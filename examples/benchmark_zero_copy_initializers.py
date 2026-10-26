@@ -38,9 +38,8 @@ def run(mode: str, size: int) -> dict:
     else:
         model = Model.__new__(Model)
         model.graph = builder
+        model._initialize_graph_state()
         model.reuse_downloaded_weights = False
-        model._initializer_names = set()
-        model.values = {}
         model.make_initializer(weight, "weight")
     serialized = builder.to_model().SerializeToString()
     return {

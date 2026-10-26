@@ -28,6 +28,19 @@ export backend. The shared builder constructs graphs with
 onnx-light ONNX model objects. This builds the graph directly rather than
 tracing a PyTorch forward pass.
 
+Construction first prepares the inputs and initializers and records node
+requests in a dependency-indexed queue, not in a second protobuf graph.
+Finalization submits ready requests through ``GraphBuilder.make_node``,
+including contrib and normalization operators. Newly inserted producers wake
+only their dependent requests, including subgraph captures. Output declarations
+wait until their producers exist. Unresolved values and cycles are rejected
+before exporting the complete native graph; there is no Python node merge,
+final topological sort or lifetime-metadata repair.
+
+Only initializer storage preparation runs in worker threads. Registration and
+node insertion remain on the calling thread; Python layer traversal is not
+parallelized by using GraphBuilder.
+
 For eligible CPU tensors, initializers borrow PyTorch storage through DLPack or
 NumPy storage through ``GraphBuilder.init(copy=False)``. Avoiding unnecessary
 weight copies reduces graph-construction overhead, especially for large models;

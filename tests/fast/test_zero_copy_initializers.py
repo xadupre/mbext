@@ -28,9 +28,8 @@ from modelbuilder.ext_test_case import ExtTestCase
 def make_builder(cls=Model):
     model = cls.__new__(cls)
     model.graph = GraphBuilder("weights")
+    model._initialize_graph_state()
     model.reuse_downloaded_weights = False
-    model._initializer_names = set()
-    model.values = {}
     return model
 
 
