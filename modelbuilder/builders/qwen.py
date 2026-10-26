@@ -34,7 +34,18 @@ class QwenModel(Model):
 class Qwen3Model(QwenModel):
     def __init__(self, config, io_dtype, onnx_dtype, ep, cache_dir, extra_options):
         super().__init__(config, io_dtype, onnx_dtype, ep, cache_dir, extra_options)
-        # Qwen3RMSNorm computes the normalization in float32.
+        # ORT >= 1.26 accumulates fp16 RMSNorm in float32 without IO casts.
+        # Keep explicit casts for older runtimes, bf16, and the TRT fallback.
+        if io_dtype == ir.FLOAT16 and ep != "trt-rtx":
+            try:
+                import onnxruntime as _ort
+
+                ort_version = tuple(int(x) for x in _ort.__version__.split(".")[:2])
+            except (ImportError, ValueError):
+                ort_version = (99, 99)
+            if ort_version >= (1, 26):
+                return
+
         self.layernorm_attrs["cast"]["use_fp32"] = True
         self.layernorm_attrs["cast"]["root_input"] = True
         self.layernorm_attrs["cast"]["skip_input"] = True

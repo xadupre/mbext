@@ -3,6 +3,7 @@
 # Licensed under the MIT License.  See License.txt in the project root for
 # license information.
 # --------------------------------------------------------------------------
+import os
 import unittest
 
 
@@ -14,6 +15,8 @@ QWEN3_MODEL_NAME = "Qwen/Qwen3-0.6B"
 class TestRandomQwen3(ExtTestCase):
     @hide_stdout()
     def test_parallel_qwen3_multilayer(self):
+        import onnx_light.onnx as onnx
+        import onnxruntime as ort
         import torch
         from transformers import Qwen3Config, Qwen3ForCausalLM
 
@@ -45,6 +48,27 @@ class TestRandomQwen3(ExtTestCase):
                     vocab_size=config.vocab_size,
                     reference_dtype=torch.float32,
                 )
+                if precision == "fp16" and tuple(int(x) for x in ort.__version__.split(".")[:2]) >= (1, 26):
+                    output_dir, _ = self.get_dirs(f"test_parallel_qwen3_multilayer_{precision}")
+                    exported = onnx.load(os.path.join(output_dir, "model.onnx"))
+                    nodes = exported.graph.node
+                    producers = {out: node for node in nodes for out in node.output if out}
+                    initializers = {init.name: init for init in exported.graph.initializer}
+                    norms = [node for node in nodes if node.op_type in ("SimplifiedLayerNormalization", "SkipSimplifiedLayerNormalization")]
+                    self.assertTrue(any(node.op_type == "SimplifiedLayerNormalization" for node in norms))
+                    self.assertTrue(any(node.op_type == "SkipSimplifiedLayerNormalization" for node in norms))
+                    for node in norms:
+                        with self.subTest(node=node.name):
+                            weight_index = 2 if node.op_type.startswith("Skip") else 1
+                            self.assertEqual(initializers[node.input[weight_index]].data_type, onnx.TensorProto.FLOAT16)
+                            for inp in list(node.input)[:weight_index]:
+                                producer = producers.get(inp)
+                                self.assertTrue(producer is None or producer.op_type != "Cast", node.name)
+                            for consumer in nodes:
+                                if any(out and out in consumer.input for out in node.output):
+                                    self.assertNotEqual(consumer.op_type, "Cast", node.name)
+                            if not node.op_type.startswith("Skip"):
+                                self.assertEqual(next(a.i for a in node.attribute if a.name == "stash_type"), onnx.TensorProto.FLOAT)
 
     def common_fast_qwen3_random_weights(self, precision, provider, model_dtype=None, reference_dtype=None):
         from transformers import AutoModelForCausalLM, Qwen3Config
