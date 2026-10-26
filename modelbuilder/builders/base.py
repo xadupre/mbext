@@ -963,7 +963,7 @@ class Model(LocalFunctionsMixin):
 
     def to_model_proto(self) -> ModelProto:
         """Finalizes the complete native graph into an ONNX model."""
-        while getattr(self, "_pending_initializers", ()):
+        while self._pending_initializers:
             self._finish_initializer()
         self._flush_ready_nodes()
         if self._pending_nodes:
@@ -991,8 +991,10 @@ class Model(LocalFunctionsMixin):
         self.node_names: set[str] = set()
         self._pending_graph_outputs: dict[str, ValueInfoProto] = {}
         self._initializer_names: set[str] = set()
+        self._pending_initializers: deque[tuple[str, Future[TensorProto | np.ndarray]]] = deque()
         self._available_values: set[str] = set()
         self._pending_nodes: dict[str, PendingNode] = {}
+        self._node_specs: dict[str, tuple] = {}
         self._pending_outputs: dict[str, str] = {}
         self._node_waiters: dict[str, list[str]] = {}
         self._ready_nodes: list[tuple[int, str]] = []
@@ -1009,10 +1011,14 @@ class Model(LocalFunctionsMixin):
                 if not node.missing:
                     heapq.heappush(self._ready_nodes, (node.order, dependent))
 
-    def _check_source_value(self, name: str) -> None:
-        """Rejects a source that would shadow a pending producer."""
+    def _check_source_value(self, name: str, *, allow_pending_initializer=False) -> None:
+        """Rejects a source that would shadow an existing or pending value."""
         if name in self._pending_outputs:
             raise ValueError(f"Value {name!r} already has a pending node producer.")
+        if name in self._available_values:
+            raise ValueError(f"Value {name!r} is already available in the graph.")
+        if name in self._initializer_names and not allow_pending_initializer:
+            raise ValueError(f"Value {name!r} is already registered as an initializer.")
 
     def _flush_ready_nodes(self) -> None:
         """Inserts ready nodes through GraphBuilder without recursive draining."""
@@ -1260,6 +1266,7 @@ class Model(LocalFunctionsMixin):
         """
         if name in self._initializer_names:
             return
+        self._check_source_value(name)
         if (
             allow_reuse
             and self.reuse_downloaded_weights
@@ -1321,7 +1328,7 @@ class Model(LocalFunctionsMixin):
         return numpy_helper.from_array(array, name=name)
 
     def _register_initializer(self, prepared: TensorProto | np.ndarray, name: str) -> None:
-        self._check_source_value(name)
+        self._check_source_value(name, allow_pending_initializer=True)
         if isinstance(prepared, np.ndarray):
             dtype, shape = onnx_helper.np_dtype_to_tensor_dtype(prepared.dtype), prepared.shape
             self.graph.init(prepared, name=name, copy=False)
@@ -1360,12 +1367,12 @@ class Model(LocalFunctionsMixin):
         """Add a packed sub-byte tensor using its logical ONNX shape."""
         if name in self._initializer_names:
             return
+        self._check_source_value(name)
         if isinstance(tensor, torch.Tensor):
             raw = tensor.detach().cpu().contiguous().view(torch.uint8).numpy(force=True).tobytes()
         else:
             raw = np.ascontiguousarray(tensor).view(np.uint8).tobytes()
         tensor_proto = onnx_helper.make_tensor(name, int(dtype), list(shape), raw, raw=True)
-        self._check_source_value(name)
         self.graph.make_initializer(tensor_proto)
         self._initializer_names.add(name)
         self.make_value(name, dtype, shape)
@@ -1373,16 +1380,11 @@ class Model(LocalFunctionsMixin):
 
     def make_node(self, op_type, inputs: Sequence[str], outputs: Sequence[str], *, name: str, domain="", **kwargs):
         assert name, "Node name must be provided"
+        attributes = [onnx_helper.make_attribute(key, value) for key, value in kwargs.items() if value is not None]
+        node_spec = (op_type, tuple(inputs), tuple(outputs), domain or "", tuple(attributes))
         if name in self.node_names:
-            # Note:
-            #
-            # This approach allows functions that make similar subgraphs with the same naming schema
-            # to share existing nodes without needing to know whether the nodes already exist or not
-            # (e.g. attention mask subgraphs).
-            #
-            # This means that the nodes can be created in those functions regardless of their actual
-            # status in the graph. This checks can then decide whether the proposed node actually
-            # needs to be added into the graph or not.
+            if self._node_specs[name] != node_spec:
+                raise ValueError(f"Node name {name!r} is already used.")
             return
 
         # Save any constants as nodes
@@ -1395,7 +1397,6 @@ class Model(LocalFunctionsMixin):
         for output in outputs:
             if output and (output in self._available_values or output in self._pending_outputs or output in self._initializer_names):
                 raise ValueError(f"Node {name!r} would redefine value {output!r}.")
-        attributes = [onnx_helper.make_attribute(key, value) for key, value in kwargs.items() if value is not None]
         dependencies = {input_name for input_name in inputs if input_name}
         for attribute in attributes:
             if attribute.HasField("g"):
@@ -1412,6 +1413,7 @@ class Model(LocalFunctionsMixin):
             self._node_waiters.setdefault(value, []).append(name)
         if not missing:
             heapq.heappush(self._ready_nodes, (node.order, name))
+        self._node_specs[name] = node_spec
         self.node_names.add(name)
         # When a com.microsoft contrib op with a local-function fallback is added, register it.
         if domain == "com.microsoft" and op_type == "CausalConvWithState":
@@ -1444,8 +1446,8 @@ class Model(LocalFunctionsMixin):
 
     def make_graph_input(self, name: str, dtype: int, shape: Sequence[int | str | None]) -> None:
         """Declares a typed graph input."""
-        value = self.make_value(name, dtype, shape)
         self._check_source_value(name)
+        value = self.make_value(name, dtype, shape)
         self.graph.make_input(value)
         self._make_values_available([name])
 

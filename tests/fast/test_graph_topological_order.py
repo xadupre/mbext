@@ -95,6 +95,7 @@ class TestGraphTopologicalOrder(ExtTestCase):
                 return super()._prepare_initializer(tensor, name, to)
 
         builder = self.make_builder(DelayedModel, RecordingGraph("test"))
+        self.assertFalse(builder._pending_initializers)
         builder.make_graph_input("source", TensorProto.FLOAT, [2, 4])
         builder.make_graph_output("result", TensorProto.FLOAT, [2, 6])
         with builder._parallel_initializers():
@@ -159,6 +160,28 @@ class TestGraphTopologicalOrder(ExtTestCase):
                         builder.make_initializer(np.ones(1, dtype=np.float32), "value")
                     else:
                         builder.make_graph_input("value", TensorProto.FLOAT, [1])
+
+    def test_existing_source_values_cannot_be_redefined(self):
+        builder = self.make_builder()
+        builder.make_graph_input("source", TensorProto.FLOAT, [1])
+        with self.assertRaisesRegex(ValueError, "already available"):
+            builder.make_initializer(np.ones(1, dtype=np.float32), "source")
+
+        builder = self.make_builder()
+        builder.make_initializer(np.ones(1, dtype=np.float32), "weight")
+        with self.assertRaisesRegex(ValueError, "already available"):
+            builder.make_graph_input("weight", TensorProto.FLOAT, [1])
+
+    def test_duplicate_node_name_is_idempotent_only_for_same_node(self):
+        builder = self.make_builder()
+        builder.make_graph_input("source", TensorProto.FLOAT, [1])
+        builder.make_node("Identity", ["source"], ["result"], name="identity")
+        builder.make_node("Identity", ["source"], ["result"], name="identity")
+        with self.assertRaisesRegex(ValueError, "Node name 'identity' is already used"):
+            builder.make_node("Identity", ["source"], ["other"], name="identity")
+
+        model = builder.to_model_proto()
+        self.assertEqual([node.name for node in model.graph.node], ["identity"])
 
     def test_reverse_chain_drains_iteratively(self):
         builder = self.make_builder()
