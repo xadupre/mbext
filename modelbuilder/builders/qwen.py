@@ -34,7 +34,7 @@ class QwenModel(Model):
 class Qwen3Model(QwenModel):
     def __init__(self, config, io_dtype, onnx_dtype, ep, cache_dir, extra_options):
         super().__init__(config, io_dtype, onnx_dtype, ep, cache_dir, extra_options)
-        # fp16 RMSNorm uses float32 accumulation without changing its I/O dtype.
+        # Native fp16 RMSNorm requests float32 accumulation with stash_type.
         # Keep explicit casts for bf16 and the TensorRT primitive fallback.
         if io_dtype == ir.FLOAT16 and ep != "trt-rtx":
             return
@@ -44,6 +44,24 @@ class Qwen3Model(QwenModel):
         self.layernorm_attrs["cast"]["skip_input"] = True
         self.layernorm_attrs["cast"]["output_0"] = True
         self.layernorm_attrs["cast"]["output_3"] = True
+
+    def make_layernorm_op(self, layer_id, layernorm, skip, simple, location):
+        if self.io_dtype == ir.FLOAT16 and self.ep != "trt-rtx":
+            if skip:
+                add_name = f"/model/layers.{layer_id}/{location}_layernorm/Add"
+                residual_output = f"/model/layers.{layer_id}/{location}_layernorm/output_3"
+                self.make_node(
+                    "Add",
+                    inputs=[self.layernorm_attrs["root_input"], self.layernorm_attrs["skip_input"]],
+                    outputs=[residual_output],
+                    name=add_name,
+                )
+                self.make_value(residual_output, self.io_dtype, shape=["batch_size", "sequence_length", self.hidden_size])
+                self.layernorm_attrs["root_input"] = residual_output
+                if not self.layernorm_attrs["last_layernorm"]:
+                    self.layernorm_attrs["output_3"] = residual_output
+            skip = False
+        super().make_layernorm_op(layer_id, layernorm, skip, simple, location)
 
     def make_attention_init(self):
         self.attention_attrs["q_norm"] = True

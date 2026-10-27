@@ -54,20 +54,20 @@ class TestRandomQwen3(ExtTestCase):
                     producers = {out: node for node in nodes for out in node.output if out}
                     initializers = {init.name: init for init in exported.graph.initializer}
                     norms = [node for node in nodes if node.op_type in ("SimplifiedLayerNormalization", "SkipSimplifiedLayerNormalization")]
-                    self.assertTrue(any(node.op_type == "SimplifiedLayerNormalization" for node in norms))
-                    self.assertTrue(any(node.op_type == "SkipSimplifiedLayerNormalization" for node in norms))
+                    self.assertEqual(len(norms), 4 * config.num_hidden_layers + 1)
+                    self.assertTrue(all(node.op_type == "SimplifiedLayerNormalization" for node in norms))
+                    residual_norms = [
+                        node for node in norms if producers.get(node.input[0]) is not None and producers[node.input[0]].op_type == "Add"
+                    ]
+                    self.assertEqual(len(residual_norms), 2 * config.num_hidden_layers)
+                    cast_inputs = {inp for node in nodes if node.op_type == "Cast" for inp in node.input}
                     for node in norms:
                         with self.subTest(node=node.name):
-                            weight_index = 2 if node.op_type.startswith("Skip") else 1
-                            self.assertEqual(initializers[node.input[weight_index]].data_type, onnx.TensorProto.FLOAT16)
-                            for inp in list(node.input)[:weight_index]:
-                                producer = producers.get(inp)
-                                self.assertTrue(producer is None or producer.op_type != "Cast", node.name)
-                            for consumer in nodes:
-                                if any(out and out in consumer.input for out in node.output):
-                                    self.assertNotEqual(consumer.op_type, "Cast", node.name)
-                            if not node.op_type.startswith("Skip"):
-                                self.assertEqual(next(a.i for a in node.attribute if a.name == "stash_type"), onnx.TensorProto.FLOAT)
+                            self.assertEqual(initializers[node.input[1]].data_type, onnx.TensorProto.FLOAT16)
+                            producer = producers.get(node.input[0])
+                            self.assertTrue(producer is None or producer.op_type != "Cast", node.name)
+                            self.assertTrue(cast_inputs.isdisjoint(out for out in node.output if out), node.name)
+                            self.assertEqual(next(a.i for a in node.attribute if a.name == "stash_type"), onnx.TensorProto.FLOAT)
 
     def common_fast_qwen3_random_weights(self, precision, provider, model_dtype=None, reference_dtype=None):
         from transformers import AutoModelForCausalLM, Qwen3Config
