@@ -979,6 +979,7 @@ class Model(LocalFunctionsMixin):
             self.graph.make_output(value)
         self._pending_graph_outputs.clear()
         model = self.graph.to_model(ir_version=10)
+        self._restore_optional_node_outputs(model)
         model.producer_name = "onnxruntime-genai"
         model.functions.extend(self.local_functions.values())
         for function in model.functions:
@@ -995,9 +996,21 @@ class Model(LocalFunctionsMixin):
         self._available_values: set[str] = set()
         self._pending_nodes: dict[str, PendingNode] = {}
         self._node_specs: dict[str, tuple] = {}
+        self._optional_node_outputs: dict[str, tuple[str, ...]] = {}
         self._pending_outputs: dict[str, str] = {}
         self._node_waiters: dict[str, list[str]] = {}
         self._ready_nodes: list[tuple[int, str]] = []
+
+    def _restore_optional_node_outputs(self, model: ModelProto) -> None:
+        """Restores empty output slots omitted from the native builder."""
+        if not self._optional_node_outputs:
+            return
+        for node in model.graph.node:
+            outputs = self._optional_node_outputs.get(node.name)
+            if outputs is None:
+                continue
+            del node.output[:]
+            node.output.extend(outputs)
 
     def _make_values_available(self, names: Sequence[str]) -> None:
         """Wakes only nodes waiting for the newly registered values."""
@@ -1025,7 +1038,17 @@ class Model(LocalFunctionsMixin):
         while self._ready_nodes:
             _, name = self._ready_nodes[0]
             node = self._pending_nodes[name]
-            self.graph.make_node(node.op_type, node.inputs, node.outputs, domain=node.domain, name=name, attributes=node.attributes)
+            native_outputs = [output for output in node.outputs if output]
+            native_outputs = self.graph.make_node(
+                node.op_type,
+                node.inputs,
+                native_outputs,
+                domain=node.domain,
+                name=name,
+                attributes=node.attributes,
+            )
+            if len(native_outputs) != len(node.outputs):
+                self._optional_node_outputs[name] = node.outputs
             heapq.heappop(self._ready_nodes)
             del self._pending_nodes[name]
             for output in node.outputs:

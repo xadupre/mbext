@@ -64,6 +64,43 @@ class TestGraphTopologicalOrder(ExtTestCase):
         self.assertEqual(model.graph.SerializeToString(), builder.graph.to_model(ir_version=10).graph.SerializeToString())
         self.assertEqual(model.SerializeToString(), builder.to_model_proto().SerializeToString())
 
+    def test_omitted_optional_node_outputs_survive_serialization(self):
+        builder = self.make_builder()
+        builder.make_graph_input("source", TensorProto.FLOAT, [1])
+        builder.make_graph_input("skip", TensorProto.FLOAT, [1])
+        builder.make_graph_input("scale", TensorProto.FLOAT, [1])
+        builder.make_graph_input("bias", TensorProto.FLOAT, [1])
+        builder.make_graph_output("normalized", TensorProto.FLOAT, [1])
+        builder.make_graph_output("residual", TensorProto.FLOAT, [1])
+        builder.make_graph_output("attention", TensorProto.FLOAT, [1])
+        builder.make_node(
+            "SkipLayerNormalization",
+            ["source", "skip", "scale", "bias"],
+            ["normalized", "", "", "residual"],
+            name="skip_norm",
+            domain="com.microsoft",
+            epsilon=1e-5,
+        )
+        builder.make_node(
+            "MultiHeadAttention",
+            ["source", "source", "source", "", "", "", "", ""],
+            ["attention", "", ""],
+            name="cross_attention",
+            domain="com.microsoft",
+            num_heads=1,
+        )
+
+        model = builder.to_model_proto()
+        serialized = type(model)()
+        serialized.ParseFromString(model.SerializeToString())
+        outputs_by_name = {
+            node.name: list(node.output) for node in serialized.graph.node
+        }
+        self.assertEqual(
+            outputs_by_name["skip_norm"], ["normalized", "", "", "residual"]
+        )
+        self.assertEqual(outputs_by_name["cross_attention"], ["attention", "", ""])
+
     def test_pending_initializer_registers_nodes_on_the_calling_thread(self):
         main_thread = threading.get_ident()
         workers = []
