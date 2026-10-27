@@ -50,7 +50,7 @@ jobs:
         run: pip install "torch==${{ matrix.torch.version }}+cpu" torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
 
       - name: Install dependencies
-        run: pip install -e ".[dev${{ matrix.tokenizers-extra }}]" torch "transformers==${{ matrix.transformers-version }}" "tokenizers==${{ matrix.tokenizers-version }}" "onnxruntime-genai==${{ matrix.onnxruntime-genai-version }}"
+        run: pip install -r .github/requirements-onnx-light.txt -e ".[dev${{ matrix.tokenizers-extra }}]" torch "transformers==${{ matrix.transformers-version }}" "tokenizers==${{ matrix.tokenizers-version }}" "onnxruntime-genai==${{ matrix.onnxruntime-genai-version }}"
 
       - name: Use huggingface-hub 2 with latest Transformers
         run: pip install "huggingface_hub>=2.2.0"
