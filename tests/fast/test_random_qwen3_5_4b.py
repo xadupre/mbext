@@ -8,7 +8,7 @@ import unittest
 
 import numpy as np
 
-from modelbuilder.ext_test_case import ExtTestCase, hide_stdout, requires_cuda, requires_genai, requires_transformers
+from modelbuilder.ext_test_case import ExtTestCase, PvVersion, hide_stdout, requires_cuda, requires_genai, requires_transformers
 
 QWEN3_5_4B_MODEL_NAME = "Qwen/Qwen3.5-4B"
 
@@ -241,7 +241,13 @@ class TestRandomQwen3_5_4B(ExtTestCase):
     def test_qwen3_5_4b_fp16_cpu_hybrid_build(self):
         """fp16 variant of :meth:`test_qwen3_5_4b_fp32_cpu_hybrid_build`."""
         import onnx_light.onnx as onnx
+        import onnx_light_cpu
 
+        if PvVersion(onnx_light_cpu.__version__) <= PvVersion("0.2.0"):
+            self.skipTest(
+                "onnx-light-cpu <= 0.2.0 rejects FP16 LinearAttention shapes; "
+                "fixed by https://github.com/xadupre/onnx-light-cpu/pull/1046"
+            )
         config = _make_qwen3_5_4b_config(["full_attention", "linear_attention"])
         output_dir = self._build_and_save_model(config, "fp16", "cpu")
 
