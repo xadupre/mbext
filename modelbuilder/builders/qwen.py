@@ -27,11 +27,15 @@ _QWEN25OMNI_DEFAULT_VIDEO_TOKEN_ID = 151656
 
 
 class QwenModel(Model):
+    checkpoint_architecture = "Qwen2ForCausalLM"
+
     def __init__(self, config, io_dtype, onnx_dtype, ep, cache_dir, extra_options):
         super().__init__(config, io_dtype, onnx_dtype, ep, cache_dir, extra_options)
 
 
 class Qwen3Model(QwenModel):
+    checkpoint_architecture = "Qwen3ForCausalLM"
+
     def __init__(self, config, io_dtype, onnx_dtype, ep, cache_dir, extra_options):
         super().__init__(config, io_dtype, onnx_dtype, ep, cache_dir, extra_options)
         # Native fp16 RMSNorm requests float32 accumulation with stash_type.

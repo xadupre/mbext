@@ -33,23 +33,31 @@ def checkpoint_paths(directory):
 class WeightReuse:
     """Share one relocation plan and generated-weight save across components."""
 
-    def __init__(self, source_dir, output_dir):
+    def __init__(self, source_dir, output_dir, *, preserve_source=False, replace_paths=()):
         self.output_dir = os.path.realpath(output_dir)
+        self.preserve_source = preserve_source
+        self.replace_paths = set(replace_paths)
         self.paths = checkpoint_paths(source_dir)
         self.destinations = {}
         self.exports = []
         self.generated_payloads = {}
         for source in self.paths:
-            if not os.path.isfile(source) or os.path.islink(source):
+            if not os.path.isfile(source) or (os.path.islink(source) and not preserve_source):
                 raise ValueError(f"--reuse-weights requires regular safetensors files: {source!r}.")
-            if os.path.commonpath((os.path.realpath(source), self.output_dir)) == self.output_dir:
+            if not preserve_source and os.path.commonpath((os.path.realpath(source), self.output_dir)) == self.output_dir:
                 destination = source
             else:
                 destination = os.path.join(self.output_dir, ".weights", os.path.basename(source))
             if os.path.commonpath((os.path.realpath(destination), self.output_dir)) != self.output_dir:
                 raise ValueError(f"Weight destination escapes the export directory: {destination!r}.")
             if source != destination and os.path.lexists(destination):
-                raise FileExistsError(f"Refusing to overwrite checkpoint weight {destination!r}.")
+                if not (
+                    preserve_source
+                    and not os.path.islink(destination)
+                    and (destination in self.replace_paths or os.path.samefile(source, destination))
+                ):
+                    raise FileExistsError(f"Refusing to overwrite checkpoint weight {destination!r}.")
+                self.replace_paths.add(destination)
             self.destinations[source] = destination
 
     def __deepcopy__(self, memo):
@@ -82,27 +90,44 @@ class WeightReuse:
         return exports
 
     def relocate(self):
-        """Publishes complete files with source permissions and timestamps before removing their sources."""
+        """Publish whole checkpoint files, optionally retaining source ownership."""
         for source, destination in self.destinations.items():
             if source == destination:
                 continue
             os.makedirs(os.path.dirname(destination), exist_ok=True)
             if os.path.commonpath((os.path.realpath(destination), self.output_dir)) != self.output_dir:
                 raise ValueError(f"Weight destination escapes the export directory: {destination!r}.")
-            if os.path.islink(source):
+            if os.path.islink(source) and not self.preserve_source:
                 raise ValueError(f"Source weight {source!r} is a symbolic link.")
-            print(f"Moving checkpoint weight {source} to {destination} (source ownership transferred)")
+            link_source = os.path.realpath(source) if self.preserve_source else source
+            action = "Copying" if self.preserve_source else "Moving"
+            print(f"{action} checkpoint weight {source} to {destination}")
+            if self.preserve_source:
+                # Separate files also satisfy onnx-light's single-hard-link policy.
+                with tempfile.NamedTemporaryFile(dir=os.path.dirname(destination), delete=False) as temporary:
+                    temporary_path = temporary.name
+                try:
+                    shutil.copy2(link_source, temporary_path)
+                    if destination in self.replace_paths:
+                        os.replace(temporary_path, destination)
+                    else:
+                        os.link(temporary_path, destination)
+                finally:
+                    if os.path.exists(temporary_path):
+                        os.unlink(temporary_path)
+                continue
             try:
-                os.link(source, destination)
+                os.link(link_source, destination)
             except OSError as exc:
                 if exc.errno != errno.EXDEV:
                     raise
                 with tempfile.NamedTemporaryFile(dir=os.path.dirname(destination), delete=False) as temporary:
                     temporary_path = temporary.name
                 try:
-                    shutil.copy2(source, temporary_path)
+                    shutil.copy2(link_source, temporary_path)
                     # Hard-link publication never replaces an existing destination.
                     os.link(temporary_path, destination)
                 finally:
                     os.unlink(temporary_path)
-            os.unlink(source)
+            if not self.preserve_source:
+                os.unlink(source)

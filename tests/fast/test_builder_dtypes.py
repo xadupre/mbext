@@ -283,7 +283,9 @@ class TestReuseDownloadedWeights(ExtTestCase):
         self.assertFalse(os.path.exists(os.path.join(output_dir, "model.safetensors")))
         model_with_weights = load(os.path.join(output_dir, "model.onnx"))
         embedding = next(
-            initializer for initializer in model_with_weights.graph.initializer if initializer.name == "model.embed_tokens.weight.source"
+            initializer
+            for initializer in model_with_weights.graph.initializer
+            if initializer.name == "/modelbuilder/checkpoint/model.embed_tokens.weight"
         )
         self.assertEqualArray(to_array(embedding, output_dir), model.model.embed_tokens.weight.detach().numpy())
         self.assertIn(

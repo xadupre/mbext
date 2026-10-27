@@ -28,6 +28,40 @@ export backend. The shared builder constructs graphs with
 onnx-light ONNX model objects. This builds the graph directly rather than
 tracing a PyTorch forward pass.
 
+Dense ``LlamaForCausalLM``, ``Qwen2ForCausalLM`` and ``Qwen3ForCausalLM``
+safetensors checkpoints are bound directly to the graph builder from their
+configuration and named tensors, without instantiating or traversing a
+Transformers model. Floating-point exports read only safetensors headers:
+initializers retain external file locations, byte ranges, shapes and original
+dtypes. Casts, transposes and QKV concatenation are ONNX graph operations, not
+export-time tensor operations. Source/config/output dtype conversions retain
+their order, and tied input/output weights reference the same source range.
+Zero-valued biases cannot be detected without reading values, so their Add
+nodes are retained.
+
+On-the-fly quantization still reads checkpoint tensors directly and uses the
+existing quantization helpers; it does not instantiate a Transformers model
+either. The shared safetensors reader also serves MLX loading, and standard
+shard selection uses the existing checkpoint index resolver.
+
+Normal floating-point exports copy complete, unchanged checkpoint shards into
+``.weights`` to preserve the input/cache and produce an autonomous output.
+This is file-level copying, not materializing tensor buffers or reserializing
+weights. Separate files satisfy onnx-light's external-data single-hard-link
+policy. Existing export-owned files can be replaced, but unrelated destination
+collisions are rejected. If checkpoint files already live in the output's
+``.weights`` directory, no checkpoint copy is performed. ``--reuse-weights``
+retains its explicit ownership-transfer semantics. Shard-size limits apply to
+generated constants, not to the unchanged checkpoint files.
+
+The public CLI is unchanged. Hub checkpoints use the existing Hugging Face
+snapshot cache. Other architectures, PyTorch ``.bin`` files, GGUF, prequantized
+checkpoints, PEFT adapters, remote custom model classes and specialized/MLX
+builders retain their existing loading paths. Private builder subclasses do
+not opt into direct loading implicitly. Floating-point exports keep a named
+metadata dictionary, not a weight state dictionary. Only the quantization path
+materializes the checkpoint tensors.
+
 Construction first prepares the inputs and initializers and records node
 requests in a dependency-indexed queue, not in a second protobuf graph.
 Finalization submits ready requests through ``GraphBuilder.make_node``,
@@ -66,6 +100,68 @@ An unchanged reused weight must report zero rewritten payload bytes and no new
 cross-filesystem relocation may still copy the original file with
 ``shutil.copy2``. This permitted relocation is distinct from reserializing
 the weight tensors.
+
+Direct checkpoint export measurements
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+A local comparison used pretrained ``Qwen/Qwen3-0.6B`` snapshot
+``c1899de289a04d12100db370d81485cdf75e47ca`` (BF16 checkpoint), CPU FP32 output,
+default QKV packing and normal external-data saving (not ``--reuse-weights``).
+The baseline was updated ``main`` at ``a1a23dc``. Both checkouts used the same
+cached snapshot, Python 3.12, PyTorch ``2.16.0.dev20261006+cu132``,
+Transformers 5.15.0, and an i7-13800H under Linux/WSL with
+``OMP_NUM_THREADS=2`` and ``MKL_NUM_THREADS=2``.
+
+Each export ran ``create_model`` in a fresh subprocess with offline Hub access.
+After one warm-up per checkout, three sequential samples per checkout alternated
+order, retaining warm filesystem caches. The following are medians, with ranges
+for process wall time and process-wide peak RSS:
+
+========================= ===================== =====================
+Measurement               Main                  External checkpoint
+========================= ===================== =====================
+Complete process (s)      22.11 (20.52--23.58)    25.98 (24.87--27.13)
+Imports (s)               9.676                 8.062
+Checkpoint loading (s)    1.224                 0.003
+Graph preparation (s)     1.522                 0.193
+Finalization/saving (s)   7.499                 15.280
+Peak RSS (MiB)            8333 (8289--8334)      1257 (1257--1258)
+========================= ===================== =====================
+
+Phase timers wrapped ``Model.load_weights``, ``Model.make_model`` (subtracting
+loading), and ``Model.save_model``. Imports were timed before importing the
+public builder; the parent measured full subprocess lifetime, including startup
+and teardown. Remaining time includes configuration, tokenizer and pipeline
+work. RSS came from Linux ``resource.getrusage(RUSAGE_SELF).ru_maxrss``.
+Pretrained ONNX Runtime logits were bit-identical; copied checkpoint bytes were
+identical. Normal exports retained 1,503,300,328 checkpoint bytes and wrote
+20,971,520 bytes of generated external constants, rather than rewriting the
+baseline's 2,405,142,528 external-data bytes.
+
+These are small, noisy samples on a shared machine, not a general speedup
+guarantee. The external path substantially reduced export RSS but did not
+improve total time in this comparison. Import differences are not attributable
+to removing model instantiation.
+
+A separate instrumented export measured ``shutil.copy2`` at 0.788 s for the
+1.5 GB checkpoint, native finalization at 12.475 s and complete
+finalization/saving at 13.367 s. The saving timer must not be mistaken for
+checkpoint copying. Python 3.12 used its Linux ``sendfile`` fast path.
+
+To measure a valid no-copy export, the same checkpoint was placed in the
+output's ``.weights`` directory before timing. One warm-up and three fresh
+processes, with guards rejecting checkpoint materialization and copying, gave
+a median complete process time of 21.96 s (21.74--23.49), imports of 7.044 s,
+graph preparation of 0.170 s, native finalization of 12.210 s and
+finalization/saving of 12.353 s. Source placement was setup, not an export-time
+copy. Thus the remaining cost is not checkpoint copying.
+
+Graph preparation only queues Python node requests: actual native insertion
+and export happen during finalization. A profile attributed about 9 s to
+native node insertion and 3.3 s to native model export. The unchanged baseline
+finalized in 0.916 s in a separate profile. These transformed external-weight
+graphs still expose a native finalization bottleneck; the small preparation
+time is not the time for constructing the complete graph.
 
 Builders
 --------
