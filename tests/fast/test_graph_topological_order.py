@@ -68,13 +68,13 @@ class TestGraphTopologicalOrder(ExtTestCase):
 
     def test_omitted_optional_node_outputs_survive_serialization(self):
         builder = self.make_builder()
-        builder.make_graph_input("source", TensorProto.FLOAT, [1])
-        builder.make_graph_input("skip", TensorProto.FLOAT, [1])
-        builder.make_graph_input("scale", TensorProto.FLOAT, [1])
-        builder.make_graph_input("bias", TensorProto.FLOAT, [1])
-        builder.make_graph_output("normalized", TensorProto.FLOAT, [1])
-        builder.make_graph_output("residual", TensorProto.FLOAT, [1])
-        builder.make_graph_output("attention", TensorProto.FLOAT, [1])
+        builder.make_graph_input("source", TensorProto.FLOAT, [1, 2, 4])
+        builder.make_graph_input("skip", TensorProto.FLOAT, [1, 2, 4])
+        builder.make_graph_input("scale", TensorProto.FLOAT, [4])
+        builder.make_graph_input("bias", TensorProto.FLOAT, [4])
+        builder.make_graph_output("normalized", TensorProto.FLOAT, [1, 2, 4])
+        builder.make_graph_output("residual", TensorProto.FLOAT, [1, 2, 4])
+        builder.make_graph_output("attention", TensorProto.FLOAT, [1, 2, 4])
         builder.make_node(
             "SkipLayerNormalization",
             ["source", "skip", "scale", "bias"],
@@ -114,19 +114,24 @@ class TestGraphTopologicalOrder(ExtTestCase):
                 return getattr(self.native, name)
 
             def make_node(self, *args, **kwargs):
-                graph_threads.append(threading.get_ident())
+                graph_threads.append(("make_node", threading.get_ident()))
                 return self.native.make_node(*args, **kwargs)
 
             def make_initializer_move(self, *args, **kwargs):
-                graph_threads.append(threading.get_ident())
+                graph_threads.append(("make_initializer_move", threading.get_ident()))
                 return self.native.make_initializer_move(*args, **kwargs)
+
+            def init(self, *args, **kwargs):
+                graph_threads.append(("init", threading.get_ident()))
+                return self.native.init(*args, **kwargs)
 
         class DelayedModel(Model):
             def _prepare_initializer(self, tensor, name, to):
-                workers.append(threading.get_ident())
-                started.set()
-                if not proceed.wait(10):
-                    raise TimeoutError("Initializer preparation was not released.")
+                if name == "weight":
+                    workers.append(threading.get_ident())
+                    started.set()
+                    if not proceed.wait(10):
+                        raise TimeoutError("Initializer preparation was not released.")
                 return super()._prepare_initializer(tensor, name, to)
 
         builder = self.make_builder(DelayedModel, RecordingGraph("test"))
@@ -137,17 +142,20 @@ class TestGraphTopologicalOrder(ExtTestCase):
             try:
                 builder.make_initializer(torch.ones(4, 6), "weight")
                 self.assertTrue(started.wait(10))
-                builder.make_node("MatMul", ["source", "weight"], ["result"], name="matmul")
-                self.assertFalse(builder.graph.has_name("result"))
+                builder.make_initializer(np.ones(6, dtype=np.float32), "bias")
+                builder.make_node("MatMul", ["source", "weight"], ["product"], name="matmul")
+                builder.make_node("Add", ["product", "bias"], ["result"], name="add")
+                self.assertFalse(builder.graph.has_name("product"))
             finally:
                 proceed.set()
             model = builder.to_model_proto()
         self.assertTrue(workers)
         self.assertTrue(all(thread != main_thread for thread in workers))
-        self.assertEqual(graph_threads, [main_thread, main_thread])
+        self.assertEqual(sorted(operation for operation, _ in graph_threads), ["init", "make_initializer_move", "make_node", "make_node"])
+        self.assertTrue(all(thread == main_thread for _, thread in graph_threads))
         checker.check_model(model)
         actual = ReferenceEvaluator(model).run(None, {"source": np.ones((2, 4), dtype=np.float32)})[0]
-        self.assertEqualArray(np.full((2, 6), 4, dtype=np.float32), actual)
+        self.assertEqualArray(np.full((2, 6), 5, dtype=np.float32), actual)
 
     def test_omitted_lstm_outputs_keep_native_shapes_and_positions(self):
         import onnxruntime as ort
@@ -254,6 +262,19 @@ class TestGraphTopologicalOrder(ExtTestCase):
 
         model = builder.to_model_proto()
         self.assertEqual([node.name for node in model.graph.node], ["identity"])
+
+    def test_duplicate_node_attributes_are_compared_by_value(self):
+        builder = self.make_builder()
+        builder.make_graph_input("source", TensorProto.FLOAT, [2, 3])
+        builder.make_graph_output("result", TensorProto.FLOAT, [3, 2])
+        builder.make_node("Transpose", ["source"], ["result"], name="transpose", perm=[1, 0])
+        builder.make_node("Transpose", ["source"], ["result"], name="transpose", perm=[1, 0])
+        with self.assertRaisesRegex(ValueError, "Node name 'transpose' is already used"):
+            builder.make_node("Transpose", ["source"], ["result"], name="transpose", perm=[0, 1])
+        model = builder.to_model_proto()
+        self.assertEqual(len(model.graph.node), 1)
+        inputs = np.arange(6, dtype=np.float32).reshape(2, 3)
+        self.assertEqualArray(ReferenceEvaluator(model).run(None, {"source": inputs})[0], inputs.T)
 
     def test_reverse_chain_drains_iteratively(self):
         builder = self.make_builder()

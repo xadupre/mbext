@@ -40,7 +40,7 @@ def run(mode: str, checkpoint_path: str, output_dir: str) -> dict:
     original_stat = checkpoint.stat()
     weight = load_file(str(checkpoint))["weight"]
     output = Path(output_dir)
-    output.mkdir()
+    output.mkdir(parents=True, exist_ok=True)
 
     start = time.perf_counter()
     reuse = WeightReuse(checkpoint.parent, output) if mode == "zero_copy" else None

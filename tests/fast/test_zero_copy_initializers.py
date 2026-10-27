@@ -16,7 +16,7 @@ from pathlib import Path
 
 import numpy as np
 import torch
-from onnx_light.onnx import TensorProto, load, save_model
+from onnx_light.onnx import TensorProto, load, load_model, save_model
 from onnx_light.onnx.numpy_helper import to_array
 from onnx_light.onnx.reference import ReferenceEvaluator
 from onnx_light.onnx_core.graph_builder import GraphBuilder
@@ -58,9 +58,11 @@ class TestZeroCopyInitializers(ExtTestCase):
             original_stat = checkpoint.stat()
             for mode in ("legacy", "zero_copy"):
                 with self.subTest(mode=mode):
-                    output = Path(directory, mode)
+                    output = Path(directory, mode, "export")
+                    if mode == "legacy":
+                        output.mkdir(parents=True)
                     result = benchmark["run"](mode, str(checkpoint), str(output))
-                    exported = load(str(output / "model.onnx"), load_external_data=False)
+                    exported = load_model(str(output / "model.onnx"), load_external_data=False)
                     initializer = exported.graph.initializer[0]
                     self.assertEqual(initializer.data_location, TensorProto.EXTERNAL)
                     self.assertEqual(len(initializer.raw_data), 0)
