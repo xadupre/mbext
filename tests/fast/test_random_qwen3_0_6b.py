@@ -3,6 +3,7 @@
 # Licensed under the MIT License.  See License.txt in the project root for
 # license information.
 # --------------------------------------------------------------------------
+import os
 import unittest
 
 
@@ -14,6 +15,7 @@ QWEN3_MODEL_NAME = "Qwen/Qwen3-0.6B"
 class TestRandomQwen3(ExtTestCase):
     @hide_stdout()
     def test_parallel_qwen3_multilayer(self):
+        import onnx_light.onnx as onnx
         import torch
         from transformers import Qwen3Config, Qwen3ForCausalLM
 
@@ -45,6 +47,37 @@ class TestRandomQwen3(ExtTestCase):
                     vocab_size=config.vocab_size,
                     reference_dtype=torch.float32,
                 )
+                if precision == "fp16":
+                    output_dir, _ = self.get_dirs(f"test_parallel_qwen3_multilayer_{precision}")
+                    exported = onnx.load(os.path.join(output_dir, "model.onnx"))
+                    nodes = exported.graph.node
+                    producers = {out: node for node in nodes for out in node.output if out}
+                    initializers = {init.name: init for init in exported.graph.initializer}
+                    norms = [node for node in nodes if node.op_type in ("SimplifiedLayerNormalization", "SkipSimplifiedLayerNormalization")]
+                    self.assertEqual(len(norms), 4 * config.num_hidden_layers + 1)
+                    self.assertTrue(all(node.op_type == "SimplifiedLayerNormalization" for node in norms))
+                    for node in norms:
+                        self.assertEqual(len(node.input), 2, node.name)
+                    norm_inputs = {node.input[0] for node in norms}
+                    residual_adds = [
+                        node for node in nodes if node.op_type == "Add" and any(out in norm_inputs for out in node.output if out)
+                    ]
+                    self.assertEqual(len(residual_adds), 2 * config.num_hidden_layers)
+                    for node in residual_adds:
+                        for inp in node.input:
+                            producer = producers.get(inp)
+                            self.assertTrue(producer is None or producer.op_type != "Cast", node.name)
+                    cast_inputs = {inp for node in nodes if node.op_type == "Cast" for inp in node.input}
+                    for node in norms:
+                        with self.subTest(node=node.name):
+                            self.assertIn(node.input[1], initializers, node.name)
+                            self.assertEqual(initializers[node.input[1]].data_type, onnx.TensorProto.FLOAT16)
+                            producer = producers.get(node.input[0])
+                            self.assertTrue(producer is None or producer.op_type != "Cast", node.name)
+                            self.assertTrue(cast_inputs.isdisjoint(out for out in node.output if out), node.name)
+                            attributes = {attribute.name: attribute for attribute in node.attribute}
+                            self.assertIn("stash_type", attributes, node.name)
+                            self.assertEqual(attributes["stash_type"].i, onnx.TensorProto.FLOAT, node.name)
 
     def common_fast_qwen3_random_weights(self, precision, provider, model_dtype=None, reference_dtype=None):
         from transformers import AutoModelForCausalLM, Qwen3Config
