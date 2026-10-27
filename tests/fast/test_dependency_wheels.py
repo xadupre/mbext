@@ -26,6 +26,7 @@ class TestDependencyWheels(ExtTestCase):
             project = tomllib.load(f)["project"]
 
         for requirements, package, version in (
+            ((ROOT / ".github/requirements-onnx-light.txt").read_text(encoding="utf-8").splitlines(), "onnx-light", "0.2.0"),
             (project["optional-dependencies"]["dev"], "onnx-light-cpu", "0.2.0"),
         ):
             wheels = [requirement for requirement in requirements if requirement.startswith(f"{package} @ ")]
@@ -33,6 +34,16 @@ class TestDependencyWheels(ExtTestCase):
             for wheel in wheels:
                 self.assertIn(f"/releases/download/{version}/", wheel)
                 self.assertIn(f"/{package.replace('-', '_')}-{version}-", wheel)
+
+    def test_ci_uses_github_wheels(self):
+        installations = 0
+        for path in (ROOT / ".github/workflows").glob("*.yml"):
+            for line in path.read_text(encoding="utf-8").splitlines():
+                if "run: pip install" in line and ('".[dev' in line or line.rstrip().endswith(" .")):
+                    with self.subTest(workflow=path.name, command=line):
+                        self.assertIn("-r .github/requirements-onnx-light.txt", line)
+                    installations += 1
+        self.assertEqual(installations, 8)
 
     def test_ci_transformers_matrix(self):
         with (ROOT / "pyproject.toml").open("rb") as f:
