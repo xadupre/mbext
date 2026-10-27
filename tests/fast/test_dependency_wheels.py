@@ -3,7 +3,7 @@
 # Licensed under the MIT License.  See License.txt in the project root for
 # license information.
 # --------------------------------------------------------------------------
-"""Check that the pinned native dependency wheels use the intended releases."""
+"""Check native dependency requirements and pinned wheel releases."""
 
 import tomllib
 from pathlib import Path
@@ -14,12 +14,18 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 class TestDependencyWheels(ExtTestCase):
+    def test_onnx_light_requirement(self):
+        with (ROOT / "pyproject.toml").open("rb") as f:
+            project = tomllib.load(f)["project"]
+
+        requirements = [req for req in project["dependencies"] if req.startswith("onnx-light")]
+        self.assertEqual(requirements, ["onnx-light>=0.2.0"])
+
     def test_onnx_light_wheels(self):
         with (ROOT / "pyproject.toml").open("rb") as f:
             project = tomllib.load(f)["project"]
 
         for requirements, package, version in (
-            (project["dependencies"], "onnx-light", "0.2.0"),
             (project["optional-dependencies"]["dev"], "onnx-light-cpu", "0.2.0"),
         ):
             wheels = [requirement for requirement in requirements if requirement.startswith(f"{package} @ ")]
