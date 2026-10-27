@@ -9,7 +9,7 @@ import unittest
 
 import numpy as np
 
-from modelbuilder.ext_test_case import ExtTestCase, hide_stdout, requires_cuda, requires_genai, requires_transformers
+from modelbuilder.ext_test_case import ExtTestCase, PvVersion, hide_stdout, requires_cuda, requires_genai, requires_transformers
 
 QWEN3_8_MODEL_NAME = "Qwen/Qwen3.8-27B"
 TERNARY_BONSAI_MODEL_NAME = "prism-ml/Ternary-Bonsai-27B-unpacked"
@@ -360,8 +360,14 @@ class TestRandomQwen3_8(ExtTestCase):
 
     @hide_stdout()
     def test_qwen3_8_fp16_onnxruntime(self):
+        import onnx_light_cpu
         import torch
 
+        if PvVersion(onnx_light_cpu.__version__) <= PvVersion("0.2.0"):
+            self.skipTest(
+                "onnx-light-cpu <= 0.2.0 rejects FP16 LinearAttention shapes; "
+                "fixed by https://github.com/xadupre/onnx-light-cpu/pull/1046"
+            )
         config, model, output_dir = self._build_multimodal_model(precision="fp16")
         session = self.check_ort(os.path.join(output_dir, "model.onnx"))
         input_ids = torch.tensor([[5, 6, 7]], dtype=torch.int64)

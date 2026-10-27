@@ -28,6 +28,19 @@ export backend. The shared builder constructs graphs with
 onnx-light ONNX model objects. This builds the graph directly rather than
 tracing a PyTorch forward pass.
 
+Construction first prepares the inputs and initializers and records node
+requests in a dependency-indexed queue, not in a second protobuf graph.
+Finalization submits ready requests through ``GraphBuilder.make_node``,
+including contrib and normalization operators. Newly inserted producers wake
+only their dependent requests, including subgraph captures. Output declarations
+wait until their producers exist. Unresolved values and cycles are rejected
+before exporting the complete native graph; there is no Python node merge,
+final topological sort or lifetime-metadata repair.
+
+Only initializer storage preparation runs in worker threads. Registration and
+node insertion remain on the calling thread; Python layer traversal is not
+parallelized by using GraphBuilder.
+
 For eligible CPU tensors, initializers borrow PyTorch storage through DLPack or
 NumPy storage through ``GraphBuilder.init(copy=False)``. Avoiding unnecessary
 weight copies reduces graph-construction overhead, especially for large models;
@@ -39,6 +52,20 @@ The ``--max-shard-size`` option delegates shard creation to onnx-light, while
 floating-point exports (see :doc:`command_lines`). These mechanisms reduce
 export I/O and copying; they do not change the target inference runtime:
 the resulting ONNX files are consumed by onnxruntime-genai.
+
+``examples/benchmark_zero_copy_initializers.py`` compares rewriting a checkpoint
+weight (``legacy``) with referencing its existing safetensors payload
+(``zero_copy``). The checkpoint is created in a separate setup process so its
+allocation does not inflate the export processes' peak RSS. Its mapped tensor
+is loaded before timing graph construction, file saving and checkpoint
+relocation. Both modes use onnx-light's file writer;
+neither builds a protobuf byte string containing the weights. The report
+separates ONNX metadata size, reused payload bytes and rewritten payload bytes.
+An unchanged reused weight must report zero rewritten payload bytes and no new
+``.data`` file. Same-filesystem relocation preserves the checkpoint inode;
+cross-filesystem relocation may still copy the original file with
+``shutil.copy2``. This permitted relocation is distinct from reserializing
+the weight tensors.
 
 Builders
 --------

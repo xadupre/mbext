@@ -3,7 +3,7 @@
 # Licensed under the MIT License.  See License.txt in the project root for
 # license information.
 # --------------------------------------------------------------------------
-"""In-memory initializer ownership and serialization."""
+"""Initializer ownership, file saving and checkpoint reuse."""
 
 import gc
 import os
@@ -16,21 +16,21 @@ from pathlib import Path
 
 import numpy as np
 import torch
-from onnx_light.onnx import ModelProto, TensorProto, load, save_model
+from onnx_light.onnx import TensorProto, load, load_model, save_model
 from onnx_light.onnx.numpy_helper import to_array
 from onnx_light.onnx.reference import ReferenceEvaluator
 from onnx_light.onnx_core.graph_builder import GraphBuilder
+from safetensors.torch import save_file
 
 from modelbuilder.builders.base import Model
-from modelbuilder.ext_test_case import ExtTestCase
+from modelbuilder.ext_test_case import ExtTestCase, hide_stdout
 
 
 def make_builder(cls=Model):
     model = cls.__new__(cls)
     model.graph = GraphBuilder("weights")
+    model._initialize_graph_state()
     model.reuse_downloaded_weights = False
-    model._initializer_names = set()
-    model.values = {}
     return model
 
 
@@ -45,7 +45,51 @@ class TestZeroCopyInitializers(ExtTestCase):
                 self.assertEqual(peak_rss_mib(kib, "linux"), expected)
                 self.assertEqual(peak_rss_mib(kib * 1024, "darwin"), expected)
 
-    def test_numpy_owner_survives_builder_and_serialization(self):
+    @unittest.skipIf(os.name == "nt", "resource is unavailable on Windows")
+    @hide_stdout()
+    def test_benchmark_reuses_checkpoint_without_rewriting_weights(self):
+        import onnxruntime as ort
+
+        benchmark = runpy.run_path(str(Path(__file__).resolve().parents[2] / "examples" / "benchmark_zero_copy_initializers.py"))
+        weight = torch.arange(64 * 64, dtype=torch.float32).reshape(64, 64)
+        with tempfile.TemporaryDirectory() as directory:
+            checkpoint = Path(directory, "model.safetensors")
+            save_file({"weight": weight}, str(checkpoint))
+            original_stat = checkpoint.stat()
+            for mode in ("legacy", "zero_copy"):
+                with self.subTest(mode=mode):
+                    output = Path(directory, mode, "export")
+                    if mode == "legacy":
+                        output.mkdir(parents=True)
+                    result = benchmark["run"](mode, str(checkpoint), str(output))
+                    exported = load_model(str(output / "model.onnx"), load_external_data=False)
+                    initializer = exported.graph.initializer[0]
+                    self.assertEqual(initializer.data_location, TensorProto.EXTERNAL)
+                    self.assertEqual(len(initializer.raw_data), 0)
+                    self.assertEqualArray(to_array(initializer, str(output)), weight.numpy())
+                    reference = {entry.key: entry.value for entry in initializer.external_data}
+                    self.assertEqual(int(reference["length"]), weight.numel() * weight.element_size())
+                    if mode == "zero_copy":
+                        reused = output / reference["location"]
+                        self.assertEqual(reference["location"], ".weights/model.safetensors")
+                        self.assertGreater(int(reference["offset"]), 0)
+                        self.assertEqual((reused.stat().st_dev, reused.stat().st_ino), (original_stat.st_dev, original_stat.st_ino))
+                        self.assertFalse(checkpoint.exists())
+                        self.assertEqual(list(output.glob("*.data*")), [])
+                        self.assertEqual(result["rewritten_weight_bytes"], 0)
+                        self.assertEqual(result["reused_weight_bytes"], weight.numel() * weight.element_size())
+                        self.assertTrue(result["reused_checkpoint_same_inode"])
+                    else:
+                        self.assertTrue(checkpoint.exists())
+                        self.assertEqual(result["rewritten_weight_bytes"], weight.numel() * weight.element_size())
+                        self.assertEqual(result["reused_weight_bytes"], 0)
+                        self.assertFalse(result["reused_checkpoint_same_inode"])
+                    self.assertEqual(result["onnx_bytes"], (output / "model.onnx").stat().st_size)
+                    session = ort.InferenceSession(str(output / "model.onnx"), providers=["CPUExecutionProvider"])
+                    inputs = np.ones((1, 64), dtype=np.float32)
+                    self.assertEqualArray(session.run(None, {"input": inputs})[0], inputs @ weight.numpy())
+
+    def test_numpy_owner_survives_builder_and_save(self):
         model = make_builder()
         array = np.arange(12, dtype=np.float32).reshape(3, 4)
         expected = array.copy()
@@ -60,18 +104,15 @@ class TestZeroCopyInitializers(ExtTestCase):
         del array, model
         gc.collect()
         self.assertIsNotNone(owner())
-        serialized = built.SerializeToString()
-        restored = ModelProto()
-        restored.ParseFromString(serialized)
         self.assertEqual(initializer.name, "weight")
         self.assertEqual(list(initializer.dims), [3, 4])
-        np.testing.assert_array_equal(to_array(restored.graph.initializer[0]), expected)
-        result = ReferenceEvaluator(restored).run(None, {"input": np.ones((3, 4), dtype=np.float32)})[0]
+        result = ReferenceEvaluator(built).run(None, {"input": np.ones((3, 4), dtype=np.float32)})[0]
         np.testing.assert_array_equal(result, expected + 1)
         with tempfile.TemporaryDirectory() as directory:
             path = os.path.join(directory, "weights.onnx")
             save_model(built, path, save_as_external_data=True, location="weights.bin", size_threshold=0)
-            np.testing.assert_array_equal(to_array(load(path).graph.initializer[0], directory), expected)
+            restored = load(path)
+            np.testing.assert_array_equal(to_array(restored.graph.initializer[0], directory), expected)
         del initializer, built
         gc.collect()
         self.assertIsNone(owner())
@@ -89,9 +130,11 @@ class TestZeroCopyInitializers(ExtTestCase):
         initializer = built.graph.initializer[0]
         self.assertEqual(np.from_dlpack(initializer).ctypes.data, pointer)
         np.testing.assert_array_equal(to_array(initializer), np.arange(12, dtype=np.float32).reshape(3, 4))
-        restored = ModelProto()
-        restored.ParseFromString(built.SerializeToString())
-        np.testing.assert_array_equal(to_array(restored.graph.initializer[0]), to_array(initializer))
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, "weights.onnx")
+            save_model(built, path, save_as_external_data=True, location="weights.bin", size_threshold=0)
+            restored = load(path)
+            np.testing.assert_array_equal(to_array(restored.graph.initializer[0], directory), to_array(initializer, directory))
 
     @unittest.skipIf((os.cpu_count() or 1) < 2, "requires two initializer workers")
     def test_parallel_conversion_survives_source_release(self):
