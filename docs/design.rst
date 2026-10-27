@@ -53,6 +53,20 @@ floating-point exports (see :doc:`command_lines`). These mechanisms reduce
 export I/O and copying; they do not change the target inference runtime:
 the resulting ONNX files are consumed by onnxruntime-genai.
 
+``examples/benchmark_zero_copy_initializers.py`` compares rewriting a checkpoint
+weight (``legacy``) with referencing its existing safetensors payload
+(``zero_copy``). The checkpoint is created in a separate setup process so its
+allocation does not inflate the export processes' peak RSS. Its mapped tensor
+is loaded before timing graph construction, file saving and checkpoint
+relocation. Both modes use onnx-light's file writer;
+neither builds a protobuf byte string containing the weights. The report
+separates ONNX metadata size, reused payload bytes and rewritten payload bytes.
+An unchanged reused weight must report zero rewritten payload bytes and no new
+``.data`` file. Same-filesystem relocation preserves the checkpoint inode;
+cross-filesystem relocation may still copy the original file with
+``shutil.copy2``. This permitted relocation is distinct from reserializing
+the weight tensors.
+
 Builders
 --------
 
