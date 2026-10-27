@@ -4,12 +4,14 @@
 # license information.
 # --------------------------------------------------------------------------
 
+import os
+import tempfile
 import threading
 
 import numpy as np
 import onnx_light.onnx.helper as oh
 import torch
-from onnx_light.onnx import TensorProto, checker
+from onnx_light.onnx import TensorProto, checker, save_model
 from onnx_light.onnx.reference import ReferenceEvaluator
 from onnx_light.onnx_core.graph_builder import GraphBuilder
 
@@ -93,12 +95,8 @@ class TestGraphTopologicalOrder(ExtTestCase):
         model = builder.to_model_proto()
         serialized = type(model)()
         serialized.ParseFromString(model.SerializeToString())
-        outputs_by_name = {
-            node.name: list(node.output) for node in serialized.graph.node
-        }
-        self.assertEqual(
-            outputs_by_name["skip_norm"], ["normalized", "", "", "residual"]
-        )
+        outputs_by_name = {node.name: list(node.output) for node in serialized.graph.node}
+        self.assertEqual(outputs_by_name["skip_norm"], ["normalized", "", "", "residual"])
         self.assertEqual(outputs_by_name["cross_attention"], ["attention", "", ""])
 
     def test_pending_initializer_registers_nodes_on_the_calling_thread(self):
@@ -150,6 +148,43 @@ class TestGraphTopologicalOrder(ExtTestCase):
         checker.check_model(model)
         actual = ReferenceEvaluator(model).run(None, {"source": np.ones((2, 4), dtype=np.float32)})[0]
         self.assertEqualArray(np.full((2, 6), 4, dtype=np.float32), actual)
+
+    def test_omitted_lstm_outputs_keep_native_shapes_and_positions(self):
+        import onnxruntime as ort
+
+        shapes = {"sequence": [2, 1, 3, 4], "hidden": [1, 3, 4], "cell": [1, 3, 4]}
+        for outputs in (["", "hidden", "cell"], ["sequence", "", "cell"]):
+            with self.subTest(outputs=outputs):
+                builder = self.make_builder()
+                builder.make_graph_input("source", TensorProto.FLOAT, [2, 3, 5])
+                builder.make_initializer(np.zeros((1, 16, 5), dtype=np.float32), "weight")
+                builder.make_initializer(np.zeros((1, 16, 4), dtype=np.float32), "recurrence")
+                builder.make_node("LSTM", ["source", "weight", "recurrence"], outputs, name="lstm", hidden_size=4)
+                for output in outputs:
+                    if output:
+                        builder.make_graph_output(output, TensorProto.FLOAT, shapes[output])
+                forwarded = next(output for output in outputs if output)
+                builder.make_node("Identity", [forwarded], ["result"], name="consumer")
+                builder.make_graph_output("result", TensorProto.FLOAT, shapes[forwarded])
+
+                model = builder.to_model_proto()
+                native = builder.graph.to_model(ir_version=10)
+                self.assertEqual(list(model.graph.node[0].output), outputs)
+                for index, output in enumerate(outputs):
+                    if output:
+                        self.assertEqual(native.graph.node[0].output[index], output)
+                for output in model.graph.output:
+                    expected_shape = shapes[forwarded] if output.name == "result" else shapes[output.name]
+                    self.assertEqual([dim.dim_value for dim in output.type.tensor_type.shape.dim], expected_shape)
+                checker.check_model(model)
+                with tempfile.TemporaryDirectory() as directory:
+                    path = os.path.join(directory, "lstm.onnx")
+                    save_model(model, path)
+                    session = ort.InferenceSession(path, providers=["CPUExecutionProvider"])
+                    actual = session.run(None, {"source": np.ones((2, 3, 5), dtype=np.float32)})
+                    for metadata, value in zip(session.get_outputs(), actual):
+                        expected_shape = shapes[forwarded] if metadata.name == "result" else shapes[metadata.name]
+                        self.assertEqualArray(np.zeros(expected_shape, dtype=np.float32), value)
 
     def test_subgraph_capture_waits_for_its_producer(self):
         builder = self.make_builder()

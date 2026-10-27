@@ -1002,7 +1002,7 @@ class Model(LocalFunctionsMixin):
         self._ready_nodes: list[tuple[int, str]] = []
 
     def _restore_optional_node_outputs(self, model: ModelProto) -> None:
-        """Restores empty output slots omitted from the native builder."""
+        """Restores empty output names replaced by native placeholders."""
         if not self._optional_node_outputs:
             return
         for node in model.graph.node:
@@ -1038,16 +1038,11 @@ class Model(LocalFunctionsMixin):
         while self._ready_nodes:
             _, name = self._ready_nodes[0]
             node = self._pending_nodes[name]
-            native_outputs = [output for output in node.outputs if output]
+            # Keep optional slots in place for positional native shape inference.
             native_outputs = self.graph.make_node(
-                node.op_type,
-                node.inputs,
-                native_outputs,
-                domain=node.domain,
-                name=name,
-                attributes=node.attributes,
+                node.op_type, node.inputs, node.outputs, domain=node.domain, name=name, attributes=node.attributes
             )
-            if len(native_outputs) != len(node.outputs):
+            if tuple(native_outputs) != node.outputs:
                 self._optional_node_outputs[name] = node.outputs
             heapq.heappop(self._ready_nodes)
             del self._pending_nodes[name]
