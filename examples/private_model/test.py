@@ -167,6 +167,8 @@ class TestPrivateMoEModel(ExtTestCase):
                 vocab_size=config.vocab_size,
                 create_model_kwargs={"num_hidden_layers": num_hidden_layers, "private": PRIVATE_OPTION},
                 atol=atol,
+                # FP16 rounding can change top-k experts; match the reference precision.
+                reference_dtype=torch.float16 if precision == "fp16" else None,
             )
         except Exception as e:
             if provider == "cuda" and not _MOE_CUDA_OK:
@@ -201,6 +203,8 @@ class TestPrivateMoEModel(ExtTestCase):
 
     @hide_stdout()
     def test_discrepancy_private_moe_fp16_cpu(self):
+        # This seed selects different experts when the reference is left in FP32.
+        torch.manual_seed(36)
         self._common_discrepancy("fp16", "cpu")
 
     @hide_stdout()
