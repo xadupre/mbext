@@ -16,7 +16,6 @@ class TestRandomQwen3(ExtTestCase):
     @hide_stdout()
     def test_parallel_qwen3_multilayer(self):
         import onnx_light.onnx as onnx
-        import onnxruntime as ort
         import torch
         from transformers import Qwen3Config, Qwen3ForCausalLM
 
@@ -48,7 +47,7 @@ class TestRandomQwen3(ExtTestCase):
                     vocab_size=config.vocab_size,
                     reference_dtype=torch.float32,
                 )
-                if precision == "fp16" and tuple(int(x) for x in ort.__version__.split(".")[:2]) >= (1, 26):
+                if precision == "fp16":
                     output_dir, _ = self.get_dirs(f"test_parallel_qwen3_multilayer_{precision}")
                     exported = onnx.load(os.path.join(output_dir, "model.onnx"))
                     nodes = exported.graph.node
