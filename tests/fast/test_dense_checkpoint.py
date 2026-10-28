@@ -163,9 +163,9 @@ if precision == 'fp32':
         stream = original_open(path, *args, **kwargs)
         return HeaderOnlyFile(stream) if os.fspath(path).endswith('.safetensors') else stream
     checkpoint.open = header_only_open
-create_model('offline/dense', sys.argv[1], sys.argv[2], precision, 'cpu', sys.argv[3])
+create_model('offline/dense', sys.argv[1], sys.argv[2], precision, 'cpu', sys.argv[3], hf_token='false')
 if precision == 'fp32':
-    create_model('offline/dense', sys.argv[1], sys.argv[2], precision, 'cpu', sys.argv[3])
+    create_model('offline/dense', sys.argv[1], sys.argv[2], precision, 'cpu', sys.argv[3], hf_token='false')
 assert 'transformers.models.qwen3.modeling_qwen3' not in sys.modules
 """
             for mode, source, precision in (("local", str(checkpoint), "fp32"), ("hub", "", "fp32"), ("quant", str(checkpoint), "int4")):
@@ -175,7 +175,15 @@ assert 'transformers.models.qwen3.modeling_qwen3' not in sys.modules
                         [sys.executable, "-c", code, source, str(output), str(cache), precision],
                         capture_output=True,
                         text=True,
-                        env={**os.environ, "HF_HUB_OFFLINE": "1", "TRANSFORMERS_OFFLINE": "1"},
+                        env={
+                            **os.environ,
+                            "HF_HOME": str(root / "hf_home"),
+                            "HF_TOKEN_PATH": str(root / "hf_home" / "token"),
+                            "HF_TOKEN": "",
+                            "HUGGING_FACE_HUB_TOKEN": "",
+                            "HF_HUB_OFFLINE": "1",
+                            "TRANSFORMERS_OFFLINE": "1",
+                        },
                     )
                     self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                     self.assertExists(output / "model.onnx")
