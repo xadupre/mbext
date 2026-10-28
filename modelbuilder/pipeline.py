@@ -8,9 +8,6 @@
 import json
 import os
 
-from onnx_light.onnx import PipelineProto, load_model
-from onnx_light.onnx_proto.verify import verify_pipeline
-
 PIPELINE_FILENAME = "pipeline.onnx"
 
 
@@ -99,6 +96,9 @@ def save_pipeline(out_dir):
     shared_decode = "decode" in sections and os.path.normpath(sections["decode"]["filename"]) == os.path.normpath(
         sections["prefill"]["filename"]
     )
+
+    from onnx_light.onnx import PipelineProto, load_model
+    from onnx_light.onnx_proto.verify import verify_pipeline
 
     pipeline = PipelineProto(name="mbext", producer_name="mbext", pipeline_version=1)
     for role, section in sections.items():

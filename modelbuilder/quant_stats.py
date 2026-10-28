@@ -17,7 +17,6 @@ import json
 import numpy as np
 import onnx_light.onnx.numpy_helper as numpy_helper
 from onnx_light.onnx import AttributeProto, GraphProto, ModelProto
-from scipy import stats
 
 # Quantiles reported for every weight tensor.
 DEFAULT_QUANTILES = (0.01, 0.05, 0.25, 0.5, 0.75, 0.95, 0.99)
@@ -41,6 +40,8 @@ def _tensor_statistics(name: str, array: np.ndarray, quantiles=DEFAULT_QUANTILES
     # Distance to a normal distribution fitted on the tensor (mean/std): the
     # Kolmogorov-Smirnov statistic lies in [0, 1], 0 meaning a perfect fit.
     if std > 0:
+        from scipy import stats
+
         sample = values
         if sample.size > _MAX_NORMAL_SAMPLES:
             rng = np.random.default_rng(0)
