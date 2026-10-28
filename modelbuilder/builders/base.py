@@ -13,14 +13,13 @@ import hashlib
 import heapq
 import json
 import os
-import struct
 import sys
 import tempfile
 from collections import Counter, deque
 from collections.abc import Mapping, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import numpy as np
 import onnx_light.onnx.helper as onnx_helper
@@ -31,20 +30,11 @@ from onnx_light.onnx_core.graph_builder import GraphBuilder
 from tqdm import tqdm
 from transformers import AutoConfig, AutoModelForCausalLM, AutoModelForSpeechSeq2Seq, AutoTokenizer, GenerationConfig
 
+from ..helpers.checkpoint import CheckpointTensor, DenseCheckpoint, SourceTensor, read_checkpoint_metadata
 from ..helpers.onnx_helper import from_torch_dtype, get_default_onnx_opset, onnx, to_torch_dtype, torch_tensor_to_numpy
 from ..helpers.quantization import quantize_matmul_nbits
-from ..helpers.weight_reuse import checkpoint_paths
+from ..helpers.weight_reuse import WeightReuse
 from .local_functions import LocalFunctionsMixin, normalize_function_opsets
-
-
-@dataclass(frozen=True)
-class SourceTensor:
-    path: str
-    location: str
-    offset: int
-    length: int
-    dtype: int
-    shape: tuple[int, ...]
 
 
 @dataclass
@@ -75,22 +65,6 @@ def _captured_graph_inputs(graph: GraphProto) -> set[str]:
                 used.update(_captured_graph_inputs(subgraph))
     return used - local
 
-
-_SAFETENSORS_ONNX_DTYPES = {
-    "BOOL": TensorProto.BOOL,
-    "F16": TensorProto.FLOAT16,
-    "F32": TensorProto.FLOAT,
-    "F64": TensorProto.DOUBLE,
-    "BF16": TensorProto.BFLOAT16,
-    "I8": TensorProto.INT8,
-    "I16": TensorProto.INT16,
-    "I32": TensorProto.INT32,
-    "I64": TensorProto.INT64,
-    "U8": TensorProto.UINT8,
-    "U16": TensorProto.UINT16,
-    "U32": TensorProto.UINT32,
-    "U64": TensorProto.UINT64,
-}
 
 _DLPACK_TORCH_DTYPES = {
     torch.bool,
@@ -194,6 +168,7 @@ class Model(LocalFunctionsMixin):
 
         self.model_name_or_path = config._name_or_path
         self.model_type = config.architectures[0]
+        self._checkpoint_config = config
         self.io_dtype = TensorProto.DataType(io_dtype)
         self.onnx_dtype = TensorProto.DataType(onnx_dtype)
         self.quant_type = config.quantization_config["quant_method"] if hasattr(config, "quantization_config") else None
@@ -1093,6 +1068,20 @@ class Model(LocalFunctionsMixin):
         max_shard_size = self.extra_options.get("max_shard_size")
         if max_shard_size is not None and (not isinstance(max_shard_size, int) or max_shard_size <= 0):
             raise ValueError("max_shard_size must be a positive number of bytes.")
+        metadata_checkpoint = getattr(self, "_external_checkpoint_directory", None)
+        if metadata_checkpoint:
+            owned_paths = set()
+            if os.path.isfile(out_path):
+                previous = onnx.load_model(out_path, load_external_data=False)
+                owned_paths = {
+                    os.path.abspath(os.path.join(out_dir, entry.value))
+                    for tensor in previous.graph.initializer
+                    for entry in tensor.external_data
+                    if entry.key == "location"
+                }
+            storage = WeightReuse(metadata_checkpoint, out_dir, preserve_source=True, replace_paths=owned_paths)
+            storage.relocate()
+            self.extra_options["_weight_reuse"] = storage
         if os.path.exists(out_path):
             print(f"Overwriting {out_path}")
             os.remove(out_path)
@@ -1107,7 +1096,7 @@ class Model(LocalFunctionsMixin):
 
         self._validate_source_weight_files(out_dir)
         with tqdm(total=len(model.graph.initializer), desc="Saving initializers") as pbar:
-            if self.reuse_downloaded_weights:
+            if self.reuse_downloaded_weights or metadata_checkpoint:
                 reuse = self.extra_options.get("_weight_reuse")
                 if reuse is None:
                     self._save_with_reused_weights(model, out_path, data_path, max_shard_size)
@@ -1277,7 +1266,58 @@ class Model(LocalFunctionsMixin):
         self._initializer_names.add(name)
         return True
 
-    def make_initializer(self, tensor: torch.Tensor | np.ndarray, /, name: str, to: int | None = None, *, allow_reuse=True):
+    def _make_checkpoint_initializer(self, tensor: CheckpointTensor, name: str, to: int | None) -> None:
+        dtype = int(from_torch_dtype(tensor.dtype))
+        target_dtype = dtype if to is None else int(to)
+        inputs = []
+        for source in tensor.sources:
+            source_name = f"/modelbuilder/checkpoint/{source.name}"
+            if source_name not in self._initializer_names:
+                location = os.path.join(".weights", os.path.basename(source.path))
+                if self.reuse_downloaded_weights:
+                    reuse = self.extra_options.get("_weight_reuse")
+                    destination = reuse.destinations[source.path] if reuse else source.path
+                    if not self.external_data_base_dir:
+                        raise ValueError("The ONNX output directory is required to reuse downloaded weights.")
+                    location = os.path.relpath(os.path.realpath(destination), os.path.realpath(self.external_data_base_dir))
+                proto = TensorProto()
+                proto.name = source_name
+                proto.data_type = source.dtype
+                proto.dims.extend(source.shape)
+                proto.data_location = TensorProto.EXTERNAL
+                for key, value in (("location", location), ("offset", str(source.offset)), ("length", str(source.length))):
+                    entry = proto.external_data.add()
+                    entry.key, entry.value = key, value
+                self._register_initializer(proto, source_name)
+                self._initializer_names.add(source_name)
+                self._used_source_weight_files.add(source.path)
+            value = source_name
+            if source.dtype != dtype:
+                value = f"{source_name}.cast_{dtype}"
+                self.make_node("Cast", [source_name], [value], name=f"{value}/Cast", to=dtype)
+                self.make_value(value, dtype, source.shape)
+            inputs.append(value)
+        shape = tensor.shape[::-1] if tensor.transposed else tensor.shape
+        value = inputs[0]
+        if len(inputs) > 1:
+            value = f"{name}.concat"
+            self.make_node("Concat", inputs, [value], name=f"/modelbuilder/external/{name}/Concat", axis=0)
+            self.make_value(value, dtype, shape)
+        if tensor.transposed:
+            output = f"{name}.transposed"
+            self.make_node("Transpose", [value], [output], name=f"/modelbuilder/external/{name}/Transpose", perm=[1, 0])
+            self.make_value(output, dtype, tensor.shape)
+            value = output
+        if target_dtype != dtype:
+            self.make_node("Cast", [value], [name], name=f"/modelbuilder/external/{name}/Cast", to=target_dtype)
+        else:
+            self.make_node("Identity", [value], [name], name=f"/modelbuilder/external/{name}/Identity")
+        self.make_value(name, target_dtype, tensor.shape)
+        self._initializer_names.add(name)
+
+    def make_initializer(
+        self, tensor: torch.Tensor | np.ndarray | CheckpointTensor, /, name: str, to: int | None = None, *, allow_reuse=True
+    ):
         """Borrow eligible CPU weights; copy small shape constants for native inference.
 
         Callers must not mutate borrowed weights after insertion.
@@ -1285,6 +1325,9 @@ class Model(LocalFunctionsMixin):
         if name in self._initializer_names:
             return
         self._check_source_value(name)
+        if isinstance(tensor, CheckpointTensor):
+            self._make_checkpoint_initializer(tensor, name, to)
+            return
         if (
             allow_reuse
             and self.reuse_downloaded_weights
@@ -1480,6 +1523,15 @@ class Model(LocalFunctionsMixin):
         self._source_parameter_uses = Counter()
         self._source_buffers = {}
         self._source_buffer_uses = Counter()
+        if isinstance(self.weights, DenseCheckpoint):
+            if not self.weights.materialized:
+                return
+            source_tensors = self._read_safetensors_metadata() if self.reuse_downloaded_weights else {}
+            for name, tensor in self.weights.tensors.items():
+                source = source_tensors.get(self.weights.aliases.get(name, name))
+                if source is not None and tuple(tensor.shape) == source.shape:
+                    self._source_tensors_by_data_ptr[tensor.data_ptr()] = source
+            return
         if not isinstance(self.weights, torch.nn.Module):
             return
         source_tensors = self._read_safetensors_metadata() if getattr(self, "reuse_downloaded_weights", False) else {}
@@ -1505,37 +1557,18 @@ class Model(LocalFunctionsMixin):
         if not self.external_data_base_dir:
             raise ValueError("The ONNX output directory is required to reuse downloaded weights.")
 
-        source_tensors = {}
-        safetensor_paths = checkpoint_paths(self.source_model_path)
-        if not safetensor_paths:
-            raise ValueError(f"No safetensors checkpoint was found in {self.source_model_path!r}.")
-
-        for path in safetensor_paths:
-            with open(path, "rb") as f:
-                header_length_bytes = f.read(8)
-                if len(header_length_bytes) != 8:
-                    raise ValueError(f"Invalid safetensors header in {path!r}.")
-                header_length = struct.unpack("<Q", header_length_bytes)[0]
-                header = json.loads(f.read(header_length))
-            data_start = 8 + header_length
-            for name, metadata in header.items():
-                if name == "__metadata__":
-                    continue
-                dtype = _SAFETENSORS_ONNX_DTYPES.get(metadata["dtype"])
-                if dtype is None:
-                    continue
-                start, end = metadata["data_offsets"]
-                reuse = self.extra_options.get("_weight_reuse")
-                destination = reuse.destinations[path] if reuse else path
-                source_tensors[name] = SourceTensor(
-                    path=os.path.abspath(path),
-                    location=os.path.relpath(os.path.realpath(destination), os.path.realpath(self.external_data_base_dir)),
-                    offset=data_start + start,
-                    length=end - start,
-                    dtype=int(dtype),
-                    shape=tuple(metadata["shape"]),
-                )
-        return source_tensors
+        source_tensors = read_checkpoint_metadata(self.source_model_path)
+        reuse = self.extra_options.get("_weight_reuse")
+        return {
+            name: replace(
+                source,
+                location=os.path.relpath(
+                    os.path.realpath(reuse.destinations[source.path] if reuse else source.path),
+                    os.path.realpath(self.external_data_base_dir),
+                ),
+            )
+            for name, source in source_tensors.items()
+        }
 
     def _validate_source_weight_files(self, out_dir: str) -> None:
         output_path = os.path.realpath(out_dir)
@@ -1545,7 +1578,7 @@ class Model(LocalFunctionsMixin):
             resolved_source_path = os.path.realpath(destination)
             if os.path.commonpath((resolved_source_path, output_path)) != output_path:
                 raise ValueError(f"Source weight {source_path!r} is outside the ONNX output directory.")
-            if os.path.islink(source_path):
+            if os.path.islink(source_path) and not (reuse and reuse.preserve_source):
                 raise ValueError(f"Source weight {source_path!r} is a symbolic link.")
 
     def _release_source_module(self, module) -> None:
@@ -2222,7 +2255,12 @@ class Model(LocalFunctionsMixin):
         # Create dummy PackedMatMul class
         class PackedMatMul:
             def __init__(self):
-                self.weight = torch.cat([q_matmul.weight, k_matmul.weight, v_matmul.weight], dim=0).reshape(N_q + N_kv + N_kv, H)
+                weights = [q_matmul.weight, k_matmul.weight, v_matmul.weight]
+                self.weight = (
+                    CheckpointTensor.concat(weights)
+                    if isinstance(weights[0], CheckpointTensor)
+                    else torch.cat(weights, dim=0).reshape(N_q + N_kv + N_kv, H)
+                )
 
         matmul = PackedMatMul()
         return matmul
@@ -2284,8 +2322,15 @@ class Model(LocalFunctionsMixin):
 
     def make_packed_add_tensor(self, q_add, k_add, v_add):
         # Combine 3 Adds of shape N_q, N_kv, and N_kv into 1 packed Add of shape N_q + N_kv + N_kv
+        if isinstance(q_add, CheckpointTensor):
+            return CheckpointTensor.concat([q_add, k_add, v_add])
         add = torch.cat([q_add, k_add, v_add], dim=0).flatten()
         return add
+
+    @staticmethod
+    def _bias_needs_add(bias):
+        # An external bias cannot be tested for zero without reading its payload.
+        return bias is not None and (isinstance(bias, CheckpointTensor) or bool(torch.count_nonzero(bias)))
 
     def make_packed_add(self, q_add, k_add, v_add, name, root_input, **kwargs):
         add = self.make_packed_add_tensor(q_add, k_add, v_add)
@@ -3736,9 +3781,9 @@ class Model(LocalFunctionsMixin):
                 self.attention_attrs["v_path"] = f"{v_matmul_name}/output_0"
 
         # Check which bias values exist
-        q_bias_exists = attention.q_proj.bias is not None and torch.count_nonzero(attention.q_proj.bias) > 0
-        k_bias_exists = attention.k_proj.bias is not None and torch.count_nonzero(attention.k_proj.bias) > 0
-        v_bias_exists = attention.v_proj.bias is not None and torch.count_nonzero(attention.v_proj.bias) > 0
+        q_bias_exists = self._bias_needs_add(attention.q_proj.bias)
+        k_bias_exists = self._bias_needs_add(attention.k_proj.bias)
+        v_bias_exists = self._bias_needs_add(attention.v_proj.bias)
         any_bias_exists = q_bias_exists or k_bias_exists or v_bias_exists
 
         if self.attention_attrs["use_matmul_in_attn"] and qkv_dtype_equal and any_bias_exists:
@@ -4091,9 +4136,9 @@ class Model(LocalFunctionsMixin):
         #           DownProjAdd
 
         # Check if Add nodes need to be made (if bias exists)
-        gate_bias_exists = mlp.gate_proj.bias is not None and torch.count_nonzero(mlp.gate_proj.bias) > 0
-        up_bias_exists = mlp.up_proj.bias is not None and torch.count_nonzero(mlp.up_proj.bias) > 0
-        down_bias_exists = mlp.down_proj.bias is not None and torch.count_nonzero(mlp.down_proj.bias) > 0
+        gate_bias_exists = self._bias_needs_add(mlp.gate_proj.bias)
+        up_bias_exists = self._bias_needs_add(mlp.up_proj.bias)
+        down_bias_exists = self._bias_needs_add(mlp.down_proj.bias)
 
         # Make Gate proj nodes
         gate_matmul_basename = f"/model/layers.{layer_id}/mlp/gate_proj/MatMul"
@@ -4857,6 +4902,34 @@ class Model(LocalFunctionsMixin):
             )
 
         else:
+            if (
+                type(self).__dict__.get("checkpoint_architecture") == self.model_type
+                and "adapter_path" not in self.extra_options
+                and not getattr(self._checkpoint_config, "auto_map", None)
+                and not self.extra_options.get("_mlx_checkpoint")
+            ):
+                directory = self.source_model_path or self.model_name_or_path
+                if not os.path.isdir(directory):
+                    from huggingface_hub import constants, snapshot_download
+
+                    directory = snapshot_download(
+                        repo_id=directory,
+                        revision=getattr(self._checkpoint_config, "_commit_hash", None),
+                        cache_dir=self.cache_dir,
+                        token=self.hf_token,
+                        local_files_only=constants.HF_HUB_OFFLINE,
+                        allow_patterns=["*.json", "*.safetensors"],
+                    )
+                if os.path.isfile(os.path.join(directory, "model.safetensors")) or os.path.isfile(
+                    os.path.join(directory, "model.safetensors.index.json")
+                ):
+                    materialize = self.onnx_dtype not in {TensorProto.FLOAT, TensorProto.FLOAT16, TensorProto.BFLOAT16}
+                    print("Loading dense checkpoint tensors for quantization" if materialize else "Reading dense checkpoint metadata only")
+                    checkpoint = DenseCheckpoint(directory, self._checkpoint_config, materialize=materialize)
+                    if not materialize and not self.reuse_downloaded_weights:
+                        self._external_checkpoint_directory = directory
+                    return checkpoint
+
             extra_kwargs = {"num_hidden_layers": self.num_layers} if "num_hidden_layers" in self.extra_options else {}
 
             # Get auto class to load PyTorch model based on model type
@@ -4893,41 +4966,10 @@ class Model(LocalFunctionsMixin):
         # Loop through model and map each module to ONNX/ORT ops
         self.layer_id = 0
         with self._parallel_initializers():
-            for module in self.weights.modules():
-                if (isinstance(module, torch.nn.Embedding) and module.weight.shape[0] == self.vocab_size) or (
-                    hasattr(self.weights, "embedding") and module == self.weights.embedding
-                ):
-                    # Checks (Hugging Face logic) or (GGUF logic)
-                    if not self.exclude_embeds:
-                        # Embedding layer
-                        print("Reading embedding layer")
-                        self.make_embedding(module.weight)
-                    else:
-                        # Exclude embedding layer from model
-                        self.layernorm_attrs["root_input"] = "inputs_embeds"
-                        self.layernorm_attrs["skip_input"] = "inputs_embeds"
-                    self._release_source_module(module)
-
-                elif self.is_layer(module) and self.layer_id < self.num_layers:
-                    # Each layer of model
-                    print(f"Reading layer {self.layer_id}")
-                    self.make_layer(self.layer_id, module)
-                    self.layer_id += 1
-                    self._release_source_module(module)
-
-                elif self.layer_id == self.num_layers and self.has_final_norm(module, self.weights):
-                    # SkipLayerNorm after last decoder layer (MatMul --> SkipLayerNorm)
-                    print("Reading final norm")
-                    self.make_layernorm(self.layer_id, module, skip=True, simple=self.layernorm_attrs["simple"], location="final_norm")
-                    self._release_source_module(module)
-
-                elif self.has_lm_head(module):
-                    # Checks (Hugging Face logic) or (GGUF logic)
-                    if not self.exclude_lm_head:
-                        # Language modeling head (SkipLayerNorm --> logits)
-                        print("Reading LM head")
-                        self.make_lm_head(module)
-                    self._release_source_module(module)
+            if isinstance(self.weights, DenseCheckpoint):
+                self._make_checkpoint_graph(self.weights)
+            else:
+                self._make_module_graph()
 
         # Make post-processing nodes
         self.make_postprocessing_nodes()
@@ -4936,7 +4978,62 @@ class Model(LocalFunctionsMixin):
         self._source_parameter_uses.clear()
         self._source_buffers.clear()
         self._source_buffer_uses.clear()
+        self._source_tensors_by_data_ptr.clear()
         del self.weights
+
+    def _make_checkpoint_graph(self, checkpoint):
+        if not self.exclude_embeds:
+            print("Reading embedding layer")
+            self.make_embedding(checkpoint.embedding)
+        else:
+            self.layernorm_attrs["root_input"] = "inputs_embeds"
+            self.layernorm_attrs["skip_input"] = "inputs_embeds"
+        for layer_id in range(self.num_layers):
+            print(f"Reading layer {layer_id}")
+            self.make_layer(layer_id, checkpoint.layer(layer_id))
+            self.layer_id += 1
+        print("Reading final norm")
+        self.make_layernorm(self.layer_id, checkpoint.final_norm, skip=True, simple=self.layernorm_attrs["simple"], location="final_norm")
+        if not self.exclude_lm_head:
+            print("Reading LM head")
+            self.make_lm_head(checkpoint.lm_head)
+
+    def _make_module_graph(self):
+        for module in self.weights.modules():
+            if (isinstance(module, torch.nn.Embedding) and module.weight.shape[0] == self.vocab_size) or (
+                hasattr(self.weights, "embedding") and module == self.weights.embedding
+            ):
+                # Checks (Hugging Face logic) or (GGUF logic)
+                if not self.exclude_embeds:
+                    # Embedding layer
+                    print("Reading embedding layer")
+                    self.make_embedding(module.weight)
+                else:
+                    # Exclude embedding layer from model
+                    self.layernorm_attrs["root_input"] = "inputs_embeds"
+                    self.layernorm_attrs["skip_input"] = "inputs_embeds"
+                self._release_source_module(module)
+
+            elif self.is_layer(module) and self.layer_id < self.num_layers:
+                # Each layer of model
+                print(f"Reading layer {self.layer_id}")
+                self.make_layer(self.layer_id, module)
+                self.layer_id += 1
+                self._release_source_module(module)
+
+            elif self.layer_id == self.num_layers and self.has_final_norm(module, self.weights):
+                # SkipLayerNorm after last decoder layer (MatMul --> SkipLayerNorm)
+                print("Reading final norm")
+                self.make_layernorm(self.layer_id, module, skip=True, simple=self.layernorm_attrs["simple"], location="final_norm")
+                self._release_source_module(module)
+
+            elif self.has_lm_head(module):
+                # Checks (Hugging Face logic) or (GGUF logic)
+                if not self.exclude_lm_head:
+                    # Language modeling head (SkipLayerNorm --> logits)
+                    print("Reading LM head")
+                    self.make_lm_head(module)
+                self._release_source_module(module)
 
     def is_layer(self, module):
         # Return whether the module represents a layer in the model

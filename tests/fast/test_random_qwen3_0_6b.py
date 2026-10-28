@@ -70,8 +70,14 @@ class TestRandomQwen3(ExtTestCase):
                     cast_inputs = {inp for node in nodes if node.op_type == "Cast" for inp in node.input}
                     for node in norms:
                         with self.subTest(node=node.name):
-                            self.assertIn(node.input[1], initializers, node.name)
-                            self.assertEqual(initializers[node.input[1]].data_type, onnx.TensorProto.FLOAT16)
+                            scale = node.input[1]
+                            if scale not in initializers:
+                                cast = producers[scale]
+                                self.assertEqual(cast.op_type, "Cast")
+                                self.assertEqual(next(attr.i for attr in cast.attribute if attr.name == "to"), onnx.TensorProto.FLOAT16)
+                                self.assertEqual(initializers[cast.input[0]].data_type, onnx.TensorProto.BFLOAT16)
+                            else:
+                                self.assertEqual(initializers[scale].data_type, onnx.TensorProto.FLOAT16)
                             producer = producers.get(node.input[0])
                             self.assertTrue(producer is None or producer.op_type != "Cast", node.name)
                             self.assertTrue(cast_inputs.isdisjoint(out for out in node.output if out), node.name)

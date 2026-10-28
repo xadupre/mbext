@@ -11,8 +11,8 @@ import os
 
 import numpy as np
 import torch
-from safetensors import safe_open
 
+from .checkpoint import SafetensorsCheckpoint
 from .quantization import _pack_zero_points
 
 
@@ -48,28 +48,16 @@ def repack_mlx(weight, scales, biases, bits=2, group_size=128):
     return packed, scales, zero_points, residual
 
 
-class MLXCheckpoint:
+class MLXCheckpoint(SafetensorsCheckpoint):
     """Index local safetensors shards and materialize only the requested tensors."""
 
     def __init__(self, directory):
-        self.files = {}
-        for path in sorted(glob.glob(os.path.join(directory, "*.safetensors"))):
-            with safe_open(path, framework="pt", device="cpu") as source:
-                for key in source.keys():
-                    if key in self.files:
-                        raise ValueError(f"Duplicate MLX tensor {key!r}.")
-                    self.files[key] = path
-        if not self.files:
-            raise ValueError(f"No safetensors shards found in {directory!r}.")
+        super().__init__(sorted(glob.glob(os.path.join(directory, "*.safetensors"))))
         for key in self.files:
             if key.endswith((".scales", ".biases")):
                 stem = key.rsplit(".", 1)[0]
                 if any(stem + suffix not in self.files for suffix in (".weight", ".scales", ".biases")):
                     raise ValueError(f"Incomplete MLX quantized module {stem}.")
-
-    def tensor(self, name):
-        with safe_open(self.files[name], framework="pt", device="cpu") as source:
-            return source.get_tensor(name)
 
     @staticmethod
     def _normalize_name(name):
