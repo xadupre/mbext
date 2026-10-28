@@ -27,7 +27,7 @@ class TestDependencyWheels(ExtTestCase):
 
         for requirements, package, version in (
             ((ROOT / ".github/requirements-onnx-light.txt").read_text(encoding="utf-8").splitlines(), "onnx-light", "0.2.1"),
-            (project["optional-dependencies"]["dev"], "onnx-light-cpu", "0.2.0"),
+            (project["optional-dependencies"]["dev"], "onnx-light-cpu", "0.2.1.1"),
         ):
             wheels = [requirement for requirement in requirements if requirement.startswith(f"{package} @ ")]
             self.assertTrue(wheels)
