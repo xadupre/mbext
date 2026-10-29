@@ -1,6 +1,6 @@
 # Documentation build requirements for mbext.
 # Install with: pip install -r docs/requirements.txt
-sphinx==9.1.0
+sphinx==9.2.0
 furo==2025.12.19
 sphinx-gallery==0.22.1
 sphinx-copybutton==0.5.2
