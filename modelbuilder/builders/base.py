@@ -28,11 +28,9 @@ import torch
 from onnx_light.onnx import AttributeProto, GraphProto, ModelProto, TensorProto, ValueInfoProto
 from onnx_light.onnx_core.graph_builder import GraphBuilder
 from tqdm import tqdm
-from transformers import AutoConfig, AutoModelForCausalLM, AutoModelForSpeechSeq2Seq, AutoTokenizer, GenerationConfig
 
 from ..helpers.checkpoint import CheckpointTensor, DenseCheckpoint, SourceTensor, read_checkpoint_metadata
 from ..helpers.onnx_helper import from_torch_dtype, get_default_onnx_opset, onnx, to_torch_dtype, torch_tensor_to_numpy
-from ..helpers.quantization import quantize_matmul_nbits
 from ..helpers.weight_reuse import WeightReuse
 from .local_functions import LocalFunctionsMixin, normalize_function_opsets
 
@@ -745,6 +743,8 @@ class Model(LocalFunctionsMixin):
 
     def create_genai_config(self, model_name_or_path, extra_kwargs, out_dir):
         """Create the ONNX Runtime GenAI configuration dictionary."""
+        from transformers import AutoConfig, GenerationConfig
+
         # Create config with attributes from config.json and generation_config.json (if latter file exists)
         config = AutoConfig.from_pretrained(model_name_or_path, token=self.hf_token, trust_remote_code=self.hf_remote, **extra_kwargs)
         try:
@@ -894,6 +894,8 @@ class Model(LocalFunctionsMixin):
         return shape
 
     def save_processing(self, model_name_or_path, extra_kwargs, out_dir):
+        from transformers import AutoTokenizer
+
         tokenizer = AutoTokenizer.from_pretrained(model_name_or_path, token=self.hf_token, trust_remote_code=self.hf_remote, **extra_kwargs)
         # Overwrite model_max_length with the model's context_length so it is a normal integer
         # (HF often uses 1e30 for "no limit", which can serialize to a huge decimal in JSON)
@@ -1028,6 +1030,8 @@ class Model(LocalFunctionsMixin):
 
     def to_int4(self, model: ModelProto) -> ModelProto:
         """Quantize MatMul weights directly on onnx-light protobuf objects."""
+        from ..helpers.quantization import quantize_matmul_nbits
+
         return quantize_matmul_nbits(
             model,
             bits=self.quant_attrs["int4"]["bits"],
@@ -4929,6 +4933,8 @@ class Model(LocalFunctionsMixin):
                     if not materialize and not self.reuse_downloaded_weights:
                         self._external_checkpoint_directory = directory
                     return checkpoint
+
+            from transformers import AutoModelForCausalLM, AutoModelForSpeechSeq2Seq
 
             extra_kwargs = {"num_hidden_layers": self.num_layers} if "num_hidden_layers" in self.extra_options else {}
 

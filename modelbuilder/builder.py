@@ -16,13 +16,11 @@ import re
 import runpy
 import sys
 import textwrap
-from typing import Any
+from functools import wraps
+from typing import TYPE_CHECKING, Any
 
-import torch
-from onnx_light.onnx import TensorProto
-from transformers import AutoConfig
-
-from .builders import Model
+if TYPE_CHECKING:
+    from onnx_light.onnx import TensorProto
 
 
 def check_extra_options(kv_pairs, execution_provider):
@@ -117,7 +115,9 @@ def parse_hf_token(hf_token):
 INT_PRECISION_BITS = {"int2": 2, "int4": 4, "int8": 8, "int16": 16}
 
 
-def set_io_dtype(precision, execution_provider, extra_options) -> TensorProto.DataType:
+def set_io_dtype(precision, execution_provider, extra_options) -> "TensorProto.DataType":
+    from onnx_light.onnx import TensorProto
+
     int_precision = precision in INT_PRECISION_BITS
     int_cpu = int_precision and execution_provider == "cpu"
     fp32_webgpu = execution_provider == "webgpu" and extra_options.get("use_webgpu_fp32", False)
@@ -135,7 +135,9 @@ def set_io_dtype(precision, execution_provider, extra_options) -> TensorProto.Da
     return TensorProto.DataType.FLOAT16
 
 
-def set_onnx_dtype(precision: str, extra_options: dict[str, Any]) -> TensorProto.DataType:
+def set_onnx_dtype(precision: str, extra_options: dict[str, Any]) -> "TensorProto.DataType":
+    from onnx_light.onnx import TensorProto
+
     if precision in INT_PRECISION_BITS:
         # int2/int4/int8/int16 all use the MatMulNBits quantization pipeline; the
         # weight container dtype is INT4/UINT4 while the number of bits is
@@ -202,6 +204,8 @@ def load_private_model_builder(private):
     if builder is not None:
         return builder
 
+    from .builders import Model
+
     candidates = [
         obj
         for obj in vars(module).values()
@@ -242,8 +246,25 @@ def run_private_tests(private):
     runpy.run_path(test_file, run_name="__main__")
 
 
-@torch.no_grad
+def _torch_no_grad(func):
+    """Defer importing torch until conversion starts."""
+
+    @wraps(func)
+    def wrapper(*args, **kwargs):
+        import torch
+
+        with torch.no_grad():
+            return func(*args, **kwargs)
+
+    return wrapper
+
+
+@_torch_no_grad
 def create_model(model_name, input_path, output_dir, precision, execution_provider, cache_dir, **extra_options):
+    from transformers import AutoConfig
+
+    from .builders import Model
+
     if execution_provider == "NvTensorRtRtx":
         execution_provider = "trt-rtx"
         extra_options["use_qdq"] = True
