@@ -14,6 +14,32 @@ Face ``config.json``. To convert a model of a given family, point ``-m`` or
 
 .. supported-architectures::
 
+SmolVLM image inputs
+-------------------
+
+``HuggingFaceTB/SmolVLM-256M-Instruct`` exports its text decoder by default.
+Set ``multimodal=True`` (CLI: ``--extra_options multimodal=true``) to also
+export ``vision_encoder.onnx`` and ``embedding.onnx``.
+Adapter export and ``--reuse-weights`` are not supported for SmolVLM.
+
+The vision encoder takes one normalized, square crop at the checkpoint's
+configured image size as ``pixel_values [1, channels, height, width]``.
+Use the Hugging Face processor for image splitting, resizing, normalization
+and prompt construction. Masked padding and variable-size crops are not
+supported by this fixed-size vision export. Encode each crop separately
+and concatenate ``image_features`` in prompt order.
+
+Pass ``input_ids [1, sequence]`` and ``image_features [image_tokens, hidden]``
+to the embedding model; it replaces the image placeholders in place.
+Feed its ``inputs_embeds`` output to the decoder. During cached decoding,
+pass an empty ``[0, hidden]`` image-feature array to the embedding model.
+
+ONNX Runtime GenAI can run the three components using the exported
+``phi3v`` configuration and explicit preprocessed inputs: supply
+``pixel_values`` and ``num_image_tokens`` through ``NamedTensors``, then
+append the expanded prompt tokens. This does not provide a SmolVLM-specific
+raw-image processor in GenAI.
+
 Qwen2.5-Omni video inputs
 ------------------------
 
