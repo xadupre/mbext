@@ -109,6 +109,15 @@ class CheckpointTensor:
             raise ValueError("Only matrix checkpoint tensors can be transposed.")
         return replace(self, transposed=not self.transposed)
 
+    def materialize(self, dtype):
+        """Read the selected weights and apply their deferred transformations."""
+        tensors = []
+        for source in self.sources:
+            with safe_open(source.path, framework="pt", device="cpu") as checkpoint:
+                tensors.append(checkpoint.get_tensor(source.name).to(dtype=dtype))
+        tensor = torch.cat(tensors, dim=0) if len(tensors) > 1 else tensors[0]
+        return tensor.T if self.transposed else tensor
+
     @classmethod
     def concat(cls, tensors):
         first = tensors[0]

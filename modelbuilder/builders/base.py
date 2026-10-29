@@ -1240,6 +1240,8 @@ class Model(LocalFunctionsMixin):
 
         target_dtype = int(source.dtype if to is None else to)
         cast = target_dtype != int(source.dtype)
+        if self.onnx_dtype == TensorProto.FLOAT and target_dtype == TensorProto.FLOAT and cast:
+            return False
         source_name = name if not transpose and not cast else f"{name}.source"
         tensor_proto = TensorProto()
         tensor_proto.name = source_name
@@ -1273,6 +1275,13 @@ class Model(LocalFunctionsMixin):
     def _make_checkpoint_initializer(self, tensor: CheckpointTensor, name: str, to: int | None) -> None:
         dtype = int(from_torch_dtype(tensor.dtype))
         target_dtype = dtype if to is None else int(to)
+        if (
+            self.onnx_dtype == TensorProto.FLOAT
+            and target_dtype == TensorProto.FLOAT
+            and (dtype != target_dtype or any(source.dtype != target_dtype for source in tensor.sources))
+        ):
+            self.make_initializer(tensor.materialize(to_torch_dtype(target_dtype)), name, to=target_dtype, allow_reuse=False)
+            return
         inputs = []
         for source in tensor.sources:
             source_name = f"/modelbuilder/checkpoint/{source.name}"
@@ -4937,6 +4946,8 @@ class Model(LocalFunctionsMixin):
             from transformers import AutoModelForCausalLM, AutoModelForSpeechSeq2Seq
 
             extra_kwargs = {"num_hidden_layers": self.num_layers} if "num_hidden_layers" in self.extra_options else {}
+            if self.onnx_dtype == TensorProto.FLOAT:
+                extra_kwargs["dtype"] = torch.float32
 
             # Get auto class to load PyTorch model based on model type
             auto_class_map = {"ForCausalLM": AutoModelForCausalLM, "Whisper": AutoModelForSpeechSeq2Seq}

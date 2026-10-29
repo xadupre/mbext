@@ -40,7 +40,7 @@ class TestDenseCheckpoint(ExtTestCase):
         )
 
     def export(self, builder_type, checkpoint, output, dtype, **options):
-        output.mkdir()
+        output.mkdir(exist_ok=True)
         builder = builder_type(
             AutoConfig.from_pretrained(checkpoint), dtype, dtype, "cpu", str(output / "cache"), {"disable_qkv_fusion": True, **options}
         )
@@ -63,6 +63,71 @@ class TestDenseCheckpoint(ExtTestCase):
                 feeds[value.name] = feeds[value.name].astype(np.float16)
         results = session.run(outputs, {value.name: feeds[value.name] for value in session.get_inputs()})
         return results if outputs is not None else results[0]
+
+    @hide_stdout()
+    def test_fp32_exports_store_fp32_weights(self):
+        legacy_type = type("LegacyBuilder", (Qwen3Model,), {})
+        for source_dtype in (torch.float16, torch.bfloat16):
+            for builder_type in (Qwen3Model, legacy_type):
+                for reuse in (False, True):
+                    with (
+                        self.subTest(dtype=source_dtype, builder=builder_type.__name__, reuse=reuse),
+                        tempfile.TemporaryDirectory() as directory,
+                    ):
+                        root = Path(directory)
+                        config = self.make_config(Qwen3Config, tie_word_embeddings=True, attention_bias=True)
+                        torch.manual_seed(42)
+                        reference = Qwen3ForCausalLM(config).eval().to(source_dtype)
+                        reference.model.layers[0].self_attn.q_proj.float()
+                        with torch.no_grad():
+                            reference.model.layers[0].self_attn.q_proj.weight.add_(0.000123)
+                        output = root / "export"
+                        source = output / ".weights" if reuse else root / "checkpoint"
+                        reference.save_pretrained(source, max_shard_size="4KB")
+                        proto = self.export(
+                            builder_type,
+                            source,
+                            output,
+                            onnx.TensorProto.FLOAT,
+                            disable_qkv_fusion=False,
+                            reuse_downloaded_weights=reuse,
+                            _source_model_path=str(source),
+                            _external_data_base_dir=str(output),
+                        )
+                        floating_weights = [
+                            value
+                            for value in proto.graph.initializer
+                            if value.data_type in (onnx.TensorProto.FLOAT, onnx.TensorProto.FLOAT16, onnx.TensorProto.BFLOAT16)
+                        ]
+                        self.assertTrue(floating_weights)
+                        self.assertEqual({value.data_type for value in floating_weights}, {onnx.TensorProto.FLOAT})
+                        self.assertFalse(
+                            any(node.op_type == "Cast" and node.name.startswith("/modelbuilder/external/") for node in proto.graph.node)
+                        )
+                        weights = onnx.load(str(output / "model.onnx"))
+                        name = "model.embed_tokens.weight" if reuse else "lm_head.MatMul.weight"
+                        embedding = next(value for value in weights.graph.initializer if value.name == name)
+                        expected_weight = reference.model.embed_tokens.weight.detach().float().numpy()
+                        self.assertEqualArray(to_array(embedding, str(output)), expected_weight if reuse else expected_weight.T)
+                        projection = next(
+                            value
+                            for value in weights.graph.initializer
+                            if value.name
+                            in (
+                                "model.layers.0.attn.q_proj.MatMul.weight",
+                                "model.layers.0.attn.q_proj.MatMul.weight.source",
+                                "model.layers.0.attn.qkv_proj.MatMul.weight",
+                                "model.layers.0.attn.qkv_proj.weight",
+                            )
+                        )
+                        expected_projection = reference.model.layers[0].self_attn.q_proj.weight.detach().float().numpy()
+                        self.assertEqualArray(
+                            to_array(projection, str(output))[:, : config.hidden_size],
+                            expected_projection if projection.name.endswith(".source") else expected_projection.T,
+                        )
+                        with torch.no_grad():
+                            expected = reference.float()(torch.tensor([[1, 2, 3]])).logits.numpy()
+                        np.testing.assert_allclose(self.run_decoder(output / "model.onnx", config), expected, rtol=2e-2, atol=2e-3)
 
     @hide_stdout()
     def test_dense_exports_match_transformers_path_and_reference(self):
