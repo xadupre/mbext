@@ -644,6 +644,11 @@ def create_model(model_name, input_path, output_dir, precision, execution_provid
         from .builders.smollm import SmolLM3Model
 
         onnx_model = SmolLM3Model(config, io_dtype, onnx_dtype, execution_provider, cache_dir, extra_options)
+    elif config.architectures[0] == "SmolVLMForConditionalGeneration":
+        from .builders.smollm import SmolVLMConditionalGenerationModel, SmolVLMTextModel
+
+        model_class = SmolVLMConditionalGenerationModel if extra_options.get("multimodal", False) else SmolVLMTextModel
+        onnx_model = model_class(config, io_dtype, onnx_dtype, execution_provider, cache_dir, extra_options)
     elif config.architectures[0] == "WhisperForConditionalGeneration":
         from .builders.whisper import WhisperModel
 
