@@ -32,7 +32,7 @@ dev = [
     "onnx-light-cpu @ https://github.com/xadupre/onnx-light-cpu/releases/download/0.2.1.1/onnx_light_cpu-0.2.1.1-cp312-cp312-macosx_13_0_universal2.whl ; python_version == '3.12' and sys_platform == 'darwin'",
     "onnx-light-cpu @ https://github.com/xadupre/onnx-light-cpu/releases/download/0.2.1.1/onnx_light_cpu-0.2.1.1-cp313-cp313-macosx_13_0_universal2.whl ; python_version == '3.13' and sys_platform == 'darwin'",
     "onnx-light-cpu @ https://github.com/xadupre/onnx-light-cpu/releases/download/0.2.1.1/onnx_light_cpu-0.2.1.1-cp314-cp314-macosx_13_0_universal2.whl ; python_version == '3.14' and sys_platform == 'darwin'",
-    "onnxruntime==1.30.0",
+    "onnxruntime==1.31.0",
     "onnxruntime-genai<=0.17.1,>=0.17.1",
     "openpyxl==3.1.5",
     "pandas==3.0.6",
