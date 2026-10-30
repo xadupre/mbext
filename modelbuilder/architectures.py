@@ -19,6 +19,45 @@ import ast
 import os
 from dataclasses import dataclass, field
 
+_MODEL_IDS: dict[str, tuple[str, ...]] = {
+    "ChatGLMModel": ("THUDM/chatglm3-6b",),
+    "DeepseekV3ForCausalLM": ("deepseek-ai/DeepSeek-V3",),
+    "Ernie4_5ForCausalLM": ("baidu/ERNIE-4.5-0.3B-PT",),
+    "GemmaForCausalLM": ("google/gemma-2b",),
+    "Gemma2ForCausalLM": ("google/gemma-2-2b",),
+    "Gemma3ForCausalLM": ("google/gemma-3-1b-it",),
+    "Gemma3ForConditionalGeneration": ("google/gemma-3-4b-it",),
+    "GPT2LMHeadModel": ("openai-community/gpt2",),
+    "GptOssForCausalLM": ("openai/gpt-oss-20b",),
+    "GraniteForCausalLM": ("ibm-granite/granite-3.0-2b-base",),
+    "InternLM2ForCausalLM": ("internlm/internlm2-7b",),
+    "Lfm2ForCausalLM": ("LiquidAI/LFM2-350M",),
+    "LlamaForCausalLM": ("meta-llama/Llama-2-7b-hf",),
+    "MageFlowForCausalLM": ("microsoft/Mage-Flow",),
+    "MistralForCausalLM": ("mistralai/Mistral-7B-v0.1",),
+    "Mistral3ForConditionalGeneration": ("mistralai/Ministral-3-3B-Instruct-2512",),
+    "MixtralForCausalLM": ("mistralai/Mixtral-8x7B-v0.1",),
+    "NemotronForCausalLM": ("nvidia/Minitron-8B-Base",),
+    "OlmoForCausalLM": ("allenai/OLMo-7B-hf",),
+    "Olmo2ForCausalLM": ("allenai/OLMo-2-1124-7B",),
+    "PhiForCausalLM": ("microsoft/phi-2",),
+    "Phi3ForCausalLM": ("microsoft/Phi-3-mini-4k-instruct",),
+    "Phi3SmallForCausalLM": ("microsoft/Phi-3-small-8k-instruct",),
+    "Phi3VForCausalLM": ("microsoft/Phi-3-vision-128k-instruct",),
+    "Phi4MultimodalForCausalLM": ("microsoft/Phi-4-multimodal-instruct",),
+    "PhiMoEForCausalLM": ("microsoft/Phi-3.5-MoE-instruct",),
+    "Qwen2ForCausalLM": ("Qwen/Qwen2-0.5B",),
+    "Qwen2_5OmniForConditionalGeneration": ("Qwen/Qwen2.5-Omni-3B",),
+    "Qwen2_5OmniThinkerForConditionalGeneration": ("Qwen/Qwen2.5-Omni-3B",),
+    "Qwen2_5_VLForConditionalGeneration": ("Qwen/Qwen2.5-VL-7B-Instruct",),
+    "Qwen3ForCausalLM": ("Qwen/Qwen3-0.6B",),
+    "Qwen3VLForConditionalGeneration": ("Qwen/Qwen3-VL-4B-Instruct",),
+    "SmolLM3ForCausalLM": ("HuggingFaceTB/SmolLM3-3B",),
+    "SmolVLMForConditionalGeneration": ("HuggingFaceTB/SmolVLM-256M-Instruct",),
+    "VideoChatFlashQwenForCausalLM": ("OpenGVLab/VideoChat-Flash-Qwen2_5-7B_InternVideo2-1B",),
+    "WhisperForConditionalGeneration": ("openai/whisper-tiny",),
+}
+
 
 @dataclass(frozen=True)
 class SupportedArchitecture:
@@ -33,11 +72,16 @@ class SupportedArchitecture:
         builder_class: Name of the builder class handling the architecture, for
             example ``"LlamaModel"``. May be empty if it could not be determined
             statically.
+        model_ids: Static, non-exhaustive examples of Hugging Face model IDs
+            from the family introducing this architecture. Empty when no
+            example is recorded; no Hub access or checkpoint validation is
+            performed.
     """
 
     name: str
     builder_module: str = ""
     builder_class: str = ""
+    model_ids: tuple[str, ...] = ()
 
 
 @dataclass
@@ -151,6 +195,17 @@ def list_supported_architectures() -> list[SupportedArchitecture]:
     for branch in branches:
         for name in branch.names:
             # Keep the first builder seen for a given architecture name.
-            seen.setdefault(name, SupportedArchitecture(name, branch.module, branch.cls))
+            seen.setdefault(name, SupportedArchitecture(name, branch.module, branch.cls, _MODEL_IDS.get(name, ())))
 
     return sorted(seen.values(), key=lambda a: a.name.lower())
+
+
+def list_supported_model_ids() -> list[str]:
+    """Return sorted, unique example model IDs for supported architectures.
+
+    This static, non-exhaustive selection favors the model families that
+    introduced an architecture in Transformers. It does not query the Hugging
+    Face Hub or imply support for every checkpoint variant or export option.
+    See :func:`list_supported_architectures` to group IDs by architecture.
+    """
+    return sorted({model_id for arch in list_supported_architectures() for model_id in arch.model_ids})

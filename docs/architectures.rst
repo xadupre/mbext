@@ -8,6 +8,25 @@ by parsing the dispatch chain of ``create_model`` (see
 :func:`modelbuilder.architectures.list_supported_architectures`), so it is always
 in sync with the code.
 
+The example model IDs are a static, non-exhaustive selection favoring the model
+families that introduced each architecture in Transformers. An empty cell means
+no example is recorded, not that the architecture is unsupported. These examples
+do not guarantee support for every checkpoint variant, modality, or export
+option; the export restrictions documented below still apply.
+
+To obtain the IDs without downloading models or importing Transformers:
+
+.. code-block:: python
+
+    from modelbuilder.architectures import (
+        list_supported_architectures,
+        list_supported_model_ids,
+    )
+
+    model_ids = list_supported_model_ids()
+    for architecture in list_supported_architectures():
+        print(architecture.name, architecture.model_ids)
+
 The architecture name is the value of ``config.architectures[0]`` in the Hugging
 Face ``config.json``. To convert a model of a given family, point ``-m`` or
 ``-i`` at a checkpoint whose config declares that architecture.
