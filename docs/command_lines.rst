@@ -70,8 +70,8 @@ encoder therefore need additional component ModelProto fields (vision, speech
 or encoder) and tensor/state interface support in onnx-light. These exports
 retain every standalone model and GenAI configuration but explicitly report
 that no complete PipelineProto can be written; they never emit a bundle that
-silently drops a component. Multiple EOS IDs also require a schema extension;
-the pipeline currently uses the first ID and reports this limitation.
+silently drops a component. Multiple EOS IDs are preserved in
+``PipelineProto.eos_token_ids``.
 
 Main arguments
 --------------

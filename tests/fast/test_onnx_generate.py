@@ -108,9 +108,10 @@ class TestOnnxGenerate(ExtTestCase):
 
         with tempfile.TemporaryDirectory() as output_dir:
             onnx.save(model, os.path.join(output_dir, "model.onnx"))
-            tokens = self.run_onnx_light_generation(output_dir, prompt, max_new_tokens=4, eos_token_id=3)
-
-        self.assertEqual(tokens, [1, 2, 3])
+            for eos_token_id, expected in ((3, [1, 2, 3]), (None, [1, 2, 3, 3, 3, 3]), (0, [1, 2, 3, 3, 3, 3])):
+                with self.subTest(eos_token_id=eos_token_id):
+                    tokens = self.run_onnx_light_generation(output_dir, prompt, max_new_tokens=4, eos_token_id=eos_token_id)
+                    self.assertEqual(tokens, expected)
 
     @hide_stdout()
     def test_generate_return_session(self):

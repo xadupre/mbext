@@ -161,17 +161,16 @@ def save_pipeline(out_dir):
         pipeline.temperature = 0.0
     if search.get("random_seed") is not None:
         pipeline.seed = search["random_seed"]
-    for name in ("eos_token_id", "pad_token_id"):
-        value = config["model"].get(name)
-        if isinstance(value, list):
-            if len(value) != 1:
-                print(
-                    f"WARNING: PipelineProto supports one {name}; using the first "
-                    "ID. Multiple stop IDs require an onnx-light schema extension."
-                )
-            value = value[0] if value else None
-        if value is not None:
-            setattr(pipeline, name, value)
+    eos_token_ids = config["model"].get("eos_token_id")
+    if eos_token_ids is not None:
+        pipeline.eos_token_ids.extend(eos_token_ids if isinstance(eos_token_ids, list) else [eos_token_ids])
+    pad_token_id = config["model"].get("pad_token_id")
+    if isinstance(pad_token_id, list):
+        if len(pad_token_id) != 1:
+            print("WARNING: PipelineProto supports one pad_token_id; using the first ID.")
+        pad_token_id = pad_token_id[0] if pad_token_id else None
+    if pad_token_id is not None:
+        pipeline.pad_token_id = pad_token_id
 
     verify_pipeline(pipeline)
     print(f"Saving PipelineProto in {path} (sharing standalone weight files)")
