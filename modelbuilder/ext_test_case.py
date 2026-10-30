@@ -1326,7 +1326,9 @@ class ExtTestCase(unittest.TestCase):
                     shape.append(0)
             feeds[value.name] = np.zeros(tuple(shape), dtype=tensor_dtype_to_np_dtype(tensor_type.elem_type))
 
-        tokens = ReferenceEvaluator(model).generate(feeds, max_new_tokens=max_new_tokens, temperature=0.0, eos_token_id=eos_token_id)
+        tokens = ReferenceEvaluator(model).generate(
+            feeds, max_new_tokens=max_new_tokens, temperature=0.0, eos_token_ids=None if eos_token_id is None else [eos_token_id]
+        )
         return tokens[0].tolist()
 
     def run_genai_generation_test(

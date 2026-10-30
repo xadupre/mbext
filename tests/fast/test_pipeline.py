@@ -238,7 +238,7 @@ class TestPipeline(ExtTestCase):
         self.assertEqual(pipeline.temperature, 0.0)
         self.assertEqual(pipeline.max_new_tokens, 4)
         self.assertEqual(pipeline.seed, 42)
-        self.assertEqual(pipeline.eos_token_id, 31)
+        self.assertEqual(list(pipeline.eos_token_ids), [31])
         self.assertEqual(pipeline.pad_token_id, 0)
         self.assertEqual(pipeline.top_k, 4)
         self.assertAlmostEqual(pipeline.top_p, 0.9, atol=1e-7)
@@ -443,8 +443,21 @@ class TestPipeline(ExtTestCase):
             self.assertFalse(pipeline.has_decode())
             self.assertEqual(pipeline.temperature, 0.75)
             self.assertEqual(pipeline.logits_name, "scores")
-            self.assertEqual(pipeline.eos_token_id, 2)
-            self.assertIn("Multiple stop IDs", output.getvalue())
+            self.assertEqual(list(pipeline.eos_token_ids), [2, 3])
+            self.assertNotIn("WARNING", output.getvalue())
+
+    @hide_stdout()
+    def test_pipeline_without_eos(self):
+        for eos_token_id in (None, []):
+            with self.subTest(eos_token_id=eos_token_id), tempfile.TemporaryDirectory() as folder:
+                config, _, _ = self._export(folder)
+                config["model"]["eos_token_id"] = eos_token_id
+                self._write_config(folder, config)
+                save_pipeline(folder)
+                pipeline = PipelineProto()
+                pipeline.ParseFromFile(os.path.join(folder, PIPELINE_FILENAME))
+                verify_pipeline(pipeline)
+                self.assertEqual(list(pipeline.eos_token_ids), [])
 
     def test_phase_interface_names_must_match(self):
         for kind, name in (("inputs", "attention_mask"), ("inputs", "position_ids"), ("outputs", "logits")):
