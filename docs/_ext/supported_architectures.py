@@ -26,15 +26,15 @@ class SupportedArchitecturesDirective(Directive):
         archs = list_supported_architectures()
 
         table = nodes.table()
-        tgroup = nodes.tgroup(cols=2)
+        tgroup = nodes.tgroup(cols=3)
         table += tgroup
-        for width in (50, 50):
+        for width in (35, 35, 30):
             tgroup += nodes.colspec(colwidth=width)
 
         thead = nodes.thead()
         tgroup += thead
         header_row = nodes.row()
-        for label in ("Architecture", "Builder"):
+        for label in ("Architecture", "Builder", "Example model IDs"):
             entry = nodes.entry()
             entry += nodes.paragraph(text=label)
             header_row += entry
@@ -57,6 +57,13 @@ class SupportedArchitecturesDirective(Directive):
                 builder_para += nodes.literal(text=f"{arch.builder_module}.{arch.builder_class}")
             builder_entry += builder_para
             row += builder_entry
+
+            models_entry = nodes.entry()
+            for model_id in arch.model_ids:
+                models_para = nodes.paragraph()
+                models_para += nodes.reference(text=model_id, refuri=f"https://huggingface.co/{model_id}")
+                models_entry += models_para
+            row += models_entry
 
             tbody += row
 
