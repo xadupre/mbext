@@ -71,6 +71,14 @@ python -m modelbuilder.builder \
     -c cache_dir
 ```
 
+Both `Qwen/Qwen3.5-35B-A3B` and `Qwen/Qwen3.5-35B-A3B-FP8` are supported.
+For a complete text, image and video export, add
+`--extra_options multimodal=true`. For standalone text generation, use
+`--extra_options exclude_embeds=false`. The FP8 checkpoint requires `accelerate`
+(included in the `dev` extra); Transformers dequantizes its 128×128 blocks on CPU
+before export to the requested precision. This is not a native FP8 ONNX export,
+and loading the dequantized weights requires additional host memory.
+
 To convert an MLX Qwen3.5 multimodal checkpoint directly, use:
 
 ```bash

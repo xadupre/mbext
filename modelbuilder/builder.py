@@ -623,9 +623,14 @@ def create_model(model_name, input_path, output_dir, precision, execution_provid
 
         onnx_model = Qwen35CausalLMModel(config, io_dtype, onnx_dtype, execution_provider, cache_dir, extra_options)
     elif config.architectures[0] == "Qwen3_5MoeForConditionalGeneration":
-        from .builders.qwen import Qwen35MoeTextModel
+        if extra_options.get("multimodal", False):
+            from .builders.qwen import Qwen35ConditionalGenerationModel
 
-        onnx_model = Qwen35MoeTextModel(config, io_dtype, onnx_dtype, execution_provider, cache_dir, extra_options)
+            onnx_model = Qwen35ConditionalGenerationModel(config, io_dtype, onnx_dtype, execution_provider, cache_dir, extra_options)
+        else:
+            from .builders.qwen import Qwen35MoeTextModel
+
+            onnx_model = Qwen35MoeTextModel(config, io_dtype, onnx_dtype, execution_provider, cache_dir, extra_options)
     elif config.architectures[0] == "Qwen3_5MoeForCausalLM":
         from .builders.qwen import Qwen35MoeCausalLMModel
 

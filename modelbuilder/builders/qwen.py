@@ -26,6 +26,22 @@ _QWEN25OMNI_DEFAULT_AUDIO_TOKEN_ID = 151646
 _QWEN25OMNI_DEFAULT_VIDEO_TOKEN_ID = 151656
 
 
+def _load_qwen3_5_model(builder, input_path):
+    from transformers import AutoModelForCausalLM, AutoModelForImageTextToText, FineGrainedFP8Config
+
+    src = input_path if os.path.isdir(input_path) else builder.model_name_or_path
+    kwargs = {"cache_dir": builder.cache_dir, "token": builder.hf_token, "trust_remote_code": builder.hf_remote}
+    config = AutoConfig.from_pretrained(src, **kwargs)
+    quantization_config = getattr(config, "quantization_config", {})
+    if quantization_config.get("quant_method") == "fp8":
+        quantization_config = FineGrainedFP8Config.from_dict(quantization_config)
+        quantization_config.dequantize = True
+        kwargs["quantization_config"] = quantization_config
+        kwargs["dtype"] = torch.float32
+    model_class = AutoModelForImageTextToText if hasattr(config, "text_config") else AutoModelForCausalLM
+    return model_class.from_pretrained(src, **kwargs)
+
+
 class QwenModel(Model):
     checkpoint_architecture = "Qwen2ForCausalLM"
 
@@ -3073,11 +3089,7 @@ class Qwen35VisionEncoderModel(Qwen25OmniVisionEncoderModel):
             from ..helpers.mlx import MLXCheckpoint
 
             return MLXCheckpoint(self.extra_options["_mlx_checkpoint"]).load_model(self.config, "vision")
-        from transformers import Qwen3_5ForConditionalGeneration
-
-        src = input_path if os.path.isdir(input_path) else self.model_name_or_path
-        extra_kwargs = {} if os.path.isdir(input_path) else {"cache_dir": self.cache_dir}
-        return Qwen3_5ForConditionalGeneration.from_pretrained(src, token=self.hf_token, trust_remote_code=self.hf_remote, **extra_kwargs)
+        return _load_qwen3_5_model(self, input_path)
 
     def _make_scalar_grid_inputs(self):
         axes = "/vision/grid/scalar_axes"
@@ -3342,11 +3354,7 @@ class Qwen35EmbeddingModel(EmbeddingModel):
             from ..helpers.mlx import MLXCheckpoint
 
             return MLXCheckpoint(self.extra_options["_mlx_checkpoint"]).load_model(self.extra_options["_mlx_config"], "embedding")
-        from transformers import Qwen3_5ForConditionalGeneration
-
-        src = input_path if os.path.isdir(input_path) else self.model_name_or_path
-        extra_kwargs = {} if os.path.isdir(input_path) else {"cache_dir": self.cache_dir}
-        return Qwen3_5ForConditionalGeneration.from_pretrained(src, token=self.hf_token, trust_remote_code=self.hf_remote, **extra_kwargs)
+        return _load_qwen3_5_model(self, input_path)
 
     def get_embed_weight(self, hf_model):
         if self.extra_options.get("_mlx_checkpoint"):
@@ -3369,14 +3377,19 @@ class Qwen35ConditionalGenerationModel(Model):
         self.vision_encoder = Qwen35VisionEncoderModel(config, io_dtype, onnx_dtype, ep, cache_dir, vision_options)
         embedding_options = dict(extra_options)
         embedding_options["image_token_id"] = self.image_token_id
+        embedding_options["video_token_id"] = self.video_token_id
         if extra_options.get("_mlx_checkpoint"):
             embedding_options["_mlx_config"] = config
         embedding_config = copy.deepcopy(config.text_config)
         embedding_config.architectures = config.architectures
+        embedding_config._name_or_path = config._name_or_path
+        if not hasattr(embedding_config, "intermediate_size"):
+            embedding_config.intermediate_size = embedding_config.moe_intermediate_size
         self.embedding_model = Qwen35EmbeddingModel(embedding_config, io_dtype, ir.DataType.FLOAT, ep, cache_dir, embedding_options)
         text_options = dict(extra_options)
         text_options["exclude_embeds"] = True
-        self.text_model = Qwen35TextModel(config, io_dtype, onnx_dtype, ep, cache_dir, text_options)
+        text_model_class = Qwen35MoeTextModel if config.architectures[0] == "Qwen3_5MoeForConditionalGeneration" else Qwen35TextModel
+        self.text_model = text_model_class(config, io_dtype, onnx_dtype, ep, cache_dir, text_options)
 
     def make_model(self, input_path):
         print("Building Qwen3.5 vision encoder...")
@@ -3395,7 +3408,7 @@ class Qwen35ConditionalGenerationModel(Model):
         genai_config = self.text_model.create_genai_config(model_name_or_path, extra_kwargs, out_dir)
 
         vision_config = self.vision_encoder.vision_config
-        genai_config["model"]["type"] = "qwen3_5"
+        genai_config["model"]["type"] = "qwen3_5_moe" if isinstance(self.text_model, Qwen35MoeTextModel) else "qwen3_5"
         genai_config["model"]["vision"] = {
             "filename": self.vision_encoder.FILENAME,
             "config_filename": "processor_config.json",
@@ -3514,12 +3527,7 @@ class Qwen35MoeTextModel(Qwen35TextModel):
                 del customized_weight_config[k]
 
     def load_weights(self, input_path):
-        from transformers import Qwen3_5MoeForConditionalGeneration
-
-        print("Loading Qwen3_5MoeForConditionalGeneration model...")
-        return Qwen3_5MoeForConditionalGeneration.from_pretrained(
-            self.model_name_or_path, cache_dir=self.cache_dir, token=self.hf_token, trust_remote_code=self.hf_remote
-        )
+        return _load_qwen3_5_model(self, input_path)
 
     def make_layer(self, layer_id, layer):
         """Override to use MoE instead of dense MLP."""
@@ -3630,9 +3638,4 @@ class Qwen35MoeCausalLMModel(Qwen35MoeTextModel):
         super().__init__(config, io_dtype, onnx_dtype, ep, cache_dir, extra_options)
 
     def load_weights(self, input_path):
-        from transformers import Qwen3_5MoeForCausalLM
-
-        print("Loading Qwen3_5MoeForCausalLM model...")
-        return Qwen3_5MoeForCausalLM.from_pretrained(
-            self.model_name_or_path, cache_dir=self.cache_dir, token=self.hf_token, trust_remote_code=self.hf_remote
-        )
+        return _load_qwen3_5_model(self, input_path)

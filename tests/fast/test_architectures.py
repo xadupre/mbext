@@ -42,6 +42,8 @@ class TestArchitectures(ExtTestCase):
             ("LlamaForCausalLM", "meta-llama/Llama-2-7b-hf"),
             ("Phi3ForCausalLM", "microsoft/Phi-3-mini-4k-instruct"),
             ("WhisperForConditionalGeneration", "openai/whisper-tiny"),
+            ("Qwen3_5MoeForConditionalGeneration", "Qwen/Qwen3.5-35B-A3B"),
+            ("Qwen3_5MoeForConditionalGeneration", "Qwen/Qwen3.5-35B-A3B-FP8"),
         ):
             self.assertIn(model_id, archs[name].model_ids)
         for arch in archs.values():
