@@ -74,7 +74,7 @@ class TestRandomQwen3_5_35BA3B(ExtTestCase):
         quantized = (weight.float() / expanded).to(torch.float8_e4m3fn)
         return quantized, scale, quantized.float() * expanded
 
-    def _build(self, fp8=False, text_only=False, multimodal=False, precision="fp32", provider="cpu"):
+    def _build(self, fp8=False, text_only=False, multimodal=False, precision="fp32", provider="cpu", **extra_options):
         import torch
         from safetensors.torch import load_file, save_file
         from transformers import (
@@ -162,6 +162,7 @@ class TestRandomQwen3_5_35BA3B(ExtTestCase):
             execution_provider=provider,
             cache_dir=cache_dir,
             **({"multimodal": True} if multimodal else {"exclude_embeds": False}),
+            **extra_options,
         )
         return config, model, output_dir
 
@@ -201,9 +202,10 @@ class TestRandomQwen3_5_35BA3B(ExtTestCase):
                 expected = model(**kwargs, past_key_values=past, use_cache=True)
             past = expected.past_key_values
             actual = dict(zip([value.name for value in session.get_outputs()], session.run(None, feed)))
-            tolerance = 2e-3 if precision == "fp32" else 3e-2
+            tolerance = 0.15 if precision == "int4" else (2e-3 if precision == "fp32" else 3e-2)
             np.testing.assert_allclose(actual["logits"], expected.logits.numpy(), atol=tolerance, rtol=tolerance)
-            np.testing.assert_array_equal(actual["logits"][:, -1].argmax(-1), expected.logits[:, -1].argmax(-1).numpy())
+            if precision != "int4":
+                np.testing.assert_array_equal(actual["logits"][:, -1].argmax(-1), expected.logits[:, -1].argmax(-1).numpy())
             cache = {
                 name.replace("present.", "past_key_values.", 1): value for name, value in actual.items() if name.startswith("present.")
             }
@@ -234,6 +236,24 @@ class TestRandomQwen3_5_35BA3B(ExtTestCase):
         self._check_decoder(*self._build(fp8=True, precision="fp16"), precision="fp16")
 
     @hide_stdout()
+    def test_fp8_to_int4_qdq(self):
+        import onnx_light.onnx as onnx
+
+        config, model, directory = self._build(fp8=True, precision="int4", use_qdq=True)
+        graph = onnx.load(os.path.join(directory, "model.onnx"), load_external_data=False).graph
+        self.assertIn("DequantizeLinear", {node.op_type for node in graph.node})
+        self.assertIn("QMoE", {node.op_type for node in graph.node})
+        self._check_decoder(config, model, directory, precision="int4")
+
+    @hide_stdout()
+    def test_int4_cpu(self):
+        self._check_decoder(*self._build(precision="int4"), precision="int4")
+
+    @hide_stdout()
+    def test_fp8_int4_cpu(self):
+        self._check_decoder(*self._build(fp8=True, precision="int4"), precision="int4")
+
+    @hide_stdout()
     def test_fp16_cpu(self):
         self._check_decoder(*self._build(precision="fp16"), precision="fp16")
 
@@ -241,6 +261,11 @@ class TestRandomQwen3_5_35BA3B(ExtTestCase):
     @requires_cuda()
     def test_fp16_cuda(self):
         self._check_decoder(*self._build(precision="fp16", provider="cuda"), precision="fp16", provider="cuda")
+
+    @hide_stdout()
+    @requires_cuda()
+    def test_fp8_fp16_cuda(self):
+        self._check_decoder(*self._build(fp8=True, precision="fp16", provider="cuda"), precision="fp16", provider="cuda")
 
     def _check_multimodal(self, fp8=False):
         import torch

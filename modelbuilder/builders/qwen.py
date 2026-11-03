@@ -32,14 +32,18 @@ def _load_qwen3_5_model(builder, input_path):
     src = input_path if os.path.isdir(input_path) else builder.model_name_or_path
     kwargs = {"cache_dir": builder.cache_dir, "token": builder.hf_token, "trust_remote_code": builder.hf_remote}
     config = AutoConfig.from_pretrained(src, **kwargs)
-    quantization_config = getattr(config, "quantization_config", {})
-    if quantization_config.get("quant_method") == "fp8":
+    quantization_config = getattr(config, "quantization_config", None) or {}
+    dequantize = quantization_config.get("quant_method") == "fp8"
+    if dequantize:
         quantization_config = FineGrainedFP8Config.from_dict(quantization_config)
         quantization_config.dequantize = True
         kwargs["quantization_config"] = quantization_config
         kwargs["dtype"] = torch.float32
     model_class = AutoModelForImageTextToText if hasattr(config, "text_config") else AutoModelForCausalLM
-    return model_class.from_pretrained(src, **kwargs)
+    model = model_class.from_pretrained(src, **kwargs)
+    if dequantize:
+        builder.quant_type = None
+    return model
 
 
 class QwenModel(Model):
@@ -2139,7 +2143,7 @@ class Qwen35TextModel(Model):
         # Linear attention recurrence accumulates errors across the full sequence,
         # unlike softmax attention which normalizes per-step.
         int8_nodes = {}
-        if self.quant_attrs["int4"]["algo_config"]["algorithm"] != "ternary":
+        if not self.quant_attrs["use_qdq"] and self.quant_attrs["int4"]["algo_config"]["algorithm"] != "ternary":
             for i, lt in enumerate(self.layer_types):
                 if lt == "linear_attention":
                     # All linear attention projections: INT8
