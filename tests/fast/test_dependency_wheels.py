@@ -5,14 +5,17 @@
 # --------------------------------------------------------------------------
 """Check native dependency requirements and pinned wheel releases."""
 
+import runpy
 import tomllib
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from modelbuilder.ext_test_case import ExtTestCase
-from tools.onnx_light_release import release_version, wheel_url
 
 ROOT = Path(__file__).resolve().parents[2]
+_release = runpy.run_path(str(ROOT / "tools" / "onnx_light_release.py"))
+release_version = _release["release_version"]
+wheel_url = _release["wheel_url"]
 
 
 class TestDependencyWheels(ExtTestCase):
