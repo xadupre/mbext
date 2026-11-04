@@ -25,8 +25,11 @@ jobs:
       - name: Install pytorch (cpu)
         run: pip install "torch==2.14.1+cpu" torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
 
+      - name: Install onnx-light release
+        run: python tools/onnx_light_release.py
+
       - name: Install dependencies
-        run: pip install -r .github/requirements-onnx-light.txt -e ".[dev]" torch transformers tokenizers "huggingface_hub>=2.2.0"
+        run: pip install -e ".[dev]" torch transformers tokenizers "huggingface_hub>=2.2.0"
 
       - name: pip freeze
         run: pip freeze
