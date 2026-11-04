@@ -194,7 +194,7 @@ class TestRandomQwen3_5_35BA3B(ExtTestCase):
             feed = {"attention_mask": np.ones((1, past_length + length), dtype=np.int64), "position_ids": positions, **cache}
             kwargs = {"input_ids": input_ids}
             if inputs_embeds is not None:
-                kwargs = {"inputs_embeds": torch.from_numpy(inputs_embeds)}
+                kwargs = {"inputs_embeds": torch.from_numpy(inputs_embeds).float()}
                 feed["inputs_embeds"] = inputs_embeds.astype(dtype)
             else:
                 feed["input_ids"] = input_ids.numpy()
@@ -267,31 +267,54 @@ class TestRandomQwen3_5_35BA3B(ExtTestCase):
     def test_fp8_fp16_cuda(self):
         self._check_decoder(*self._build(fp8=True, precision="fp16", provider="cuda"), precision="fp16", provider="cuda")
 
-    def _check_multimodal(self, fp8=False):
+    def _check_multimodal(self, fp8=False, precision="fp32"):
         import torch
 
-        config, model, output_dir = self._build(fp8=fp8, multimodal=True)
+        config, model, output_dir = self._build(
+            fp8=fp8, multimodal=True, precision=precision
+        )
         with open(os.path.join(output_dir, "genai_config.json")) as stream:
             self.assertEqual(json.load(stream)["model"]["type"], "qwen3_5_moe")
         vision_session = self.check_ort(os.path.join(output_dir, "vision.onnx"))
         embedding_session = self.check_ort(os.path.join(output_dir, "embedding.onnx"))
+        tolerance = {"fp32": 2e-4, "fp16": 3e-2, "int4": 2e-4}[precision]
         vc = config.vision_config
         for temporal in (1, 2):
             grid = torch.tensor([[temporal, 2, 2]], dtype=torch.int64)
             torch.manual_seed(temporal)
-            pixels = torch.randn(temporal * 4, vc.in_channels * vc.temporal_patch_size * vc.patch_size**2)
+            pixels = torch.randn(
+                temporal * 4,
+                vc.in_channels * vc.temporal_patch_size * vc.patch_size**2,
+            )
             with torch.no_grad():
                 expected = model.model.visual(pixels, grid).pooler_output.numpy()
-            (features,) = vision_session.run(None, {"pixel_values": pixels.numpy(), "image_grid_thw": grid.numpy()})
-            np.testing.assert_allclose(features, expected, atol=2e-4, rtol=2e-4)
+            (features,) = vision_session.run(
+                None,
+                {
+                    "pixel_values": pixels.numpy(),
+                    "image_grid_thw": grid.numpy(),
+                },
+            )
+            np.testing.assert_allclose(
+                features, expected, atol=tolerance, rtol=tolerance
+            )
             token = config.image_token_id if temporal == 1 else config.video_token_id
             ids = np.array([[5] + [token] * temporal + [6]], dtype=np.int64)
-            (embeds,) = embedding_session.run(None, {"input_ids": ids, "image_features": features})
+            (embeds,) = embedding_session.run(
+                None, {"input_ids": ids, "image_features": features}
+            )
             with torch.no_grad():
-                expected_embeds = model.model.language_model.embed_tokens(torch.from_numpy(ids)).numpy()
+                input_ids = torch.from_numpy(ids)
+                expected_embeds = (
+                    model.model.language_model.embed_tokens(input_ids).numpy()
+                )
             expected_embeds[0, 1:-1] = expected
-            np.testing.assert_allclose(embeds, expected_embeds, atol=1e-6, rtol=1e-6)
-            self._check_decoder(config, model, output_dir, inputs_embeds=embeds)
+            np.testing.assert_allclose(
+                embeds, expected_embeds, atol=tolerance, rtol=tolerance
+            )
+            self._check_decoder(
+                config, model, output_dir, precision=precision, inputs_embeds=embeds
+            )
         return config, model, output_dir
 
     @hide_stdout()
@@ -301,6 +324,22 @@ class TestRandomQwen3_5_35BA3B(ExtTestCase):
     @hide_stdout()
     def test_fp8_multimodal(self):
         self._check_multimodal(fp8=True)
+
+    @hide_stdout()
+    def test_fp16_multimodal(self):
+        self._check_multimodal(precision="fp16")
+
+    @hide_stdout()
+    def test_fp8_fp16_multimodal(self):
+        self._check_multimodal(fp8=True, precision="fp16")
+
+    @hide_stdout()
+    def test_int4_multimodal(self):
+        self._check_multimodal(precision="int4")
+
+    @hide_stdout()
+    def test_fp8_int4_multimodal(self):
+        self._check_multimodal(fp8=True, precision="int4")
 
     def _check_generation(self, generation_test, fp8=False, text_only=False):
         config, model, output_dir = self._build(fp8=fp8, text_only=text_only)
@@ -327,22 +366,45 @@ class TestRandomQwen3_5_35BA3B(ExtTestCase):
     def test_fp8_causallm_genai_generation(self):
         self._check_generation(self.run_genai_generation_test, fp8=True, text_only=True)
 
-    def _check_multimodal_generation(self, fp8=False, video=False):
+    def _check_multimodal_generation(self, fp8=False, video=False, precision="fp32"):
         import onnxruntime_genai as og
         import torch
 
-        config, model, directory = self._build(fp8=fp8, multimodal=True)
+        config, model, directory = self._build(
+            fp8=fp8, multimodal=True, precision=precision
+        )
         token = config.video_token_id if video else config.image_token_id
-        prompt = torch.tensor([[5, config.vision_start_token_id, token, config.vision_end_token_id, 6]])
-        width = config.vision_config.in_channels * config.vision_config.temporal_patch_size * config.vision_config.patch_size**2
+        prompt = torch.tensor(
+            [[5, config.vision_start_token_id, token, config.vision_end_token_id, 6]]
+        )
+        width = (
+            config.vision_config.in_channels
+            * config.vision_config.temporal_patch_size
+            * config.vision_config.patch_size**2
+        )
         pixels = torch.linspace(-0.5, 0.5, 4 * width).reshape(4, width)
         grid = torch.tensor([[1, 2, 2]], dtype=torch.int64)
-        media = {"pixel_values_videos": pixels, "video_grid_thw": grid} if video else {"pixel_values": pixels, "image_grid_thw": grid}
+        media = (
+            {"pixel_values_videos": pixels, "video_grid_thw": grid}
+            if video
+            else {"pixel_values": pixels, "image_grid_thw": grid}
+        )
         with torch.no_grad():
-            expected = model.generate(input_ids=prompt, **media, max_new_tokens=3, do_sample=False, pad_token_id=2)[0].tolist()
+            expected = model.generate(
+                input_ids=prompt,
+                **media,
+                max_new_tokens=3,
+                do_sample=False,
+                pad_token_id=2,
+            )[0].tolist()
         genai_model = og.Model(directory)
         params = og.GeneratorParams(genai_model)
-        params.set_search_options(do_sample=False, max_length=prompt.shape[1] + 3, temperature=1.0, top_k=1)
+        params.set_search_options(
+            do_sample=False,
+            max_length=prompt.shape[1] + 3,
+            temperature=1.0,
+            top_k=1,
+        )
         generator = og.Generator(genai_model, params)
         inputs = og.NamedTensors()
         inputs["pixel_values"] = pixels.numpy()
@@ -378,6 +440,46 @@ class TestRandomQwen3_5_35BA3B(ExtTestCase):
     @requires_genai("0.17.1")
     def test_fp8_video_genai_generation(self):
         self._check_multimodal_generation(fp8=True, video=True)
+
+    @hide_stdout()
+    @requires_genai("0.17.1")
+    def test_fp16_multimodal_genai_generation(self):
+        self._check_multimodal_generation(precision="fp16")
+
+    @hide_stdout()
+    @requires_genai("0.17.1")
+    def test_fp8_fp16_multimodal_genai_generation(self):
+        self._check_multimodal_generation(fp8=True, precision="fp16")
+
+    @hide_stdout()
+    @requires_genai("0.17.1")
+    def test_fp16_video_genai_generation(self):
+        self._check_multimodal_generation(video=True, precision="fp16")
+
+    @hide_stdout()
+    @requires_genai("0.17.1")
+    def test_fp8_fp16_video_genai_generation(self):
+        self._check_multimodal_generation(fp8=True, video=True, precision="fp16")
+
+    @hide_stdout()
+    @requires_genai("0.17.1")
+    def test_int4_multimodal_genai_generation(self):
+        self._check_multimodal_generation(precision="int4")
+
+    @hide_stdout()
+    @requires_genai("0.17.1")
+    def test_fp8_int4_multimodal_genai_generation(self):
+        self._check_multimodal_generation(fp8=True, precision="int4")
+
+    @hide_stdout()
+    @requires_genai("0.17.1")
+    def test_int4_video_genai_generation(self):
+        self._check_multimodal_generation(video=True, precision="int4")
+
+    @hide_stdout()
+    @requires_genai("0.17.1")
+    def test_fp8_int4_video_genai_generation(self):
+        self._check_multimodal_generation(fp8=True, video=True, precision="int4")
 
     @hide_stdout()
     def test_onnx_light_generation(self):
