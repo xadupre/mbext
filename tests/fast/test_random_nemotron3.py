@@ -19,12 +19,13 @@ MODEL_IDS = (
 
 
 class TestRandomNemotron3(ExtTestCase):
-    def _make_model(self, variant):
+    def _make_model(self, variant, tie_word_embeddings=False):
         import torch
         from transformers import NemotronHConfig, NemotronHForCausalLM
 
         config = NemotronHConfig(
             architectures=["NemotronHForCausalLM"],
+            tie_word_embeddings=tie_word_embeddings,
             vocab_size=193,
             hidden_size=64,
             intermediate_size=128,
@@ -60,7 +61,9 @@ class TestRandomNemotron3(ExtTestCase):
                     layer.mixer.gate.e_score_correction_bias.copy_(torch.tensor([0.3, -0.2, 0.1, 0.4]))
         return model
 
-    def _write_modelopt_checkpoint(self, model, model_dir, variant):
+    def _write_modelopt_checkpoint(
+        self, model, model_dir, variant, fp8_experts=False, omit_lm_head=False
+    ):
         import torch
         from safetensors.torch import save_file
 
@@ -68,14 +71,20 @@ class TestRandomNemotron3(ExtTestCase):
         reference = {}
         linear_names = {name for name, module in model.named_modules() if isinstance(module, torch.nn.Linear)}
 
-        def add_weight(name, weight, fp8=False, quantized=True):
+        def add_weight(
+            name, weight, fp8=False, quantized=True, fp8_expert=False
+        ):
             source = name.replace("model.", "backbone.", 1) if name.startswith("model.") else name
             base = source.removesuffix(".weight")
             if not quantized:
                 state[source] = weight.contiguous()
                 return weight
             if fp8:
-                scale = weight.abs().amax(dim=1, keepdim=True).clamp_min(1e-8) / 448
+                scale = (
+                    weight.abs().amax().clamp_min(1e-8) / 448
+                    if fp8_expert
+                    else weight.abs().amax(dim=1, keepdim=True).clamp_min(1e-8) / 448
+                )
                 packed = (weight / scale).to(torch.float8_e4m3fn)
                 state[source] = packed
                 state[base + ".weight_scale"] = scale
@@ -95,9 +104,21 @@ class TestRandomNemotron3(ExtTestCase):
             return (values * scale.float().unsqueeze(-1) * global_scale).reshape(weight.shape)
 
         for name, weight in model.state_dict().items():
+            if omit_lm_head and name == "lm_head.weight":
+                continue
             if ".experts." in name and weight.ndim == 3:
                 prefix, projection = name.rsplit(".", 1)
-                reference[name] = torch.stack([add_weight(f"{prefix}.{i}.{projection}.weight", value) for i, value in enumerate(weight)])
+                reference[name] = torch.stack(
+                    [
+                        add_weight(
+                            f"{prefix}.{i}.{projection}.weight",
+                            value,
+                            fp8=fp8_experts and projection == "up_proj",
+                            fp8_expert=fp8_experts and projection == "up_proj",
+                        )
+                        for i, value in enumerate(weight)
+                    ]
+                )
             else:
                 base = name.removesuffix(".weight")
                 quantized = (
@@ -115,13 +136,23 @@ class TestRandomNemotron3(ExtTestCase):
                 )
         if variant == 2:
             prefix = "backbone.layers.1.mixer.experts"
-            for suffix in ("weight", "weight_scale", "weight_scale_2"):
+            suffixes = (
+                ("weight", "weight_scale")
+                if fp8_experts
+                else ("weight", "weight_scale", "weight_scale_2")
+            )
+            for suffix in suffixes:
                 name = f"{prefix}.up_proj" if suffix == "weight" else f"{prefix}.up_proj.{suffix}"
-                state[name] = torch.stack([state.pop(f"{prefix}.{i}.up_proj.{suffix}") for i in range(model.config.n_routed_experts)])
+                state[name] = torch.stack(
+                    [
+                        state.pop(f"{prefix}.{i}.up_proj.{suffix}")
+                        for i in range(model.config.n_routed_experts)
+                    ]
+                )
             prefix = "backbone.layers.1.mixer.shared_experts.up_proj"
             state[prefix + ".weight_packed"] = state.pop(prefix + ".weight")
             state[prefix + ".weight_global_scale"] = state.pop(prefix + ".weight_scale_2").reciprocal()
-        model.load_state_dict(reference)
+        model.load_state_dict(reference, strict=not omit_lm_head)
         if variant == 2:
             model.config.quantization_config = {"quant_method": "modelopt", "quant_algo": "MIXED_PRECISION"}
         else:
@@ -300,6 +331,45 @@ class TestRandomNemotron3(ExtTestCase):
                 save_file(state, path)
                 with self.assertRaisesRegex(ValueError, "must be finite and positive"):
                     load_nemotron_checkpoint(model_dir, model.config, model.config.num_hidden_layers)
+
+    @hide_stdout()
+    def test_modelopt_fused_fp8_expert_scales(self):
+        import torch
+
+        from modelbuilder.helpers.nemotron import load_nemotron_checkpoint
+
+        model = self._make_model(2)
+        model_dir = self.get_model_dir("test_nemotron3_fused_fp8_expert_scales")
+        self._write_modelopt_checkpoint(model, model_dir, 2, fp8_experts=True)
+        loaded = load_nemotron_checkpoint(model_dir, model.config, model.config.num_hidden_layers)
+        expected = model.model.layers[1].mixer.experts.up_proj
+        actual = loaded.model.layers[1].mixer.experts.up_proj
+        self.assertEqual(actual.dtype, torch.float32)
+        self.assertEqualArray(expected.detach().numpy(), actual.detach().numpy())
+
+    @hide_stdout()
+    def test_modelopt_preserves_unquantized_parameter_dtype(self):
+        import torch
+
+        from modelbuilder.helpers.nemotron import load_nemotron_checkpoint
+
+        model = self._make_model(1)
+        model_dir = self.get_model_dir("test_nemotron3_preserves_parameter_dtype")
+        self._write_modelopt_checkpoint(model, model_dir, 1)
+        model.config.dtype = torch.bfloat16
+        loaded = load_nemotron_checkpoint(model_dir, model.config, model.config.num_hidden_layers)
+        self.assertEqual(loaded.model.layers[1].mixer.gate.weight.dtype, torch.float32)
+
+    @hide_stdout()
+    def test_modelopt_loads_tied_parameter_aliases(self):
+        from modelbuilder.helpers.nemotron import load_nemotron_checkpoint
+
+        model = self._make_model(1, tie_word_embeddings=True)
+        model_dir = self.get_model_dir("test_nemotron3_tied_parameter_aliases")
+        self._write_modelopt_checkpoint(model, model_dir, 1, omit_lm_head=True)
+        loaded = load_nemotron_checkpoint(model_dir, model.config, model.config.num_hidden_layers)
+        self.assertFalse(loaded.lm_head.weight.is_meta)
+        self.assertIs(loaded.lm_head.weight, loaded.model.embeddings.weight)
 
     @hide_stdout()
     def test_expert_dispatch_does_not_gather_weights(self):
