@@ -51,6 +51,7 @@ _MODEL_IDS: dict[str, tuple[str, ...]] = {
     "Qwen2_5OmniThinkerForConditionalGeneration": ("Qwen/Qwen2.5-Omni-3B",),
     "Qwen2_5_VLForConditionalGeneration": ("Qwen/Qwen2.5-VL-7B-Instruct",),
     "Qwen3ForCausalLM": ("Qwen/Qwen3-0.6B",),
+    "Qwen3_5MoeForConditionalGeneration": ("Qwen/Qwen3.5-35B-A3B", "Qwen/Qwen3.5-35B-A3B-FP8"),
     "Qwen3VLForConditionalGeneration": ("Qwen/Qwen3-VL-4B-Instruct",),
     "SmolLM3ForCausalLM": ("HuggingFaceTB/SmolLM3-3B",),
     "SmolVLMForConditionalGeneration": ("HuggingFaceTB/SmolVLM-256M-Instruct",),
