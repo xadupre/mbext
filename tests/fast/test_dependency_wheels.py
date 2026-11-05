@@ -24,22 +24,25 @@ class TestDependencyWheels(ExtTestCase):
             project = tomllib.load(f)["project"]
 
         requirements = [req for req in project["dependencies"] if req.startswith("onnx-light")]
-        self.assertEqual(requirements, ["onnx-light==0.2.5"])
-        self.assertEqual(release_version(), requirements[0].split("==")[1])
+        self.assertEqual(requirements, ["onnx-light>=0.2.5"])
+        self.assertEqual(release_version(), requirements[0].split(">=")[1])
 
     def test_release_version_from_pyproject(self):
         with TemporaryDirectory() as directory:
             path = Path(directory) / "pyproject.toml"
             for dependencies, expected in (
                 ('"numpy>=2", "onnx-light==1.2.3.4"', "1.2.3.4"),
+                ('"onnx-light>=0.2.5"', "0.2.5"),
                 ('"onnx-light-cpu==0.2.5"', None),
-                ('"onnx-light>=0.2.5"', None),
+                ('"onnx-light>0.2.5"', None),
+                ('"onnx-light>=0.2.5,<0.3"', None),
                 ('"onnx-light==0.2.5", "onnx-light==0.2.6"', None),
+                ('"onnx-light>=0.2.5", "onnx-light==0.2.6"', None),
             ):
                 with self.subTest(dependencies=dependencies):
                     path.write_text(f"[project]\ndependencies = [{dependencies}]\n", encoding="utf-8")
                     if expected is None:
-                        with self.assertRaisesRegex(ValueError, "exact onnx-light"):
+                        with self.assertRaisesRegex(ValueError, "exactly one onnx-light"):
                             release_version(path)
                     else:
                         self.assertEqual(release_version(path), expected)
