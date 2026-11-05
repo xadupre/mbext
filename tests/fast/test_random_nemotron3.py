@@ -19,7 +19,9 @@ MODEL_IDS = (
 
 
 class TestRandomNemotron3(ExtTestCase):
-    def _make_model(self, variant, tie_word_embeddings=False):
+    def _make_model(
+        self, variant, tie_word_embeddings=False, mamba_ssm_cache_dtype=None
+    ):
         import torch
         from transformers import NemotronHConfig, NemotronHForCausalLM
 
@@ -53,6 +55,8 @@ class TestRandomNemotron3(ExtTestCase):
             eos_token_id=2,
             pad_token_id=0,
         )
+        if mamba_ssm_cache_dtype is not None:
+            config.mamba_ssm_cache_dtype = mamba_ssm_cache_dtype
         torch.manual_seed(42)
         model = NemotronHForCausalLM(config).eval()
         with torch.no_grad():
@@ -206,8 +210,9 @@ class TestRandomNemotron3(ExtTestCase):
         return model, output_dir
 
     def _check_prefill_decode(self, variant, precision="fp32", provider="cpu", modelopt=False, batch=1, model=None):
-        import ml_dtypes
         import torch
+
+        from modelbuilder.helpers.rt_helper import _ort_type_to_numpy_dtype
 
         model, output_dir = self._export(variant, precision, provider, modelopt=modelopt, model=model)
         if precision == "int4":
@@ -216,12 +221,25 @@ class TestRandomNemotron3(ExtTestCase):
             graph = onnx.load(os.path.join(output_dir, "model.onnx"), load_external_data=False).graph
             self.assertTrue(any(node.op_type == "DequantizeLinear" for node in graph.node))
         sess = self.check_ort(os.path.join(output_dir, "model.onnx"), provider=provider)
-        dtype = {"fp16": np.float16, "bf16": ml_dtypes.bfloat16}.get(precision, np.float32)
+        input_types = {value.name: value.type for value in sess.get_inputs()}
+        output_types = {value.name: value.type for value in sess.get_outputs()}
+        cache_dtype = getattr(model.config, "mamba_ssm_cache_dtype", None)
+        if cache_dtype is not None:
+            for name, input_type in input_types.items():
+                if name.endswith(".recurrent_state"):
+                    self.assertEqual(input_type, f"tensor({cache_dtype})")
+                    output_name = name.replace("past_key_values.", "present.")
+                    self.assertEqual(output_types[output_name], input_type)
         state = {}
         for value in sess.get_inputs():
             if value.name.startswith("past_key_values."):
-                shape = [batch if i == 0 else d if isinstance(d, int) else 0 for i, d in enumerate(value.shape)]
-                state[value.name] = np.zeros(shape, dtype=np.float32 if value.type == "tensor(float)" else dtype)
+                shape = [
+                    batch if i == 0 else d if isinstance(d, int) else 0
+                    for i, d in enumerate(value.shape)
+                ]
+                state[value.name] = np.zeros(
+                    shape, dtype=_ort_type_to_numpy_dtype(value.type)
+                )
         rng = np.random.default_rng(42)
         past = None
         total_length = 0
@@ -236,21 +254,32 @@ class TestRandomNemotron3(ExtTestCase):
                 **state,
             }
             feed = {v.name: feed[v.name] for v in sess.get_inputs()}
-            if precision == "bf16":
+            has_bfloat16_output = "tensor(bfloat16)" in output_types.values()
+            if precision == "bf16" or has_bfloat16_output:
                 bound_outputs = {}
-                for output in sess.get_outputs():
-                    if output.name == "logits":
+                output_torch_dtypes = {
+                    "tensor(float)": torch.float32,
+                    "tensor(float16)": torch.float16,
+                    "tensor(bfloat16)": torch.bfloat16,
+                }
+                for output_name, output_type in output_types.items():
+                    if output_name == "logits":
                         shape = (batch, length, model.config.vocab_size)
                     else:
-                        input_name = output.name.replace("present.", "past_key_values.")
+                        input_name = output_name.replace("present.", "past_key_values.")
                         shape = list(state[input_name].shape)
-                        if output.name.endswith((".key", ".value")):
+                        if output_name.endswith((".key", ".value")):
                             shape[2] = total_length
-                    output_dtype = torch.float32 if output.type == "tensor(float)" else torch.bfloat16
-                    bound_outputs[output.name] = torch.empty(shape, dtype=output_dtype, device=provider)
+                    output_dtype = output_torch_dtypes[output_type]
+                    bound_outputs[output_name] = torch.empty(
+                        shape, dtype=output_dtype, device=provider
+                    )
                 _ort_io_binding_helper(sess, feed, bound_outputs, device=provider)
                 outputs = {
-                    name: value.float().cpu().numpy().astype(dtype if value.dtype == torch.bfloat16 else np.float32)
+                    name: value.float()
+                    .cpu()
+                    .numpy()
+                    .astype(_ort_type_to_numpy_dtype(output_types[name]))
                     for name, value in bound_outputs.items()
                 }
             else:
@@ -296,6 +325,14 @@ class TestRandomNemotron3(ExtTestCase):
         for variant in range(3):
             with self.subTest(model=MODEL_IDS[variant]):
                 self._check_prefill_decode(variant, "fp16")
+
+    @hide_stdout()
+    def test_prefill_decode_recurrent_cache_dtype_cpu(self):
+        for cache_dtype in ("float16", "bfloat16"):
+            for precision in ("fp32", "fp16"):
+                with self.subTest(cache_dtype=cache_dtype, precision=precision):
+                    model = self._make_model(1, mamba_ssm_cache_dtype=cache_dtype)
+                    self._check_prefill_decode(1, precision, model=model)
 
     @hide_stdout()
     def test_prefill_decode_int4_cpu(self):

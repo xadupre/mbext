@@ -5,7 +5,10 @@
 # --------------------------------------------------------------------------
 """Load native and legacy ModelOpt Nemotron-H safetensors checkpoints."""
 
+from contextlib import ExitStack
+
 import torch
+from safetensors import safe_open
 
 from .checkpoint import SafetensorsCheckpoint
 from .compressed_tensors import QwenCompressedTensorsModel
@@ -22,6 +25,7 @@ def load_nemotron_checkpoint(directory, config, num_layers):
     with torch.device("meta"):
         model = NemotronHForCausalLM(config)
     checkpoint = SafetensorsCheckpoint(checkpoint_paths(directory))
+    handles = {}
     dtype = getattr(config, "dtype", None) or torch.float32
     if isinstance(dtype, str):
         dtype = getattr(torch, dtype)
@@ -38,16 +42,24 @@ def load_nemotron_checkpoint(directory, config, num_layers):
                 return packed
         return None
 
+    def tensor(name):
+        path = checkpoint.files[name]
+        if path not in handles:
+            handles[path] = stack.enter_context(
+                safe_open(path, framework="pt", device="cpu")
+            )
+        return handles[path].get_tensor(name)
+
     def read_weight(name, shape, target_dtype=None):
         source = find_name(name)
         if source is None:
             raise ValueError(f"Missing Nemotron checkpoint tensor {name!r}.")
-        weight = checkpoint.tensor(source)
+        weight = tensor(source)
         base = source.removesuffix(".weight").removesuffix(".weight_packed")
 
         def scale(suffix):
             key = base + suffix
-            return checkpoint.tensor(key) if key in checkpoint.files else None
+            return tensor(key) if key in checkpoint.files else None
 
         if weight.dtype == torch.uint8:
             output_dtype = target_dtype if target_dtype is not None else dtype
@@ -129,33 +141,34 @@ def load_nemotron_checkpoint(directory, config, num_layers):
             )
         return read_weight(name, shape)
 
-    named_parameters = list(model.named_parameters(remove_duplicate=False))
-    parameter_names = {}
-    for name, parameter in named_parameters:
-        parameter_names.setdefault(id(parameter), []).append(name)
+    with ExitStack() as stack:
+        named_parameters = list(model.named_parameters(remove_duplicate=False))
+        parameter_names = {}
+        for name, parameter in named_parameters:
+            parameter_names.setdefault(id(parameter), []).append(name)
 
-    loaded_parameters = {}
-    for name, parameter in named_parameters:
-        loaded = loaded_parameters.get(id(parameter))
-        if loaded is None:
-            source_name = next(
-                (
-                    alias
-                    for alias in parameter_names[id(parameter)]
-                    if find_name(alias) is not None
-                ),
-                name,
-            )
-            value = read_tensor(source_name, parameter.shape)
-            loaded = torch.nn.Parameter(value, requires_grad=False)
-            loaded_parameters[id(parameter)] = loaded
-        module_name, _, attribute = name.rpartition(".")
-        setattr(model.get_submodule(module_name), attribute, loaded)
-    for name, buffer in list(model.named_buffers()):
-        if find_name(name) is None and name.endswith("e_score_correction_bias"):
-            value = torch.zeros(buffer.shape, dtype=buffer.dtype)
-        else:
-            value = read_weight(name, buffer.shape, target_dtype=buffer.dtype)
-        module_name, _, attribute = name.rpartition(".")
-        setattr(model.get_submodule(module_name), attribute, value)
+        loaded_parameters = {}
+        for name, parameter in named_parameters:
+            loaded = loaded_parameters.get(id(parameter))
+            if loaded is None:
+                source_name = next(
+                    (
+                        alias
+                        for alias in parameter_names[id(parameter)]
+                        if find_name(alias) is not None
+                    ),
+                    name,
+                )
+                value = read_tensor(source_name, parameter.shape)
+                loaded = torch.nn.Parameter(value, requires_grad=False)
+                loaded_parameters[id(parameter)] = loaded
+            module_name, _, attribute = name.rpartition(".")
+            setattr(model.get_submodule(module_name), attribute, loaded)
+        for name, buffer in list(model.named_buffers()):
+            if find_name(name) is None and name.endswith("e_score_correction_bias"):
+                value = torch.zeros(buffer.shape, dtype=buffer.dtype)
+            else:
+                value = read_weight(name, buffer.shape, target_dtype=buffer.dtype)
+            module_name, _, attribute = name.rpartition(".")
+            setattr(model.get_submodule(module_name), attribute, value)
     return model.eval()
