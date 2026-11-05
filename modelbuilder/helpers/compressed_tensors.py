@@ -209,7 +209,8 @@ class QwenCompressedTensorsModel(QuantizedModel):
         )
         return layer
 
-    def _dequantize(self, weight, weight_scale, weight_scale_2, name):
+    @staticmethod
+    def _dequantize(weight, weight_scale, weight_scale_2, name, dtype=torch.bfloat16):
         if weight_scale_2 is not None:
             if weight_scale is None or weight_scale_2.numel() != 1:
                 raise ValueError(f"NVFP4 tensor '{name}' has invalid scales.")
@@ -222,10 +223,10 @@ class QwenCompressedTensorsModel(QuantizedModel):
             values = torch.where((codes & 0x8) > 0, -magnitudes, magnitudes)
             block_scales = weight_scale.float()
             block_scales = block_scales.repeat_interleave(values.shape[1] // block_scales.shape[1], dim=1)
-            return (values * block_scales * weight_scale_2.float().item()).to(torch.bfloat16)
+            return (values * block_scales * weight_scale_2.float().item()).to(dtype)
         if weight.dtype == torch.float8_e4m3fn:
             scale = weight_scale.float()
             if scale.numel() != 1:
                 scale = scale.reshape(-1, 1)
-            return (weight.float() * scale).to(torch.bfloat16)
+            return (weight.float() * scale).to(dtype)
         return weight
