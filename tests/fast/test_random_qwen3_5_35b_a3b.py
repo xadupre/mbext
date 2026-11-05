@@ -199,7 +199,13 @@ class TestRandomQwen3_5_35BA3B(ExtTestCase):
             else:
                 feed["input_ids"] = input_ids.numpy()
             with torch.no_grad():
-                expected = model(**kwargs, past_key_values=past, use_cache=True)
+                expected = model(
+                    **kwargs,
+                    attention_mask=torch.from_numpy(feed["attention_mask"]),
+                    position_ids=torch.from_numpy(positions),
+                    past_key_values=past,
+                    use_cache=True,
+                )
             past = expected.past_key_values
             actual = dict(zip([value.name for value in session.get_outputs()], session.run(None, feed)))
             tolerance = 0.15 if precision == "int4" else (2e-3 if precision == "fp32" else 3e-2)
@@ -210,7 +216,8 @@ class TestRandomQwen3_5_35BA3B(ExtTestCase):
                 name.replace("present.", "past_key_values.", 1): value for name, value in actual.items() if name.startswith("present.")
             }
             past_length += length
-            input_ids = expected.logits[:, -1].argmax(-1, keepdim=True)
+            # Free-running token parity is tested separately.
+            input_ids = torch.tensor([[8 + step]], dtype=torch.int64)
             if inputs_embeds is not None:
                 with torch.no_grad():
                     inputs_embeds = model.model.language_model.embed_tokens(input_ids).numpy()
@@ -270,62 +277,31 @@ class TestRandomQwen3_5_35BA3B(ExtTestCase):
     def _check_multimodal(self, fp8=False, precision="fp32"):
         import torch
 
-        config, model, output_dir = self._build(
-            fp8=fp8, multimodal=True, precision=precision
-        )
+        config, model, output_dir = self._build(fp8=fp8, multimodal=True, precision=precision)
         with open(os.path.join(output_dir, "genai_config.json")) as stream:
             self.assertEqual(json.load(stream)["model"]["type"], "qwen3_5_moe")
         vision_session = self.check_ort(os.path.join(output_dir, "vision.onnx"))
         embedding_session = self.check_ort(os.path.join(output_dir, "embedding.onnx"))
-        vision_tolerance = {"fp32": 2e-4, "fp16": 3e-2, "int4": 0.15}[
-            precision
-        ]
-        embedding_tolerance = {"fp32": 2e-4, "fp16": 3e-2, "int4": 2e-4}[
-            precision
-        ]
+        vision_tolerance = {"fp32": 2e-4, "fp16": 3e-2, "int4": 0.15}[precision]
+        embedding_tolerance = {"fp32": 2e-4, "fp16": 3e-2, "int4": 2e-4}[precision]
         vc = config.vision_config
         for temporal in (1, 2):
             grid = torch.tensor([[temporal, 2, 2]], dtype=torch.int64)
             torch.manual_seed(temporal)
-            pixels = torch.randn(
-                temporal * 4,
-                vc.in_channels * vc.temporal_patch_size * vc.patch_size**2,
-            )
+            pixels = torch.randn(temporal * 4, vc.in_channels * vc.temporal_patch_size * vc.patch_size**2)
             with torch.no_grad():
                 expected = model.model.visual(pixels, grid).pooler_output.numpy()
-            (features,) = vision_session.run(
-                None,
-                {
-                    "pixel_values": pixels.numpy(),
-                    "image_grid_thw": grid.numpy(),
-                },
-            )
-            np.testing.assert_allclose(
-                features,
-                expected,
-                atol=vision_tolerance,
-                rtol=vision_tolerance,
-            )
+            (features,) = vision_session.run(None, {"pixel_values": pixels.numpy(), "image_grid_thw": grid.numpy()})
+            np.testing.assert_allclose(features, expected, atol=vision_tolerance, rtol=vision_tolerance)
             token = config.image_token_id if temporal == 1 else config.video_token_id
             ids = np.array([[5] + [token] * temporal + [6]], dtype=np.int64)
-            (embeds,) = embedding_session.run(
-                None, {"input_ids": ids, "image_features": features}
-            )
+            (embeds,) = embedding_session.run(None, {"input_ids": ids, "image_features": features})
             with torch.no_grad():
                 input_ids = torch.from_numpy(ids)
-                expected_embeds = (
-                    model.model.language_model.embed_tokens(input_ids).numpy()
-                )
+                expected_embeds = model.model.language_model.embed_tokens(input_ids).numpy()
             expected_embeds[0, 1:-1] = features
-            np.testing.assert_allclose(
-                embeds,
-                expected_embeds,
-                atol=embedding_tolerance,
-                rtol=embedding_tolerance,
-            )
-            self._check_decoder(
-                config, model, output_dir, precision=precision, inputs_embeds=embeds
-            )
+            np.testing.assert_allclose(embeds, expected_embeds, atol=embedding_tolerance, rtol=embedding_tolerance)
+            self._check_decoder(config, model, output_dir, precision=precision, inputs_embeds=embeds)
         return config, model, output_dir
 
     @hide_stdout()
@@ -352,10 +328,46 @@ class TestRandomQwen3_5_35BA3B(ExtTestCase):
     def test_fp8_int4_multimodal(self):
         self._check_multimodal(fp8=True, precision="int4")
 
-    def _check_generation(self, generation_test, fp8=False, text_only=False):
-        config, model, output_dir = self._build(fp8=fp8, text_only=text_only)
+    def _check_generation(self, generation_test, fp8=False, text_only=False, multimodal=False):
+        config, model, output_dir = self._build(fp8=fp8, text_only=text_only, multimodal=multimodal)
         tc = getattr(config, "text_config", config)
         generation_test(output_dir, model, tc.vocab_size, tc.eos_token_id)
+
+    # Opt into the native APIs without the shared helper's stale skips (#560).
+    def run_onnx_light_generation(self, output_dir, prompt_ids, max_new_tokens=5, eos_token_id=None):
+        import onnx_light.onnx as onnx
+        from onnx_light.onnx.helper import tensor_dtype_to_np_dtype
+        from onnx_light.onnx.reference import ReferenceEvaluator
+        from onnx_light_cpu import register_kernels_global
+
+        register_kernels_global()
+        model = onnx.load(os.path.join(output_dir, "model.onnx"), load_external_data=True)
+        feeds = {"input_ids": prompt_ids.detach().cpu().numpy()}
+        bindings = {(binding.input_name, binding.output_name) for binding in model.graph.persistent_bindings}
+        for value in model.graph.input:
+            if not value.name.startswith("past_key_values."):
+                continue
+            tensor = value.type.tensor_type
+            shape = [
+                dim.dim_value if dim.HasField("dim_value") else (feeds["input_ids"].shape[0] if axis == 0 else 0)
+                for axis, dim in enumerate(tensor.shape.dim)
+            ]
+            feeds[value.name] = np.zeros(shape, dtype=tensor_dtype_to_np_dtype(tensor.elem_type))
+            output_name = value.name.replace("past_key_values.", "present.", 1)
+            if (value.name, output_name) not in bindings:
+                binding = model.graph.persistent_bindings.add()
+                binding.input_name = value.name
+                binding.output_name = output_name
+        embedding = None
+        if any(value.name == "inputs_embeds" for value in model.graph.input):
+            embedding_model = onnx.load(os.path.join(output_dir, "embedding.onnx"), load_external_data=True)
+            features = next(value.type.tensor_type for value in embedding_model.graph.input if value.name == "image_features")
+            feeds["image_features"] = np.empty((0, features.shape.dim[1].dim_value), dtype=tensor_dtype_to_np_dtype(features.elem_type))
+            embedding = ReferenceEvaluator(embedding_model)
+        tokens = ReferenceEvaluator(model).generate(
+            feeds, max_new_tokens=max_new_tokens, eos_token_ids=None if eos_token_id is None else [eos_token_id], embedding=embedding
+        )
+        return tokens[0].tolist()
 
     @hide_stdout()
     @requires_genai("0.17.1")
@@ -377,52 +389,49 @@ class TestRandomQwen3_5_35BA3B(ExtTestCase):
     def test_fp8_causallm_genai_generation(self):
         self._check_generation(self.run_genai_generation_test, fp8=True, text_only=True)
 
+    @hide_stdout()
+    @requires_genai("0.17.1")
+    def test_multimodal_text_genai_generation(self):
+        self._check_generation(self.run_genai_generation_test, multimodal=True)
+
+    @hide_stdout()
+    @requires_genai("0.17.1")
+    def test_fp8_multimodal_text_genai_generation(self):
+        self._check_generation(self.run_genai_generation_test, fp8=True, multimodal=True)
+
     def _check_multimodal_generation(self, fp8=False, video=False, precision="fp32"):
         import onnxruntime_genai as og
         import torch
 
-        config, model, directory = self._build(
-            fp8=fp8, multimodal=True, precision=precision
-        )
+        config, model, directory = self._build(fp8=fp8, multimodal=True, precision=precision)
         token = config.video_token_id if video else config.image_token_id
-        prompt = torch.tensor(
-            [[5, config.vision_start_token_id, token, config.vision_end_token_id, 6]]
-        )
-        width = (
-            config.vision_config.in_channels
-            * config.vision_config.temporal_patch_size
-            * config.vision_config.patch_size**2
-        )
-        pixels = torch.linspace(-0.5, 0.5, 4 * width).reshape(4, width)
-        grid = torch.tensor([[1, 2, 2]], dtype=torch.int64)
-        media = (
-            {"pixel_values_videos": pixels, "video_grid_thw": grid}
-            if video
-            else {"pixel_values": pixels, "image_grid_thw": grid}
-        )
+        temporal, height, width = (2, 2, 2) if video else (1, 4, 4)
+        tokens_per_frame = height * width // config.vision_config.spatial_merge_size**2
+        frame = [config.vision_start_token_id] + [token] * tokens_per_frame + [config.vision_end_token_id]
+        prompt_ids = [5]
+        for frame_index in range(temporal):
+            prompt_ids.extend(frame + [6 + frame_index])
+        prompt = torch.tensor([prompt_ids])
+        token_types = torch.where(prompt == token, 2 if video else 1, 0)
+        patch_width = config.vision_config.in_channels * config.vision_config.temporal_patch_size * config.vision_config.patch_size**2
+        patch_count = temporal * height * width
+        pixels = torch.linspace(-0.5, 0.5, patch_count * patch_width).reshape(patch_count, patch_width)
+        grid = torch.tensor([[temporal, height, width]], dtype=torch.int64)
+        media = {"pixel_values_videos": pixels, "video_grid_thw": grid} if video else {"pixel_values": pixels, "image_grid_thw": grid}
         with torch.no_grad():
             expected = model.generate(
-                input_ids=prompt,
-                **media,
-                max_new_tokens=3,
-                do_sample=False,
-                pad_token_id=2,
+                input_ids=prompt, mm_token_type_ids=token_types, **media, max_new_tokens=3, do_sample=False, pad_token_id=2
             )[0].tolist()
         genai_model = og.Model(directory)
         params = og.GeneratorParams(genai_model)
-        params.set_search_options(
-            do_sample=False,
-            max_length=prompt.shape[1] + 3,
-            temperature=1.0,
-            top_k=1,
-        )
+        params.set_search_options(do_sample=False, max_length=prompt.shape[1] + 3, temperature=1.0, top_k=1)
         generator = og.Generator(genai_model, params)
         inputs = og.NamedTensors()
         inputs["pixel_values"] = pixels.numpy()
         inputs["image_grid_thw"] = grid.numpy()
-        inputs["num_image_tokens"] = np.array([1], dtype=np.int64)
+        inputs["num_image_tokens"] = np.array([temporal * tokens_per_frame], dtype=np.int64)
         if video:
-            inputs["video_grid_thw"] = grid.numpy()
+            inputs["video_grid_thw"] = np.tile([1, height, width], (temporal, 1)).astype(np.int64)
         generator.set_inputs(inputs)
         generator.append_tokens(prompt.numpy())
         actual = prompt[0].tolist()
@@ -494,8 +503,6 @@ class TestRandomQwen3_5_35BA3B(ExtTestCase):
 
     @hide_stdout()
     def test_onnx_light_generation(self):
-        # M-RoPE generation is tracked by onnx-light#5265; the helper
-        # reports that limitation rather than silently testing another runtime.
         self._check_generation(self.run_onnx_light_generation_test)
 
     @hide_stdout()
@@ -512,7 +519,9 @@ class TestRandomQwen3_5_35BA3B(ExtTestCase):
 
     @hide_stdout()
     def test_multimodal_onnx_light_generation(self):
-        # Native multi-graph generation is tracked by onnx-light#5264.
+        # Text-only split-pipeline generation works natively. Image/video
+        # generation still needs xadupre/onnx-light-cpu#1111 (vision Gelu) and
+        # xadupre/onnx-light#5801 (prefill-only embedding features).
         config, model, directory = self._build(multimodal=True)
         self.run_onnx_light_generation_test(directory, model, config.text_config.vocab_size, config.text_config.eos_token_id)
 
