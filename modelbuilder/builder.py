@@ -550,7 +550,7 @@ def create_model(model_name, input_path, output_dir, precision, execution_provid
         onnx_model = Phi3SmallLongRoPEModel(config, io_dtype, onnx_dtype, execution_provider, cache_dir, extra_options)
     elif config.architectures[0] == "Phi3VForCausalLM":
         print("WARNING: This is only generating the text component of the model. Setting `--extra_options exclude_embeds=true` by default.")
-        extra_options["exclude_embeds"] = True
+        extra_options.setdefault("exclude_embeds", True)
         from .builders.phi import Phi3VModel
 
         onnx_model = Phi3VModel(config, io_dtype, onnx_dtype, execution_provider, cache_dir, extra_options)

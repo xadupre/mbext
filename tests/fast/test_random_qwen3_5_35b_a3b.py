@@ -333,42 +333,6 @@ class TestRandomQwen3_5_35BA3B(ExtTestCase):
         tc = getattr(config, "text_config", config)
         generation_test(output_dir, model, tc.vocab_size, tc.eos_token_id)
 
-    # Opt into the native APIs without the shared helper's stale skips (#560).
-    def run_onnx_light_generation(self, output_dir, prompt_ids, max_new_tokens=5, eos_token_id=None):
-        import onnx_light.onnx as onnx
-        from onnx_light.onnx.helper import tensor_dtype_to_np_dtype
-        from onnx_light.onnx.reference import ReferenceEvaluator
-        from onnx_light_cpu import register_kernels_global
-
-        register_kernels_global()
-        model = onnx.load(os.path.join(output_dir, "model.onnx"), load_external_data=True)
-        feeds = {"input_ids": prompt_ids.detach().cpu().numpy()}
-        bindings = {(binding.input_name, binding.output_name) for binding in model.graph.persistent_bindings}
-        for value in model.graph.input:
-            if not value.name.startswith("past_key_values."):
-                continue
-            tensor = value.type.tensor_type
-            shape = [
-                dim.dim_value if dim.HasField("dim_value") else (feeds["input_ids"].shape[0] if axis == 0 else 0)
-                for axis, dim in enumerate(tensor.shape.dim)
-            ]
-            feeds[value.name] = np.zeros(shape, dtype=tensor_dtype_to_np_dtype(tensor.elem_type))
-            output_name = value.name.replace("past_key_values.", "present.", 1)
-            if (value.name, output_name) not in bindings:
-                binding = model.graph.persistent_bindings.add()
-                binding.input_name = value.name
-                binding.output_name = output_name
-        embedding = None
-        if any(value.name == "inputs_embeds" for value in model.graph.input):
-            embedding_model = onnx.load(os.path.join(output_dir, "embedding.onnx"), load_external_data=True)
-            features = next(value.type.tensor_type for value in embedding_model.graph.input if value.name == "image_features")
-            feeds["image_features"] = np.empty((0, features.shape.dim[1].dim_value), dtype=tensor_dtype_to_np_dtype(features.elem_type))
-            embedding = ReferenceEvaluator(embedding_model)
-        tokens = ReferenceEvaluator(model).generate(
-            feeds, max_new_tokens=max_new_tokens, eos_token_ids=None if eos_token_id is None else [eos_token_id], embedding=embedding
-        )
-        return tokens[0].tolist()
-
     @hide_stdout()
     @requires_genai("0.17.1")
     def test_genai_generation(self):

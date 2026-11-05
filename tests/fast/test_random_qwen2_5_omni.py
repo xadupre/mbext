@@ -174,6 +174,7 @@ class TestRandomQwen25Omni(ExtTestCase):
             execution_provider="cpu",
             cache_dir=cache_dir,
             num_hidden_layers=num_hidden_layers,
+            exclude_embeds=False,
         )
 
         # Pass model=None to skip PyTorch comparison: mRoPE position-id handling
