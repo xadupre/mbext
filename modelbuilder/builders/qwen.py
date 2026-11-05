@@ -3518,8 +3518,8 @@ class Qwen35MoeTextModel(Qwen35TextModel):
             # use +inf to preserve the "no clamp" behavior when the model omits it.
             self.moe_attrs["swiglu_limit"] = float("inf")
 
-        self.moe_intermediate_size = getattr(config, "moe_intermediate_size", 512)
-        self.shared_expert_intermediate_size = getattr(config, "shared_expert_intermediate_size", self.moe_intermediate_size)
+        self.moe_intermediate_size = getattr(tc, "moe_intermediate_size", 512)
+        self.shared_expert_intermediate_size = getattr(tc, "shared_expert_intermediate_size", self.moe_intermediate_size)
 
         # MoE layers use MoE/QMoE ops instead of individual MatMul nodes,
         # so remove any /mlp/ MatMul overrides that don't apply.

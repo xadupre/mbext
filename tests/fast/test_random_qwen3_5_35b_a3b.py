@@ -166,9 +166,27 @@ class TestRandomQwen3_5_35BA3B(ExtTestCase):
         )
         return config, model, output_dir
 
+    def _check_expert_shapes(self, config, output_dir, precision):
+        import onnx_light.onnx as onnx
+
+        tc = getattr(config, "text_config", config)
+        graph = onnx.load(os.path.join(output_dir, "model.onnx"), load_external_data=False).graph
+        initializers = {value.name: tuple(value.dims) for value in graph.initializer}
+        for layer_id in range(tc.num_hidden_layers):
+            with self.subTest(layer=layer_id):
+                basename = f"model.layers.{layer_id}.moe.experts"
+                for projection, output_width, input_width in (
+                    ("gate_up_proj", 2 * tc.moe_intermediate_size, tc.hidden_size),
+                    ("down_proj", tc.hidden_size, tc.moe_intermediate_size),
+                ):
+                    self.assertEqual(initializers[f"{basename}.{projection}.bias"], (tc.num_experts, output_width))
+                    if precision != "int4":
+                        self.assertEqual(initializers[f"{basename}.{projection}.weight"], (tc.num_experts, output_width, input_width))
+
     def _check_decoder(self, config, model, output_dir, precision="fp32", provider="cpu", inputs_embeds=None):
         import torch
 
+        self._check_expert_shapes(config, output_dir, precision)
         tc = getattr(config, "text_config", config)
         session = self.check_ort(os.path.join(output_dir, "model.onnx"), provider=provider)
         dtype = self.get_input_np_dtype(precision)
@@ -221,6 +239,29 @@ class TestRandomQwen3_5_35BA3B(ExtTestCase):
             if inputs_embeds is not None:
                 with torch.no_grad():
                     inputs_embeds = model.model.language_model.embed_tokens(input_ids).numpy()
+
+    @hide_stdout()
+    def test_expert_widths_from_text_config(self):
+        from onnx_light.onnx import TensorProto
+        from transformers import Qwen3_5MoeForCausalLM
+
+        from modelbuilder.builders.qwen import Qwen35MoeTextModel
+
+        for text_only in (False, True):
+            with self.subTest(text_only=text_only):
+                config = _make_config(text_only)
+                if not text_only:
+                    config.moe_intermediate_size = 512
+                    config.shared_expert_intermediate_size = 512
+                builder = Qwen35MoeTextModel(config, TensorProto.FLOAT, TensorProto.FLOAT, "cpu", "", {})
+                self.assertEqual(builder.moe_intermediate_size, 64)
+                self.assertEqual(builder.shared_expert_intermediate_size, 96)
+                tc = getattr(config, "text_config", config)
+                mlp = Qwen3_5MoeForCausalLM(tc).model.layers[0].mlp
+                builder.make_shared_expert(0, mlp.shared_expert, mlp.shared_expert_gate, "hidden_states")
+                for output in ("gate_proj/Sigmoid", "gate_proj/Mul", "Mul"):
+                    name = f"/model/layers.0/shared_expert/{output}/output_0"
+                    self.assertEqual(builder.values[name]["shape"], ("batch_size", "sequence_length", 96))
 
     @hide_stdout()
     def test_unquantized_checkpoint_fp32_cpu(self):
