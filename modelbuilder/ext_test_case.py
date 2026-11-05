@@ -1251,43 +1251,30 @@ class ExtTestCase(unittest.TestCase):
     ) -> List[int]:
         """Run greedy generation through onnx-light with onnx-light-cpu kernels.
 
-        Multi-graph decoders consuming ``inputs_embeds`` and decoders using
-        higher-rank position IDs are skipped with their tracked implementation
-        issues. Missing CPU kernels are handled the same way.
+        Split embedding/decoder exports use the native embedding pipeline.
+        Auxiliary embedding inputs are empty for text-only generation. Position
+        IDs (including M-RoPE) and persistent decoder state are maintained by
+        the native runtime; ONNX Runtime is never used as a fallback.
         """
         import onnx_light.onnx as onnx
         from onnx_light.onnx.helper import tensor_dtype_to_np_dtype
         from onnx_light.onnx.reference import ReferenceEvaluator
-        from onnx_light_cpu import register_kernels_global
+        from onnx_light_cpu import register_kernels_global, registered_kernels
 
         register_kernels_global()
         model = onnx.load(os.path.join(output_dir, "model.onnx"), load_external_data=True)
         input_names = {value.name for value in model.graph.input}
-        if "input_ids" not in input_names:
-            self.skipTest("onnx-light multi-graph generation is tracked by " "https://github.com/xadupre/onnx-light/issues/5264")
-        position_inputs = [value for value in model.graph.input if value.name == "position_ids"]
-        if position_inputs and len(position_inputs[0].type.tensor_type.shape.dim) != 2:
-            self.skipTest("onnx-light M-RoPE generation is tracked by " "https://github.com/xadupre/onnx-light/issues/5265")
+        embedding_model = None
+        if "input_ids" not in input_names and "inputs_embeds" in input_names:
+            with open(os.path.join(output_dir, "genai_config.json")) as stream:
+                config = json.load(stream)
+            self.assertIn("embedding", config["model"], "Export token embeddings for native generation of an inputs_embeds decoder.")
+            embedding_model = onnx.load(os.path.join(output_dir, config["model"]["embedding"]["filename"]), load_external_data=True)
 
-        unsupported_ops = {
-            ("com.microsoft", "SkipLayerNormalization"): ("https://github.com/xadupre/onnx-light-cpu/issues/896"),
-            ("com.microsoft", "MoE"): ("https://github.com/xadupre/onnx-light-cpu/issues/897"),
-        }
-        for node in model.graph.node:
-            issue = unsupported_ops.get((node.domain, node.op_type))
-            if issue is not None:
-                self.skipTest(f"onnx-light-cpu does not support {node.domain}::{node.op_type}; " f"tracked by {issue}")
-            if node.domain == "com.microsoft" and node.op_type == "GroupQueryAttention":
-                rotary_interleaved = next((attribute.i for attribute in node.attribute if attribute.name == "rotary_interleaved"), 0)
-                if rotary_interleaved:
-                    self.skipTest(
-                        "onnx-light-cpu interleaved GQA rotary support is tracked by "
-                        "https://github.com/xadupre/onnx-light-cpu/issues/898"
-                    )
-            if node.op_type == "Greater" and any("attn_mask_reformat/attn_mask_subgraph/Gather/output_0" in name for name in node.input):
-                self.skipTest(
-                    "onnx-light Phi-3 LongRoPE generation failure is tracked by " "https://github.com/xadupre/onnx-light/issues/5266"
-                )
+        models = [model] if embedding_model is None else [model, embedding_model]
+        if any(node.domain == "com.microsoft" and node.op_type == "QuickGelu" for component in models for node in component.graph.node):
+            if not any(kernel.domain == "com.microsoft" and kernel.op_type == "QuickGelu" for kernel in registered_kernels()):
+                self.skipTest("Installed onnx-light-cpu has no com.microsoft::QuickGelu kernel (required by this graph).")
 
         output_names = {value.name for value in model.graph.output}
         existing_bindings = {(binding.input_name, binding.output_name) for binding in model.graph.persistent_bindings}
@@ -1296,12 +1283,6 @@ class ExtTestCase(unittest.TestCase):
                 continue
             output_name = input_name.replace("past_key_values.", "present.", 1)
             if output_name in output_names and (input_name, output_name) not in existing_bindings:
-                input_uses = sum(input_name in node.input for node in model.graph.node)
-                if input_uses != 1:
-                    self.skipTest(
-                        f"onnx-light persistent state requires one consumer, but {input_name!r} "
-                        f"has {input_uses}; tracked by https://github.com/xadupre/onnx-light/issues/5269"
-                    )
                 binding = model.graph.persistent_bindings.add()
                 binding.input_name = input_name
                 binding.output_name = output_name
@@ -1311,8 +1292,12 @@ class ExtTestCase(unittest.TestCase):
         else:
             prompt = np.asarray(prompt_ids, dtype=np.int64)
         feeds = {"input_ids": prompt}
-        automatic_inputs = {"input_ids", "attention_mask", "position_ids"}
-        for value in model.graph.input:
+        automatic_inputs = {"input_ids", "attention_mask", "position_ids", "inputs_embeds"}
+        decoder_inputs = {value.name for value in model.graph.input}
+        values = list(model.graph.input)
+        if embedding_model is not None:
+            values.extend(embedding_model.graph.input)
+        for value in values:
             if value.name in automatic_inputs:
                 continue
             tensor_type = value.type.tensor_type
@@ -1320,14 +1305,18 @@ class ExtTestCase(unittest.TestCase):
             for axis, dim in enumerate(tensor_type.shape.dim):
                 if dim.HasField("dim_value"):
                     shape.append(dim.dim_value)
-                elif axis == 0 or "batch" in dim.dim_param:
+                elif value.name in decoder_inputs and (axis == 0 or "batch" in dim.dim_param):
                     shape.append(prompt.shape[0])
                 else:
                     shape.append(0)
             feeds[value.name] = np.zeros(tuple(shape), dtype=tensor_dtype_to_np_dtype(tensor_type.elem_type))
 
         tokens = ReferenceEvaluator(model).generate(
-            feeds, max_new_tokens=max_new_tokens, temperature=0.0, eos_token_ids=None if eos_token_id is None else [eos_token_id]
+            feeds,
+            max_new_tokens=max_new_tokens,
+            temperature=0.0,
+            eos_token_ids=None if eos_token_id is None else [eos_token_id],
+            embedding=None if embedding_model is None else ReferenceEvaluator(embedding_model),
         )
         return tokens[0].tolist()
 

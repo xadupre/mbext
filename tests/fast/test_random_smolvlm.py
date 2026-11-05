@@ -211,8 +211,6 @@ class TestRandomSmolVLM(ExtTestCase):
     def test_multimodal_onnx_light_generation(self):
         model = self._make_model()
         output_dir = self._export(model, multimodal=True)
-        # Multi-graph inputs_embeds generation is not yet implemented:
-        # https://github.com/xadupre/onnx-light/issues/5264
         self.run_onnx_light_generation_test(output_dir, model, 128, 2, prompt_ids=torch.tensor([[1, 4, 5, 6]]))
 
     @hide_stdout()

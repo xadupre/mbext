@@ -114,6 +114,105 @@ class TestOnnxGenerate(ExtTestCase):
                     self.assertEqual(tokens, expected)
 
     @hide_stdout()
+    def test_native_mrope_multi_consumer_cache_and_embedding(self):
+        """Native positions and shared persistent state work in both graph layouts."""
+        import json
+        import os
+        import tempfile
+
+        prompt = np.array([[1, 2]], dtype=np.int64)
+        cache = "past_key_values.0.key"
+        present = "present.0.key"
+        for split in (False, True):
+            for bound in (False, True):
+                with self.subTest(split=split, bound=bound), tempfile.TemporaryDirectory() as output_dir:
+                    token_input = "inputs_embeds" if split else "input_ids"
+                    decoder = oh.make_model(
+                        oh.make_graph(
+                            [
+                                oh.make_node("Cast", [token_input], ["ids"], to=TINT64),
+                                oh.make_node("ReduceSum", ["past_conv.0", "conv_axes"], ["conv_sum"], keepdims=0),
+                                oh.make_node("Add", ["ids", "conv_sum"], ["cached_ids"]),
+                                oh.make_node("Concat", [cache, "cached_ids"], [present], axis=1),
+                                oh.make_node("ReduceSum", [cache], ["cache_sum"], keepdims=0),
+                                oh.make_node("Gather", ["position_ids", "zero"], ["positions"], axis=0),
+                                oh.make_node("Add", ["positions", "one"], ["next_positions"]),
+                                oh.make_node("Add", ["next_positions", "cache_sum"], ["next_ids"]),
+                                oh.make_node("OneHot", ["next_ids", "depth", "values"], ["logits"]),
+                            ],
+                            "mrope_shared_cache",
+                            [
+                                oh.make_tensor_value_info(token_input, TFLOAT if split else TINT64, ["batch", "sequence"]),
+                                oh.make_tensor_value_info("position_ids", TINT64, [3, "batch", "sequence"]),
+                                oh.make_tensor_value_info(cache, TINT64, ["batch", "past_sequence"]),
+                                oh.make_tensor_value_info("past_conv.0", TINT64, ["batch", 1, 2]),
+                            ],
+                            [
+                                oh.make_tensor_value_info("logits", TFLOAT, ["batch", "sequence", 16]),
+                                oh.make_tensor_value_info(present, TINT64, ["batch", "total_sequence"]),
+                            ],
+                            [
+                                onh.from_array(np.array(0, dtype=np.int64), "zero"),
+                                onh.from_array(np.array(1, dtype=np.int64), "one"),
+                                onh.from_array(np.array(16, dtype=np.int64), "depth"),
+                                onh.from_array(np.array([0, 10], dtype=np.float32), "values"),
+                                onh.from_array(np.array([1, 2], dtype=np.int64), "conv_axes"),
+                            ],
+                        ),
+                        opset_imports=[oh.make_opsetid("", 18)],
+                    )
+                    if bound:
+                        binding = decoder.graph.persistent_bindings.add()
+                        binding.input_name, binding.output_name = cache, present
+                    onnx.save(decoder, os.path.join(output_dir, "model.onnx"))
+                    if split:
+                        embedding = oh.make_model(
+                            oh.make_graph(
+                                [
+                                    oh.make_node("Cast", ["input_ids"], ["float_ids"], to=TFLOAT),
+                                    oh.make_node("ReduceSum", ["image_features"], ["features_sum"], keepdims=0),
+                                    oh.make_node("Add", ["float_ids", "features_sum"], ["inputs_embeds"]),
+                                ],
+                                "text_embedding",
+                                [
+                                    oh.make_tensor_value_info("input_ids", TINT64, ["batch", "sequence"]),
+                                    oh.make_tensor_value_info("image_features", TFLOAT, ["num_images", 4]),
+                                ],
+                                [oh.make_tensor_value_info("inputs_embeds", TFLOAT, ["batch", "sequence"])],
+                            ),
+                            opset_imports=[oh.make_opsetid("", 18)],
+                        )
+                        onnx.save(embedding, os.path.join(output_dir, "text_embedding.onnx"))
+                        with open(os.path.join(output_dir, "genai_config.json"), "w") as stream:
+                            json.dump({"model": {"embedding": {"filename": "text_embedding.onnx"}}}, stream)
+                    for _ in range(2):
+                        tokens = self.run_onnx_light_generation(output_dir, prompt, max_new_tokens=3)
+                        self.assertEqual(tokens, [1, 2, 2, 6, 9])
+                    np.testing.assert_array_equal(prompt, [[1, 2]])
+
+    @hide_stdout()
+    def test_native_quick_gelu_capability(self):
+        import os
+        import tempfile
+
+        from onnx_light_cpu import registered_kernels
+
+        model = _make_tiny_lm_no_cache(fixed_token=3)
+        model.graph.node[0].output.clear()
+        model.graph.node[0].output.append("raw_logits")
+        model.graph.node.append(oh.make_node("QuickGelu", ["raw_logits"], ["logits"], domain="com.microsoft"))
+        model.opset_import.append(oh.make_opsetid("com.microsoft", 1))
+        available = any(kernel.domain == "com.microsoft" and kernel.op_type == "QuickGelu" for kernel in registered_kernels())
+        with tempfile.TemporaryDirectory() as output_dir:
+            onnx.save(model, os.path.join(output_dir, "model.onnx"))
+            prompt = np.array([[1, 2]], dtype=np.int64)
+            if available:
+                self.assertEqual(self.run_onnx_light_generation(output_dir, prompt, max_new_tokens=1), [1, 2, 3])
+            else:
+                with self.assertRaisesRegex(unittest.SkipTest, "no com.microsoft::QuickGelu kernel"):
+                    self.run_onnx_light_generation(output_dir, prompt, max_new_tokens=1)
+
+    @hide_stdout()
     def test_generate_return_session(self):
         """return_session=True returns a 3-tuple (tokens, session, feeds)."""
         from onnxruntime import InferenceSession

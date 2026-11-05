@@ -462,6 +462,7 @@ class TestRandomPhi3V(ExtTestCase):
             execution_provider="cpu",
             cache_dir=cache_dir,
             num_hidden_layers=num_hidden_layers,
+            exclude_embeds=False,
         )
 
         generation_test(output_dir, model, config.vocab_size, config.eos_token_id)
