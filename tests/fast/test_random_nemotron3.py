@@ -9,7 +9,7 @@ import unittest
 
 import numpy as np
 
-from modelbuilder.ext_test_case import ExtTestCase, hide_stdout, requires_cuda, requires_genai
+from modelbuilder.ext_test_case import ExtTestCase, hide_stdout, requires_cuda, requires_genai, _ort_io_binding_helper
 
 MODEL_IDS = (
     "nvidia/NVIDIA-Nemotron-3-Nano-4B-BF16",
@@ -31,7 +31,7 @@ class TestRandomNemotron3(ExtTestCase):
             layers_block_type=["linear_attention", "mlp" if variant == 0 else "moe", "full_attention", "linear_attention"],
             num_attention_heads=4,
             num_key_value_heads=2,
-            head_dim=16,
+            head_dim=32,
             max_position_embeddings=128,
             mamba_num_heads=4,
             mamba_head_dim=16,
@@ -145,10 +145,11 @@ class TestRandomNemotron3(ExtTestCase):
         with open(os.path.join(model_dir, "model.safetensors.index.json"), "w") as stream:
             json.dump({"metadata": {}, "weight_map": weight_map}, stream)
 
-    def _export(self, variant, precision="fp32", provider="cpu", modelopt=False):
+    def _export(self, variant, precision="fp32", provider="cpu", modelopt=False, model=None):
         from modelbuilder.builder import create_model
 
-        model = self._make_model(variant)
+        if model is None:
+            model = self._make_model(variant)
         prefix = f"test_random_nemotron3_{variant}_{precision}_{provider}_{modelopt}"
         model_dir = self.get_model_dir(prefix)
         output_dir, cache_dir = self.get_dirs(prefix)
@@ -169,16 +170,22 @@ class TestRandomNemotron3(ExtTestCase):
             precision=precision,
             execution_provider=provider,
             cache_dir=cache_dir,
+            use_qdq=precision == "int4",
         )
         return model, output_dir
 
-    def _check_prefill_decode(self, variant, precision="fp32", provider="cpu", modelopt=False):
+    def _check_prefill_decode(self, variant, precision="fp32", provider="cpu", modelopt=False, batch=1, model=None):
+        import ml_dtypes
         import torch
 
-        model, output_dir = self._export(variant, precision, provider, modelopt=modelopt)
+        model, output_dir = self._export(variant, precision, provider, modelopt=modelopt, model=model)
+        if precision == "int4":
+            import onnx_light.onnx as onnx
+
+            graph = onnx.load(os.path.join(output_dir, "model.onnx"), load_external_data=False).graph
+            self.assertTrue(any(node.op_type == "DequantizeLinear" for node in graph.node))
         sess = self.check_ort(os.path.join(output_dir, "model.onnx"), provider=provider)
-        dtype = np.float16 if precision == "fp16" else np.float32
-        batch = 1
+        dtype = {"fp16": np.float16, "bf16": ml_dtypes.bfloat16}.get(precision, np.float32)
         state = {}
         for value in sess.get_inputs():
             if value.name.startswith("past_key_values."):
@@ -187,7 +194,7 @@ class TestRandomNemotron3(ExtTestCase):
         rng = np.random.default_rng(42)
         past = None
         total_length = 0
-        for length in (5, 1, 3):
+        for length in ((5, 1, 3) if batch == 1 else (5, 1, 1)):
             ids = rng.integers(3, model.config.vocab_size, (batch, length))
             total_length += length
             mask = np.ones((batch, total_length), dtype=np.int64)
@@ -198,7 +205,25 @@ class TestRandomNemotron3(ExtTestCase):
                 **state,
             }
             feed = {v.name: feed[v.name] for v in sess.get_inputs()}
-            outputs = dict(zip([o.name for o in sess.get_outputs()], sess.run(None, feed)))
+            if precision == "bf16":
+                bound_outputs = {}
+                for output in sess.get_outputs():
+                    if output.name == "logits":
+                        shape = (batch, length, model.config.vocab_size)
+                    else:
+                        input_name = output.name.replace("present.", "past_key_values.")
+                        shape = list(state[input_name].shape)
+                        if output.name.endswith((".key", ".value")):
+                            shape[2] = total_length
+                    output_dtype = torch.float32 if output.type == "tensor(float)" else torch.bfloat16
+                    bound_outputs[output.name] = torch.empty(shape, dtype=output_dtype, device=provider)
+                _ort_io_binding_helper(sess, feed, bound_outputs, device=provider)
+                outputs = {
+                    name: value.float().cpu().numpy().astype(dtype if value.dtype == torch.bfloat16 else np.float32)
+                    for name, value in bound_outputs.items()
+                }
+            else:
+                outputs = dict(zip([o.name for o in sess.get_outputs()], sess.run(None, feed)))
             with torch.no_grad():
                 expected = model(torch.from_numpy(ids), attention_mask=torch.from_numpy(mask), past_key_values=past, use_cache=True)
             past = expected.past_key_values
@@ -206,8 +231,8 @@ class TestRandomNemotron3(ExtTestCase):
             self.assertEqualArray(
                 expected.logits.float().numpy(),
                 outputs["logits"].astype(np.float32),
-                atol=3e-3 if precision == "fp16" else 2e-5,
-                rtol=3e-3 if precision == "fp16" else 2e-4,
+                atol={"fp16": 3e-3, "bf16": 2e-2, "int4": 0.15}.get(precision, 2e-5),
+                rtol={"fp16": 3e-3, "bf16": 2e-2, "int4": 0.1}.get(precision, 2e-4),
             )
             for name in state:
                 state[name] = outputs[name.replace("past_key_values.", "present.")]
@@ -219,10 +244,33 @@ class TestRandomNemotron3(ExtTestCase):
                 self._check_prefill_decode(variant)
 
     @hide_stdout()
+    def test_prefill_decode_batch_fp32_cpu(self):
+        for variant in range(3):
+            with self.subTest(model=MODEL_IDS[variant]):
+                self._check_prefill_decode(variant, batch=2)
+
+    @hide_stdout()
+    def test_router_underflow(self):
+        import torch
+
+        model = self._make_model(1)
+        with torch.no_grad():
+            model.model.embeddings.weight.fill_(1)
+            model.model.layers[0].mixer.out_proj.weight.zero_()
+            model.model.layers[1].mixer.gate.weight.fill_(-1000)
+        self._check_prefill_decode(1, model=model)
+
+    @hide_stdout()
     def test_prefill_decode_fp16_cpu(self):
         for variant in range(3):
             with self.subTest(model=MODEL_IDS[variant]):
                 self._check_prefill_decode(variant, "fp16")
+
+    @hide_stdout()
+    def test_prefill_decode_int4_cpu(self):
+        for variant in range(3):
+            with self.subTest(model=MODEL_IDS[variant]):
+                self._check_prefill_decode(variant, "int4", modelopt=variant > 0)
 
     @hide_stdout()
     def test_modelopt_prefill_decode(self):
@@ -254,11 +302,32 @@ class TestRandomNemotron3(ExtTestCase):
                     load_nemotron_checkpoint(model_dir, model.config, model.config.num_hidden_layers)
 
     @hide_stdout()
+    def test_expert_dispatch_does_not_gather_weights(self):
+        import onnx_light.onnx as onnx
+
+        _, output_dir = self._export(1)
+        graph = onnx.load(os.path.join(output_dir, "model.onnx"), load_external_data=False).graph
+        expert_weights = {value.name for value in graph.initializer if ".moe.experts." in value.name}
+        self.assertTrue(expert_weights)
+        for node in graph.node:
+            if any(name in expert_weights for name in node.input):
+                self.assertEqual(node.op_type, "MatMul")
+        self.assertTrue(any(node.op_type == "ScatterND" for node in graph.node))
+
+    @hide_stdout()
     @requires_cuda()
     def test_prefill_decode_fp16_cuda(self):
         for variant in range(3):
             with self.subTest(model=MODEL_IDS[variant]):
                 self._check_prefill_decode(variant, "fp16", "cuda")
+
+    @hide_stdout()
+    @requires_cuda()
+    def test_prefill_decode_bf16_cuda(self):
+        # ORT's CPU MatMul has no BF16 kernel; BF16 export runs on CUDA (#564).
+        for variant in range(3):
+            with self.subTest(model=MODEL_IDS[variant]):
+                self._check_prefill_decode(variant, "bf16", "cuda", modelopt=variant > 0)
 
     @hide_stdout()
     @requires_genai()
