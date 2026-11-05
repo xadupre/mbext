@@ -3,7 +3,7 @@
 # Licensed under the MIT License.  See License.txt in the project root for
 # license information.
 # --------------------------------------------------------------------------
-"""Install the GitHub wheel matching the onnx-light pin in pyproject.toml."""
+"""Install the GitHub wheel for the onnx-light pinned or minimum version."""
 
 import platform
 import re
@@ -16,9 +16,9 @@ from pathlib import Path
 def release_version(pyproject=Path(__file__).resolve().parents[1] / "pyproject.toml"):
     with pyproject.open("rb") as stream:
         dependencies = tomllib.load(stream)["project"]["dependencies"]
-    versions = [match[1] for dependency in dependencies if (match := re.fullmatch(r"onnx-light==(\d+(?:\.\d+)+)", dependency))]
+    versions = [match[1] for dependency in dependencies if (match := re.fullmatch(r"onnx-light(?:==|>=)(\d+(?:\.\d+)+)", dependency))]
     if len(versions) != 1:
-        raise ValueError("Expected exactly one exact onnx-light version pin.")
+        raise ValueError("Expected exactly one onnx-light pinned or minimum version.")
     return versions[0]
 
 
