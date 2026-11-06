@@ -66,7 +66,7 @@ class TestRandomNemotron3(ExtTestCase):
         return model
 
     def _write_modelopt_checkpoint(
-        self, model, model_dir, variant, fp8_experts=False, omit_lm_head=False
+        self, model, model_dir, variant, fp8_experts=False, omit_lm_head=False, packed_fused_experts=False, native_namespace=False
     ):
         import torch
         from safetensors.torch import save_file
@@ -140,19 +140,17 @@ class TestRandomNemotron3(ExtTestCase):
                 )
         if variant == 2:
             prefix = "backbone.layers.1.mixer.experts"
-            suffixes = (
-                ("weight", "weight_scale")
-                if fp8_experts
-                else ("weight", "weight_scale", "weight_scale_2")
-            )
-            for suffix in suffixes:
-                name = f"{prefix}.up_proj" if suffix == "weight" else f"{prefix}.up_proj.{suffix}"
-                state[name] = torch.stack(
-                    [
-                        state.pop(f"{prefix}.{i}.up_proj.{suffix}")
-                        for i in range(model.config.n_routed_experts)
-                    ]
+            for projection in (("up_proj", "down_proj") if packed_fused_experts else ("up_proj",)):
+                suffixes = (
+                    ("weight", "weight_scale") if fp8_experts and projection == "up_proj" else ("weight", "weight_scale", "weight_scale_2")
                 )
+                for suffix in suffixes:
+                    name = f"{prefix}.{projection}" if suffix == "weight" else f"{prefix}.{projection}.{suffix}"
+                    if suffix == "weight" and packed_fused_experts:
+                        name += ".weight_packed"
+                    state[name] = torch.stack(
+                        [state.pop(f"{prefix}.{i}.{projection}.{suffix}") for i in range(model.config.n_routed_experts)]
+                    )
             prefix = "backbone.layers.1.mixer.shared_experts.up_proj"
             state[prefix + ".weight_packed"] = state.pop(prefix + ".weight")
             state[prefix + ".weight_global_scale"] = state.pop(prefix + ".weight_scale_2").reciprocal()
@@ -171,6 +169,10 @@ class TestRandomNemotron3(ExtTestCase):
         with open(config_path, "w") as stream:
             json.dump(config, stream)
         # Exercise the sharded layout used by the real 30B checkpoints.
+        if native_namespace:
+            state = {
+                ("model." + name[len("backbone.") :] if name.startswith("backbone.") else name): value for name, value in state.items()
+            }
         names = list(state)
         weight_map = {}
         for shard, selected in enumerate((names[::2], names[1::2])):
@@ -383,6 +385,21 @@ class TestRandomNemotron3(ExtTestCase):
         actual = loaded.model.layers[1].mixer.experts.up_proj
         self.assertEqual(actual.dtype, torch.float32)
         self.assertEqualArray(expected.detach().numpy(), actual.detach().numpy())
+
+    @hide_stdout()
+    def test_modelopt_packed_fused_expert_aliases(self):
+        from modelbuilder.helpers.nemotron import load_nemotron_checkpoint
+
+        for native_namespace in (False, True):
+            with self.subTest(native_namespace=native_namespace):
+                model = self._make_model(2)
+                model_dir = self.get_model_dir(f"test_nemotron3_packed_fused_experts_{native_namespace}")
+                self._write_modelopt_checkpoint(model, model_dir, 2, packed_fused_experts=True, native_namespace=native_namespace)
+                loaded = load_nemotron_checkpoint(model_dir, model.config, model.config.num_hidden_layers)
+                for projection in ("up_proj", "down_proj"):
+                    expected = getattr(model.model.layers[1].mixer.experts, projection)
+                    actual = getattr(loaded.model.layers[1].mixer.experts, projection)
+                    self.assertEqualArray(expected.detach().numpy(), actual.detach().numpy())
 
     @hide_stdout()
     def test_modelopt_preserves_unquantized_parameter_dtype(self):

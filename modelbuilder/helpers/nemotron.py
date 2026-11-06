@@ -38,7 +38,7 @@ def load_nemotron_checkpoint(directory, config, num_layers):
             if candidate in checkpoint.files:
                 return candidate
             packed = candidate.removesuffix(".weight") + ".weight_packed"
-            if name.endswith(".weight") and packed in checkpoint.files:
+            if name.endswith((".weight", ".experts.up_proj", ".experts.down_proj")) and packed in checkpoint.files:
                 return packed
         return None
 
