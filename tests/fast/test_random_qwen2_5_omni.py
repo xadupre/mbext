@@ -211,6 +211,7 @@ class TestRandomQwen25OmniVideo(ExtTestCase):
         output_dir, cache_dir = self.get_dirs(prefix)
         torch.manual_seed(42)
         model = Qwen2_5OmniThinkerForConditionalGeneration(config).eval()
+        visual = model.visual if hasattr(model, "visual") else model.model.visual
         model.save_pretrained(model_dir)
         self.make_word_level_tokenizer().save_pretrained(model_dir)
         create_model(
@@ -239,8 +240,8 @@ class TestRandomQwen25OmniVideo(ExtTestCase):
                 pixels = torch.randn(int(grid.prod(dim=1).sum()), in_dim)
                 feeds = prepare_qwen25_omni_vision_inputs(pixels.numpy(), grid.numpy(), vc)
                 with torch.no_grad():
-                    pt_features = model.visual(pixels, grid_thw=grid).pooler_output.numpy()
-                    rot_pos_emb = getattr(model.visual, "rot_pos_emb", None)
+                    pt_features = visual(pixels, grid_thw=grid).pooler_output.numpy()
+                    rot_pos_emb = getattr(visual, "rot_pos_emb", None)
                     if rot_pos_emb is not None:
                         pt_rotary = rot_pos_emb(grid).numpy()
                 self.assertEqual(feeds["frame_ids"].dtype, np.int64)
@@ -260,7 +261,7 @@ class TestRandomQwen25OmniVideo(ExtTestCase):
                 feeds = {"input_ids": ids, "image_features": visual_features, "audio_features": audio_features}
                 actual = embedding.run(None, feeds)[0]
                 with torch.no_grad():
-                    expected = model.model.embed_tokens(torch.from_numpy(ids)).numpy().astype(dtype)
+                    expected = model.get_input_embeddings()(torch.from_numpy(ids)).numpy().astype(dtype)
                 expected[0, visual_mask] = visual_features
                 expected[0, audio_mask] = audio_features
                 np.testing.assert_allclose(actual, expected, atol=atol)
@@ -276,8 +277,8 @@ class TestRandomQwen25OmniVideo(ExtTestCase):
             None, {"input_ids": ids.numpy(), "image_features": video_features, "audio_features": np.empty((0, 256), dtype=dtype)}
         )[0]
         with torch.no_grad():
-            pt_embeds = model.model.embed_tokens(ids)
-            pt_embeds[ids == 121] = model.visual(pixels, grid_thw=grid).pooler_output
+            pt_embeds = model.get_input_embeddings()(ids)
+            pt_embeds[ids == 121] = visual(pixels, grid_thw=grid).pooler_output
             pt_output = model(inputs_embeds=pt_embeds, position_ids=positions, use_cache=True)
         feeds = {
             "inputs_embeds": embeds,
@@ -293,7 +294,7 @@ class TestRandomQwen25OmniVideo(ExtTestCase):
         next_id = torch.tensor([[10]])
         next_positions = (ids.shape[1] + rope_deltas).unsqueeze(0).expand(3, 1, 1)
         with torch.no_grad():
-            next_embeds = model.model.embed_tokens(next_id)
+            next_embeds = model.get_input_embeddings()(next_id)
             expected = model(
                 inputs_embeds=next_embeds, position_ids=next_positions, past_key_values=pt_output.past_key_values, use_cache=True
             ).logits.numpy()
@@ -476,6 +477,8 @@ class TestRandomQwen25OmniVision(ExtTestCase):
         torch.manual_seed(42)
         model = Qwen2_5OmniThinkerForConditionalGeneration(config)
         model.eval()
+        visual = model.visual if hasattr(model, "visual") else model.model.visual
+        audio_tower = model.audio_tower if hasattr(model, "audio_tower") else model.model.audio_tower
         model.save_pretrained(model_dir)
 
         vocab = {"<unk>": 0, "<s>": 1, "</s>": 2}
@@ -533,9 +536,9 @@ class TestRandomQwen25OmniVision(ExtTestCase):
 
         # Compute PyTorch reference (always in float32).
         with torch.no_grad():
-            pt_vis_out = model.visual(hidden_states=pixel_values, grid_thw=grid_thw)
+            pt_vis_out = visual(hidden_states=pixel_values, grid_thw=grid_thw)
             pt_vis_features = pt_vis_out.pooler_output.numpy().astype(np.float32)
-            rot_pos_emb = getattr(model.visual, "rot_pos_emb", None)
+            rot_pos_emb = getattr(visual, "rot_pos_emb", None)
             if rot_pos_emb is not None:
                 rotary_pos_emb = rot_pos_emb(grid_thw)
 
@@ -572,7 +575,7 @@ class TestRandomQwen25OmniVision(ExtTestCase):
         feature_lens = torch.tensor([n_frames], dtype=torch.long)
         aftercnn_lens = torch.tensor([n_conv_out], dtype=torch.long)
         with torch.no_grad():
-            pt_aud_out = model.audio_tower(input_features_2d, feature_lens=feature_lens, aftercnn_lens=aftercnn_lens)
+            pt_aud_out = audio_tower(input_features_2d, feature_lens=feature_lens, aftercnn_lens=aftercnn_lens)
         pt_aud_features = pt_aud_out.last_hidden_state.numpy().astype(np.float32)
 
         audio_sess = self.check_ort(audio_onnx_path)
@@ -591,7 +594,7 @@ class TestRandomQwen25OmniVision(ExtTestCase):
         seq_len = 5
         input_ids_t = torch.randint(0, config.text_config.vocab_size, (batch_size, seq_len))
         with torch.no_grad():
-            inputs_embeds = model.model.embed_tokens(input_ids_t).numpy().astype(np_dtype)
+            inputs_embeds = model.get_input_embeddings()(input_ids_t).numpy().astype(np_dtype)
 
         text_sess = self.check_ort(text_onnx_path)
         onnx_input_names = {inp.name for inp in text_sess.get_inputs()}

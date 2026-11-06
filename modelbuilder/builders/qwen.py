@@ -1114,7 +1114,7 @@ class Qwen25OmniVisionEncoderModel(VisionEncoderModel):
         """Load HF weights and build the vision encoder ONNX graph."""
         hf_model = self.load_hf_model(input_path)
         hf_model.eval()
-        vis = hf_model.visual
+        vis = hf_model.visual if hasattr(hf_model, "visual") else hf_model.model.visual
 
         # --- Graph inputs ---
         self.make_graph_input("pixel_values", ir.DataType.FLOAT, [None, self.in_feat_dim])
@@ -1407,7 +1407,7 @@ class Qwen25OmniAudioEncoderModel(AudioEncoderModel):
         """Load HF weights and build the audio encoder ONNX graph."""
         hf_model = self.load_hf_model(input_path)
         hf_model.eval()
-        audio = hf_model.audio_tower
+        audio = hf_model.audio_tower if hasattr(hf_model, "audio_tower") else hf_model.model.audio_tower
 
         n = None  # dynamic sequence length
 
@@ -1602,7 +1602,7 @@ class Qwen25OmniEmbeddingModel(EmbeddingModel):
         )
 
     def get_embed_weight(self, hf_model):
-        return hf_model.model.embed_tokens.weight.detach().float().numpy()
+        return hf_model.get_input_embeddings().weight.detach().float().numpy()
 
     def make_model(self, input_path):
         """Load HF weights and build the embedding+scatter ONNX graph."""
