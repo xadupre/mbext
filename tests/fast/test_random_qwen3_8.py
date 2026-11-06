@@ -8,7 +8,6 @@ import os
 import unittest
 
 import numpy as np
-import pytest
 
 from modelbuilder.ext_test_case import (
     ExtTestCase,
@@ -107,7 +106,6 @@ class TestRandomQwen3_8(ExtTestCase):
             reference = model.generate(prompt, max_new_tokens=5, do_sample=False, eos_token_id=None, pad_token_id=0)[0].tolist()
         self.run_onnx_light_generation_test(output_dir, None, 0, None, prompt_ids=prompt, pt_tokens=reference)
 
-    @pytest.mark.xfail(strict=True, raises=ValueError, reason="#570: generated media tokens cannot be embedded with empty features")
     @requires_onnx_light("0.2.7", cpu_version="0.2.7")
     @hide_stdout()
     def test_qwen3_8_image_features_onnx_light_generate(self):
@@ -142,6 +140,7 @@ class TestRandomQwen3_8(ExtTestCase):
                 eos_token_id=None,
                 pad_token_id=0,
             )[0].tolist()
+        self.assertIn(config.video_token_id, reference[prompt.shape[1] :])
         self.run_onnx_light_generation_test(
             output_dir,
             None,
@@ -152,6 +151,46 @@ class TestRandomQwen3_8(ExtTestCase):
             extra_feeds={"image_features": features, "position_ids": positions.numpy()},
             prefill_only_inputs=["image_features"],
         )
+
+    @requires_onnx_light("0.2.7", cpu_version="0.2.7")
+    @hide_stdout()
+    def test_qwen3_8_embedding_empty_media_features(self):
+        import onnx_light.onnx as onnx
+        import torch
+        from onnx_light.onnx.reference import ReferenceEvaluator
+        from onnx_light_cpu import register_kernels_global
+        from onnxruntime.capi.onnxruntime_pybind11_state import InvalidArgument
+
+        config, model, output_dir = self._build_multimodal_model()
+        path = os.path.join(output_dir, "embedding.onnx")
+        register_kernels_global()
+        native = ReferenceEvaluator(onnx.load(path, load_external_data=True))
+        ort = self.check_ort(path)
+        features = np.arange(2 * config.text_config.hidden_size, dtype=np.float32).reshape(2, -1)
+        cases = (
+            ([64], features[:0]),
+            ([config.image_token_id], features[:0]),
+            ([config.video_token_id], features[:0]),
+            ([3, config.image_token_id, 4, config.video_token_id], features[:0]),
+            ([3, config.image_token_id, 4, config.video_token_id], features),
+        )
+        for ids, image_features in cases:
+            with self.subTest(ids=ids, feature_rows=image_features.shape[0]):
+                input_ids = np.array([ids], dtype=np.int64)
+                with torch.no_grad():
+                    expected = model.get_input_embeddings()(torch.from_numpy(input_ids)).numpy()
+                if image_features.shape[0]:
+                    mask = (input_ids[0] == config.image_token_id) | (input_ids[0] == config.video_token_id)
+                    expected[0, mask] = image_features
+                feeds = {"input_ids": input_ids, "image_features": image_features}
+                for evaluator in (native, ort):
+                    (actual,) = evaluator.run(None, feeds)
+                    self.assertEqualArray(expected, actual)
+        feeds = {"input_ids": np.array([[config.image_token_id, config.video_token_id]], dtype=np.int64), "image_features": features[:1]}
+        for evaluator, error in ((native, ValueError), (ort, InvalidArgument)):
+            with self.subTest(evaluator=type(evaluator).__name__, mismatched_features=True):
+                with self.assertRaisesRegex(error, "updates"):
+                    evaluator.run(None, feeds)
 
     @staticmethod
     def _quantize_fp8(weight):
