@@ -17,6 +17,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   MLX Qwen3.5 multimodal checkpoints without expanding language-model weights
   into BF16.
 - Adds Qwen2.5 Omni video inference support.
+- Corrects DeepSeek grouped sigmoid routing, including selection-only correction
+  biases, normalization, and routed scaling.
+- Supports real Transformers PhiMoE packed experts and inference SparseMixer
+  routing, recognizing both PhiMoE architecture names. Honors requested export
+  options; the legacy expert layout requires symmetric INT4 weights and CUDA.
 - Enables CPU BF16 group-query attention.
 
 ### Export & memory usage
@@ -34,11 +39,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - Automatically emits a shared-weight `pipeline.onnx` PipelineProto for
   multi-model CLI exports, preserving standalone models and reporting components
   not supported by the pipeline schema.
+- Shares sparse selected-token expert execution between DeepSeek and PhiMoE,
+  using static expert weights and a single token/slot scatter. Preserves expert
+  accumulation order and FP16 SiLU rounding with FP32 activation intermediates.
+- Preserves DeepSeek router checkpoint reuse unless the router is eligible for
+  explicitly requested INT4 quantization.
 
 ### Tests & fixes
 
 - Adds offline ONNX Runtime parity and ONNX Runtime GenAI generation coverage for
   Qwen3.8 and packed MLX exports, plus generation tests with onnx-light-cpu.
+- Enables offline native onnx-light five-token greedy generation parity for
+  DeepSeek and real PhiMoE, with routing, cached-decode, FP16 saturation, and
+  legacy export-option regressions.
 - Preserves standalone `pipeline.onnx` exports when cleaning up stale pipeline
   artifacts, including equivalent output paths.
 - Corrects macOS peak RSS units in the zero-copy initializer benchmark.
