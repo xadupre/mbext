@@ -79,6 +79,22 @@ For a complete text, image and video export, add
 before export to the requested precision. This is not a native FP8 ONNX export,
 and loading the dequantized weights requires additional host memory.
 
+NVIDIA Nemotron 3.5 Bolt uses **Gemma 4**, not Nemotron-H. Export the
+Hugging Face BF16 companion as a standalone text model:
+
+```bash
+python -m modelbuilder.builder \
+    -m nvidia/NVIDIA-Nemotron-3.5-Bolt-E4B-BF16 \
+    -o nemotron-bolt-cpu-int4 \
+    -p int4 -e cpu -c cache_dir
+```
+
+The export retains token embeddings because Bolt's per-layer embeddings require
+token IDs. Its sliding/global attention dimensions, shared KV layers, and
+per-layer inputs are preserved. This does not import the Q4_K_M GGUF file from
+`nvidia/NVIDIA-Nemotron-3.5-Bolt-E4B-4GB` or export audio/vision components.
+Fast tests use reduced random BF16 checkpoints, not the full trained weights.
+
 To convert an MLX Qwen3.5 multimodal checkpoint directly, use:
 
 ```bash

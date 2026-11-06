@@ -7,6 +7,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Model support
 
+- Adds the Hugging Face BF16 companion of NVIDIA Nemotron 3.5 Bolt E4B through
+  the Gemma 4 text exporter, with per-layer embeddings, mixed sliding/global
+  head dimensions, shared KV layers, and offline parity/generation tests.
+  The separate 4GB Q4_K_M GGUF checkpoint is not imported.
 - Adds Nemotron 3 Nano 4B BF16, Nano 30B-A3B NVFP4, and Nemotron 3.5
   Lightning 30B-A3B NVFP4 conversion, with offline hybrid-model parity and
   generation tests. ModelOpt NVFP4/FP8 weights are dequantized for export;

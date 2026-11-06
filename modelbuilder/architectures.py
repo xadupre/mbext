@@ -27,6 +27,7 @@ _MODEL_IDS: dict[str, tuple[str, ...]] = {
     "Gemma2ForCausalLM": ("google/gemma-2-2b",),
     "Gemma3ForCausalLM": ("google/gemma-3-1b-it",),
     "Gemma3ForConditionalGeneration": ("google/gemma-3-4b-it",),
+    "Gemma4ForConditionalGeneration": ("google/gemma-4-E4B-it", "nvidia/NVIDIA-Nemotron-3.5-Bolt-E4B-BF16"),
     "GPT2LMHeadModel": ("openai-community/gpt2",),
     "GptOssForCausalLM": ("openai/gpt-oss-20b",),
     "GraniteForCausalLM": ("ibm-granite/granite-3.0-2b-base",),
