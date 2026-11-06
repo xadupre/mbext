@@ -8,7 +8,17 @@ import unittest
 
 import numpy as np
 
-from modelbuilder.ext_test_case import ExtTestCase, hide_stdout, requires_cuda, requires_genai, requires_onnx_light, requires_transformers
+from modelbuilder.ext_test_case import (
+    ExtTestCase,
+    _ort_io_binding_helper,
+    hide_stdout,
+    onnx_dtype_to_torch_dtype,
+    ort_dtype_to_onnx_dtype,
+    requires_cuda,
+    requires_genai,
+    requires_onnx_light,
+    requires_transformers,
+)
 
 MODEL_NAME = "nvidia/NVIDIA-Nemotron-3.5-Bolt-E4B-BF16"
 
@@ -123,13 +133,21 @@ class TestRandomNemotronBolt(ExtTestCase):
                 "position_ids": np.arange(position, position + len(ids), dtype=np.int64)[None],
                 **state,
             }
-            outputs = dict(
-                zip([value.name for value in session.get_outputs()], session.run(None, {k: v for k, v in feeds.items() if k in names}))
-            )
+            outputs = {}
+            for value in session.get_outputs():
+                if value.name == "logits":
+                    shape = (1, len(ids), model.config.text_config.vocab_size)
+                else:
+                    shape = list(state[value.name.replace("present.", "past_key_values.")].shape)
+                    shape[2] = position + len(ids)
+                outputs[value.name] = torch.empty(
+                    shape, dtype=onnx_dtype_to_torch_dtype(ort_dtype_to_onnx_dtype(value.type)), device=provider
+                )
+            _ort_io_binding_helper(session, {k: v for k, v in feeds.items() if k in names}, outputs, device=provider)
             # ORT's optimized QDQ MatMuls can quantize activations as well.
             tolerance = {"fp32": 1e-4, "fp16": 1e-2, "bf16": 3e-2, "int4": 0.1}[precision]
             with self.subTest(position=position):
-                self.assertEqualArray(reference.logits.numpy(), outputs["logits"].astype(np.float32), atol=tolerance, rtol=tolerance)
+                self.assertEqualArray(reference.logits.numpy(), outputs["logits"].float().cpu().numpy(), atol=tolerance, rtol=tolerance)
                 if precision == "fp32":
                     for name in state:
                         layer_id = int(name.split(".")[1])
@@ -137,7 +155,7 @@ class TestRandomNemotronBolt(ExtTestCase):
                             cache = past.layers[layer_id]
                             expected = cache.keys if name.endswith(".key") else cache.values
                             self.assertEqualArray(
-                                expected.numpy(), outputs[name.replace("past_key_values.", "present.")], atol=1e-4, rtol=1e-4
+                                expected.numpy(), outputs[name.replace("past_key_values.", "present.")].cpu().numpy(), atol=1e-4, rtol=1e-4
                             )
             state = {name: outputs[name.replace("past_key_values.", "present.")] for name in state}
             position += len(ids)
