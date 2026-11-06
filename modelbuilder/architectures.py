@@ -51,6 +51,7 @@ _MODEL_IDS: dict[str, tuple[str, ...]] = {
     "Phi3VForCausalLM": ("microsoft/Phi-3-vision-128k-instruct",),
     "Phi4MultimodalForCausalLM": ("microsoft/Phi-4-multimodal-instruct",),
     "PhiMoEForCausalLM": ("microsoft/Phi-3.5-MoE-instruct",),
+    "PhimoeForCausalLM": ("microsoft/Phi-3.5-MoE-instruct",),
     "Qwen2ForCausalLM": ("Qwen/Qwen2-0.5B",),
     "Qwen2_5OmniForConditionalGeneration": ("Qwen/Qwen2.5-Omni-3B",),
     "Qwen2_5OmniThinkerForConditionalGeneration": ("Qwen/Qwen2.5-Omni-3B",),

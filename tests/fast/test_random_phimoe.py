@@ -7,9 +7,8 @@ import os
 import unittest
 
 import numpy as np
-import pytest
 
-from modelbuilder.ext_test_case import ExtTestCase, hide_stdout, requires_cuda, run_session_or_io_binding
+from modelbuilder.ext_test_case import ExtTestCase, hide_stdout, requires_cuda, requires_onnx_light, run_session_or_io_binding
 
 _MODEL_NAME = "microsoft/Phi-3.5-MoE-instruct"
 
@@ -27,6 +26,37 @@ _NUM_EXPERTS_PER_TOK = 2
 _MAX_POS = 128
 _ORIG_MAX_POS = 64
 _VOCAB_SIZE = 1000
+
+
+def _make_native_phimoe_config():
+    from transformers import PhimoeConfig
+
+    config = PhimoeConfig(
+        architectures=["PhiMoEForCausalLM"],
+        hidden_size=_HIDDEN_SIZE,
+        intermediate_size=_INTERMEDIATE_SIZE,
+        num_hidden_layers=1,
+        num_attention_heads=_NUM_ATTN_HEADS,
+        num_key_value_heads=_NUM_KV_HEADS,
+        num_local_experts=_NUM_EXPERTS,
+        num_experts_per_tok=_NUM_EXPERTS_PER_TOK,
+        vocab_size=257,
+        max_position_embeddings=_MAX_POS,
+        bos_token_id=1,
+        eos_token_id=2,
+        pad_token_id=0,
+        rope_parameters={
+            "rope_type": "longrope",
+            "short_factor": [1.0] * _ROTARY_DIM_HALF,
+            "long_factor": [1.0] * _ROTARY_DIM_HALF,
+            "original_max_position_embeddings": _ORIG_MAX_POS,
+            "factor": _MAX_POS / _ORIG_MAX_POS,
+            "short_mscale": 1.0,
+            "long_mscale": 1.0,
+        },
+    )
+    config.original_max_position_embeddings = _ORIG_MAX_POS
+    return config
 
 
 def _make_phimoe_config():
@@ -247,47 +277,191 @@ def _make_phimoe_builder(config, io_dtype, onnx_dtype, ep, cache_dir, extra_opti
 
 
 class TestPhiMoE(ExtTestCase):
-    @pytest.mark.xfail(strict=True, raises=AttributeError, reason="#568: real PhimoeDecoderLayer has no block_sparse_moe")
     @hide_stdout()
     def test_phimoe_fp16_cpu_onnx_light_generate(self):
         import torch
-        from transformers import PhimoeConfig, PhimoeForCausalLM
+        from transformers import PhimoeForCausalLM
 
-        config = PhimoeConfig(
-            architectures=["PhiMoEForCausalLM"],
-            hidden_size=_HIDDEN_SIZE,
-            intermediate_size=_INTERMEDIATE_SIZE,
-            num_hidden_layers=1,
-            num_attention_heads=_NUM_ATTN_HEADS,
-            num_key_value_heads=_NUM_KV_HEADS,
-            num_local_experts=_NUM_EXPERTS,
-            num_experts_per_tok=_NUM_EXPERTS_PER_TOK,
-            vocab_size=257,
-            max_position_embeddings=_MAX_POS,
-            bos_token_id=1,
-            eos_token_id=2,
-            pad_token_id=0,
-            rope_parameters={
-                "rope_type": "longrope",
-                "short_factor": [1.0] * _ROTARY_DIM_HALF,
-                "long_factor": [1.0] * _ROTARY_DIM_HALF,
-                "original_max_position_embeddings": _ORIG_MAX_POS,
-                "factor": _MAX_POS / _ORIG_MAX_POS,
-                "short_mscale": 1.0,
-                "long_mscale": 1.0,
-            },
-        )
-        config.original_max_position_embeddings = _ORIG_MAX_POS
         torch.manual_seed(42)
-        model = PhimoeForCausalLM(config).half().eval()
+        model = PhimoeForCausalLM(_make_native_phimoe_config()).half().eval()
         self.run_onnx_light_model_generation_test(model, _MODEL_NAME, "native_phimoe", precision="fp16")
+
+    @hide_stdout()
+    @requires_onnx_light("0.2.7", cpu_version="0.2.7")
+    def test_sparse_mixer_routing_and_packed_experts(self):
+        import torch
+        from onnx_light.onnx import TensorProto
+        from onnx_light.onnx.reference import ReferenceEvaluator
+        from onnx_light_cpu import register_kernels_global
+        from transformers import PhimoeForCausalLM
+
+        from modelbuilder.builders.base import Model
+        from modelbuilder.builders.phi import Phi3MoELongRoPEModel
+
+        register_kernels_global()
+        torch.manual_seed(42)
+        config = _make_native_phimoe_config()
+        mlp = PhimoeForCausalLM(config).half().eval().model.layers[0].mlp
+        hidden = torch.zeros(2, 3, config.hidden_size, dtype=torch.float16)
+        hidden.reshape(6, -1)[:, :4] = torch.tensor(
+            [
+                [1.0, 0.99, 0.7, -0.5],
+                [1.0, 1.0, 1.0, 1.0],
+                [-1.0, -1.01, -1.2, -2.0],
+                [1.0, 0.9804, 0.9795, -1.0],
+                [0.0, 0.0, 0.0, 0.0],
+                [3.0, -1.0, -2.0, -3.0],
+            ],
+            dtype=torch.float16,
+        )
+        with torch.no_grad():
+            mlp.router.weight.zero_()
+            mlp.router.weight[:, :4].copy_(torch.eye(4))
+            _, expected_weights, expected_indices = mlp.router(hidden.reshape(-1, config.hidden_size))
+            expected = mlp(hidden).numpy()
+        _, cache = self.get_dirs("phimoe_routing")
+        builder = Model(config, TensorProto.FLOAT16, TensorProto.FLOAT16, "cpu", cache, {})
+        builder.make_graph_input("hidden", TensorProto.FLOAT16, [None, None, config.hidden_size])
+        weights, indices = Phi3MoELongRoPEModel.make_sparse_mixer_routing(builder, 0, mlp.router, "hidden")
+        output = builder.make_selected_swiglu_experts(0, mlp.experts, "hidden", indices, weights)
+        builder.make_graph_output(weights, TensorProto.FLOAT, [None, 2])
+        builder.make_graph_output(indices, TensorProto.INT64, [None, 2])
+        builder.make_graph_output(output, TensorProto.FLOAT16, [None, None, config.hidden_size])
+        actual_weights, actual_indices, actual = ReferenceEvaluator(builder.to_model_proto()).run(None, {"hidden": hidden.numpy()})
+        np.testing.assert_array_equal(actual_indices, expected_indices.numpy())
+        np.testing.assert_allclose(actual_weights, expected_weights.float().numpy(), atol=5e-4, rtol=1e-3)
+        np.testing.assert_allclose(actual, expected, atol=1e-5, rtol=2e-3)
+
+    @hide_stdout()
+    def test_real_phimoe_fp16_cpu_prefill_and_decode(self):
+        import torch
+        from transformers import PhimoeForCausalLM
+
+        torch.manual_seed(42)
+        config = _make_native_phimoe_config()
+        model = PhimoeForCausalLM(config).half().eval()
+        self.run_random_weights_test(
+            model=model,
+            tokenizer=self.make_word_level_tokenizer(),
+            model_name=_MODEL_NAME,
+            basename="real_phimoe_fp16_cpu",
+            precision="fp16",
+            provider="cpu",
+            num_hidden_layers=1,
+            num_key_value_heads=_NUM_KV_HEADS,
+            head_size=_HEAD_SIZE,
+            vocab_size=config.vocab_size,
+            atol={"fp16": 2e-3},
+            rtol={"fp16": 1e-2},
+        )
+
+    @hide_stdout()
+    def test_legacy_phimoe_rejects_float_expert_weights(self):
+        from onnx_light.onnx import TensorProto
+
+        config = _make_phimoe_config()
+        _, cache = self.get_dirs("legacy_phimoe_fp16")
+        builder = _make_phimoe_builder(config, TensorProto.FLOAT16, TensorProto.FLOAT16, "cpu", cache, {})
+        with self.assertRaisesRegex(NotImplementedError, "Legacy PhiMoE.*INT4"):
+            builder.make_model(cache)
+
+    @hide_stdout()
+    def test_legacy_phimoe_rejects_asymmetric_int4(self):
+        from onnx_light.onnx import TensorProto
+
+        from modelbuilder.builder import set_onnx_dtype
+
+        config = _make_phimoe_config()
+        _, cache = self.get_dirs("legacy_phimoe_asymmetric_int4")
+        options = {"int4_is_symmetric": False}
+        dtype = set_onnx_dtype("int4", options)
+        builder = _make_phimoe_builder(config, TensorProto.FLOAT16, dtype, "cuda", cache, options)
+        with self.assertRaisesRegex(NotImplementedError, "requires symmetric INT4"):
+            builder.make_model(cache)
+
+    @hide_stdout()
+    def test_legacy_phimoe_int4_expert_weights(self):
+        import json
+        import subprocess
+        import sys
+
+        # CPU kernel registration in other tests overrides CUDA QMoE shape inference.
+        code = """
+import json
+import runpy
+import sys
+import tempfile
+from onnx_light.onnx import TensorProto
+
+collector = None
+if len(sys.argv) > 2:
+    import coverage
+    collector = coverage.Coverage(**json.loads(sys.argv[2]))
+    collector.start()
+try:
+    fixtures = runpy.run_path(sys.argv[1])
+    with tempfile.TemporaryDirectory() as cache:
+        builder = fixtures["_make_phimoe_builder"](
+            fixtures["_make_phimoe_config"](), TensorProto.FLOAT16, TensorProto.INT4, "cuda", cache, {}
+        )
+        builder.make_model(cache)
+        graph = builder.to_model_proto()
+        moe = next(node for node in graph.graph.node if node.op_type == "QMoE")
+        initializers = {value.name: value for value in graph.graph.initializer}
+        assert all(initializers[moe.input[i]].data_type == TensorProto.UINT8 for i in (2, 5, 8))
+finally:
+    if collector is not None:
+        collector.stop()
+        collector.save()
+"""
+        command = [sys.executable, "-c", code, os.path.abspath(__file__)]
+        if "coverage" in sys.modules:
+            collector = sys.modules["coverage"].Coverage.current()
+            if collector is not None:
+                # Preserve coverage of the legacy branch in the isolated process.
+                command.append(
+                    json.dumps(
+                        {
+                            "data_file": collector.config.data_file,
+                            "source": collector.get_option("run:source"),
+                            "branch": collector.get_option("run:branch"),
+                            "data_suffix": True,
+                        }
+                    )
+                )
+        result = subprocess.run(command, capture_output=True, text=True, timeout=60)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    @hide_stdout()
+    def test_legacy_phimoe_rejects_cpu(self):
+        from onnx_light.onnx import TensorProto
+
+        config = _make_phimoe_config()
+        _, cache = self.get_dirs("legacy_phimoe_cpu")
+        builder = _make_phimoe_builder(config, TensorProto.FLOAT16, TensorProto.INT4, "cpu", cache, {})
+        with self.assertRaisesRegex(NotImplementedError, "Legacy PhiMoE QMoE requires CUDA"):
+            builder.make_model(cache)
+
+    @hide_stdout()
+    def test_sparse_mixer_rejects_unsupported_top_k(self):
+        from onnx_light.onnx import TensorProto
+        from transformers import PhimoeForCausalLM
+
+        from modelbuilder.builders.base import Model
+        from modelbuilder.builders.phi import Phi3MoELongRoPEModel
+
+        config = _make_native_phimoe_config()
+        config.num_experts_per_tok = 1
+        router = PhimoeForCausalLM(config).model.layers[0].mlp.router
+        _, cache = self.get_dirs("phimoe_unsupported_top_k")
+        builder = Model(config, TensorProto.FLOAT16, TensorProto.FLOAT16, "cpu", cache, {})
+        with self.assertRaisesRegex(NotImplementedError, "requires exactly two experts"):
+            Phi3MoELongRoPEModel.make_sparse_mixer_routing(builder, 0, router, "hidden")
 
     def _build_phimoe_onnx(self, output_dir, cache_dir):
         """Build the PhiMoE ONNX model with synthetic random weights.
 
-        ``Phi3MoELongRoPEModel`` asserts ``io_dtype == FLOAT16`` and forces
-        ``onnx_dtype = INT4`` (QMoE), which is the only supported combination
-        for this builder.
+        The legacy expert layout requires FP16 I/O and INT4 weights (QMoE).
         """
         from modelbuilder.builder import set_io_dtype, set_onnx_dtype
 

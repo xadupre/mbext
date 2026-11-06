@@ -530,15 +530,12 @@ def create_model(model_name, input_path, output_dir, precision, execution_provid
         from .builders.phi import Phi3MiniLongRoPEModel
 
         onnx_model = Phi3MiniLongRoPEModel(config, io_dtype, onnx_dtype, execution_provider, cache_dir, extra_options)
-    elif config.architectures[0] == "PhiMoEForCausalLM" and config.max_position_embeddings != config.original_max_position_embeddings:
-        print(
-            "WARNING: This model only works for CUDA currently because `MoE` is only supported for CUDA in ONNX Runtime. Setting `--execution_provider cuda` by default."
-        )
-        print("WARNING: This model currently only supports the quantized version. Setting `--precision int4` by default.")
+    elif (
+        config.architectures[0] in ("PhiMoEForCausalLM", "PhimoeForCausalLM")
+        and config.max_position_embeddings != config.original_max_position_embeddings
+    ):
         from .builders.phi import Phi3MoELongRoPEModel
 
-        execution_provider = "cuda"
-        onnx_dtype = set_onnx_dtype("int4", extra_options)
         onnx_model = Phi3MoELongRoPEModel(config, io_dtype, onnx_dtype, execution_provider, cache_dir, extra_options)
     elif config.architectures[0] == "Phi3SmallForCausalLM" and config.max_position_embeddings == config.original_max_position_embeddings:
         from .builders.phi import Phi3SmallModel

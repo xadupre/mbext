@@ -403,6 +403,14 @@ class Phi3MoELongRoPEModel(MistralModel):
         self.make_rotary_embedding_multi_cache()
 
     def make_layer(self, layer_id, layer):
+        if not hasattr(layer, "mlp"):
+            if self.onnx_dtype != ir.INT4:
+                raise NotImplementedError(
+                    "Legacy PhiMoE block_sparse_moe requires symmetric INT4 weights; "
+                    "export with precision='int4' and int4_is_symmetric=True."
+                )
+            if self.ep != "cuda":
+                raise NotImplementedError("Legacy PhiMoE QMoE requires CUDA; export with execution_provider='cuda'.")
         # Each LLM decoder layer is typically defined as:
         # input_layernorm --> attention --> output_layernorm --> MoE
         self.make_layernorm(
@@ -416,12 +424,78 @@ class Phi3MoELongRoPEModel(MistralModel):
         self.make_layernorm(
             layer_id, layer.post_attention_layernorm, skip=True, simple=self.layernorm_attrs["simple"], location="post_attention"
         )
-        self.make_block_sparse_moe(layer_id, layer.block_sparse_moe, root_input=self.layernorm_attrs["output_0"])
+        if hasattr(layer, "mlp"):
+            root_input = self.layernorm_attrs["output_0"]
+            weights, indices = self.make_sparse_mixer_routing(layer_id, layer.mlp.router, root_input)
+            self.layernorm_attrs["skip_input"] = self.make_selected_swiglu_experts(
+                layer_id, layer.mlp.experts, root_input, indices, weights
+            )
+        else:
+            self.make_block_sparse_moe(layer_id, layer.block_sparse_moe, root_input=self.layernorm_attrs["output_0"])
 
         self.layernorm_attrs["first_layernorm"] = False
         if layer_id == self.num_layers - 1:
             # Norm after last decoder layer of model (last layer --> norm)
             self.layernorm_attrs["last_layernorm"] = True
+
+    def make_sparse_mixer_routing(self, layer_id, router, root_input):
+        """Inference SparseMixer: independently normalize the first and second picks."""
+        if router.top_k != 2:
+            raise NotImplementedError("PhiMoE SparseMixer requires exactly two experts per token.")
+        basename = f"/model/layers.{layer_id}/moe/router"
+        num_experts = self.moe_attrs["num_experts"]
+        matmul = self.make_matmul(router, f"{basename}/MatMul", root_input)
+        if not self.quant_attrs["int4"]["quantize_moe_router"]:
+            if matmul not in self.quant_attrs["int4"]["nodes_to_exclude"]:
+                self.quant_attrs["int4"]["nodes_to_exclude"].append(matmul)
+        scores = self.make_reshape(f"{basename}/scores", [f"{matmul}/output_0", [-1, num_experts]], self.io_dtype, ["tokens", num_experts])
+        self.make_node("Abs", [scores], [f"{basename}/absolute"], name=f"{basename}/Abs")
+        self.make_initializer(torch.tensor(float("-inf")), f"{basename}/negative_inf", to=self.io_dtype)
+        self.make_initializer(torch.tensor(2 * router.router_jitter_noise), f"{basename}/threshold", to=self.io_dtype)
+        self.make_initializer(torch.arange(num_experts), f"{basename}/expert_indices")
+        choices = []
+        multipliers = []
+        remaining = scores
+        for step in range(2):
+            prefix = f"{basename}/pick.{step}"
+            self.make_cast(f"{prefix}/selection_float", remaining, ir.FLOAT, ["tokens", num_experts])
+            self.make_node(
+                "TopK",
+                [f"{prefix}/selection_float/output_0", "/model/constants/INT64/[1]"],
+                [f"{prefix}/maximum_float", f"{prefix}/index"],
+                name=f"{prefix}/TopK",
+                axis=-1,
+            )
+            self.make_cast(f"{prefix}/maximum", f"{prefix}/maximum_float", self.io_dtype, ["tokens", 1])
+            self.make_node("Max", [f"{basename}/absolute", f"{prefix}/maximum/output_0"], [f"{prefix}/factor"], name=f"{prefix}/Max")
+            self.make_sub(f"{prefix}/difference", [f"{prefix}/maximum/output_0", scores], self.io_dtype, ["tokens", num_experts])
+            self.make_div(f"{prefix}/ratio", [f"{prefix}/difference/output_0", f"{prefix}/factor"], self.io_dtype, ["tokens", num_experts])
+            self.make_greater(f"{prefix}/mask", [f"{prefix}/ratio/output_0", f"{basename}/threshold"], ["tokens", num_experts])
+            self.make_where(
+                f"{prefix}/masked",
+                [f"{prefix}/mask/output_0", f"{basename}/negative_inf", remaining],
+                self.io_dtype,
+                ["tokens", num_experts],
+            )
+            probability = self.make_softmax(f"{prefix}/probability", f"{prefix}/masked/output_0", self.io_dtype, ["tokens", num_experts])
+            self.make_node(
+                "GatherElements", [probability, f"{prefix}/index"], [f"{prefix}/weight"], name=f"{prefix}/GatherElements", axis=-1
+            )
+            choices.append(f"{prefix}/index")
+            self.make_cast(f"{prefix}/weight_float", f"{prefix}/weight", ir.FLOAT, ["tokens", 1])
+            multipliers.append(f"{prefix}/weight_float/output_0")
+            if step == 0:
+                self.make_equal(f"{prefix}/exclude", [f"{prefix}/index", f"{basename}/expert_indices"], ["tokens", num_experts])
+                self.make_where(
+                    f"{prefix}/remaining",
+                    [f"{prefix}/exclude/output_0", f"{basename}/negative_inf", scores],
+                    self.io_dtype,
+                    ["tokens", num_experts],
+                )
+                remaining = f"{prefix}/remaining/output_0"
+        weights = self.make_concat(f"{basename}/weights", multipliers, ir.FLOAT, ["tokens", 2], axis=-1)
+        indices = self.make_concat(f"{basename}/indices", choices, ir.INT64, ["tokens", 2], axis=-1)
+        return weights, indices
 
 
 class Phi4MMModel(Phi3VModel):
