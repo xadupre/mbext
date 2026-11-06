@@ -200,6 +200,43 @@ class TestDeepSeekV3(ExtTestCase):
                 np.testing.assert_allclose(actual, expected, atol=2e-5 if dtype == TensorProto.FLOAT16 else 1e-6, rtol=2e-3)
 
     @hide_stdout()
+    @requires_onnx_light("0.2.7", cpu_version="0.2.7")
+    def test_selected_experts_fp16_silu_saturation(self):
+        import numpy as np
+        import torch
+        from onnx_light.onnx import TensorProto
+        from onnx_light.onnx.reference import ReferenceEvaluator
+        from onnx_light_cpu import register_kernels_global
+        from transformers import AutoModelForCausalLM
+
+        from modelbuilder.builders.deepseek import DeepSeekV3Model
+
+        register_kernels_global()
+        config = _make_tiny_deepseek_config(num_hidden_layers=1, first_k_dense_replace=0)
+        experts = AutoModelForCausalLM.from_config(config).half().eval().model.layers[0].mlp.experts
+        hidden = torch.zeros(1, 1, config.hidden_size, dtype=torch.float16)
+        hidden[0, 0, 0] = 1
+        indices = torch.tensor([[0, 1]], dtype=torch.int64)
+        weights = torch.tensor([[1.0, 0.0]], dtype=torch.float32)
+        with torch.no_grad():
+            experts.gate_up_proj.zero_()
+            experts.down_proj.zero_()
+            experts.gate_up_proj[0, 0, 0] = -18
+            experts.gate_up_proj[0, config.moe_intermediate_size, 0] = 1024
+            experts.down_proj[0, 0, 0] = 1024
+            expected = experts(hidden.reshape(-1, config.hidden_size), indices, weights).numpy().reshape(hidden.shape)
+        self.assertEqual(expected[0, 0, 0], -0.3125)
+        _, cache = self.get_dirs("deepseek_fp16_silu_saturation")
+        builder = DeepSeekV3Model(config, TensorProto.FLOAT16, TensorProto.FLOAT16, "cpu", cache, {})
+        builder.make_graph_input("hidden", TensorProto.FLOAT16, [None, None, config.hidden_size])
+        builder.make_initializer(indices, "indices")
+        builder.make_initializer(weights, "weights")
+        output = builder.make_selected_swiglu_experts(0, experts, "hidden", "indices", "weights")
+        builder.make_graph_output(output, TensorProto.FLOAT16, [None, None, config.hidden_size])
+        actual = ReferenceEvaluator(builder.to_model_proto()).run(None, {"hidden": hidden.numpy()})[0]
+        np.testing.assert_array_equal(actual, expected)
+
+    @hide_stdout()
     def test_router_quantization_with_reused_checkpoint(self):
         import os
 

@@ -404,8 +404,11 @@ class Phi3MoELongRoPEModel(MistralModel):
 
     def make_layer(self, layer_id, layer):
         if not hasattr(layer, "mlp"):
-            if self.onnx_dtype not in {ir.INT4, ir.UINT4}:
-                raise NotImplementedError("Legacy PhiMoE block_sparse_moe requires INT4 weights; export with precision='int4'.")
+            if self.onnx_dtype != ir.INT4:
+                raise NotImplementedError(
+                    "Legacy PhiMoE block_sparse_moe requires symmetric INT4 weights; "
+                    "export with precision='int4' and int4_is_symmetric=True."
+                )
             if self.ep != "cuda":
                 raise NotImplementedError("Legacy PhiMoE QMoE requires CUDA; export with execution_provider='cuda'.")
         # Each LLM decoder layer is typically defined as:

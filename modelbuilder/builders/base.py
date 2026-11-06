@@ -4646,13 +4646,19 @@ class Model(LocalFunctionsMixin):
                 source = f"{prefix}/activated/output_0" if role == "down" else f"{prefix}/tokens"
                 self.make_node("MatMul", [source, weight_name], [f"{prefix}/{role}"], name=f"{prefix}/{role}_proj/MatMul")
                 if role == "up":
-                    self.make_sigmoid(f"{prefix}/sigmoid", f"{prefix}/gate", self.io_dtype, ["selected_tokens", intermediate])
-                    self.make_mul(
-                        f"{prefix}/silu", [f"{prefix}/gate", f"{prefix}/sigmoid/output_0"], self.io_dtype, ["selected_tokens", intermediate]
+                    # Round the completed SiLU, not its sigmoid, to match HF.
+                    gate = f"{prefix}/gate"
+                    if self.io_dtype != TensorProto.FLOAT:
+                        self.make_cast(f"{prefix}/gate_float", gate, TensorProto.FLOAT, ["selected_tokens", intermediate])
+                        gate = f"{prefix}/gate_float/output_0"
+                    self.make_sigmoid(f"{prefix}/sigmoid", gate, TensorProto.FLOAT, ["selected_tokens", intermediate])
+                    silu = self.make_mul(
+                        f"{prefix}/silu", [gate, f"{prefix}/sigmoid/output_0"], TensorProto.FLOAT, ["selected_tokens", intermediate]
                     )
-                    self.make_mul(
-                        f"{prefix}/activated", [f"{prefix}/silu/output_0", f"{prefix}/up"], self.io_dtype, ["selected_tokens", intermediate]
-                    )
+                    if self.io_dtype != TensorProto.FLOAT:
+                        self.make_cast(f"{prefix}/silu_cast", silu, self.io_dtype, ["selected_tokens", intermediate])
+                        silu = f"{prefix}/silu_cast/output_0"
+                    self.make_mul(f"{prefix}/activated", [silu, f"{prefix}/up"], self.io_dtype, ["selected_tokens", intermediate])
             self.make_cast(f"{prefix}/down_float", f"{prefix}/down", TensorProto.FLOAT, ["selected_tokens", hidden])
             self.make_mul(
                 f"{prefix}/weighted",

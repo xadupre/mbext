@@ -366,6 +366,20 @@ class TestPhiMoE(ExtTestCase):
             builder.make_model(cache)
 
     @hide_stdout()
+    def test_legacy_phimoe_rejects_asymmetric_int4(self):
+        from onnx_light.onnx import TensorProto
+
+        from modelbuilder.builder import set_onnx_dtype
+
+        config = _make_phimoe_config()
+        _, cache = self.get_dirs("legacy_phimoe_asymmetric_int4")
+        options = {"int4_is_symmetric": False}
+        dtype = set_onnx_dtype("int4", options)
+        builder = _make_phimoe_builder(config, TensorProto.FLOAT16, dtype, "cuda", cache, options)
+        with self.assertRaisesRegex(NotImplementedError, "requires symmetric INT4"):
+            builder.make_model(cache)
+
+    @hide_stdout()
     def test_legacy_phimoe_int4_expert_weights(self):
         import json
         import subprocess
