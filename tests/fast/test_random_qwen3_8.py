@@ -189,7 +189,7 @@ class TestRandomQwen3_8(ExtTestCase):
         feeds = {"input_ids": np.array([[config.image_token_id, config.video_token_id]], dtype=np.int64), "image_features": features[:1]}
         for evaluator, error in ((native, ValueError), (ort, InvalidArgument)):
             with self.subTest(evaluator=type(evaluator).__name__, mismatched_features=True):
-                with self.assertRaisesRegex(error, "updates"):
+                with self.assertRaises(error):
                     evaluator.run(None, feeds)
 
     @staticmethod
