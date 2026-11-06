@@ -22,9 +22,7 @@ requiring a separate registered config class.
 
 import unittest
 
-import pytest
-
-from modelbuilder.ext_test_case import ExtTestCase, hide_stdout, requires_cuda, requires_transformers
+from modelbuilder.ext_test_case import ExtTestCase, hide_stdout, requires_cuda, requires_onnx_light, requires_transformers
 
 MODEL_NAME = "deepseek-ai/DeepSeek-V4-Flash"
 
@@ -77,12 +75,10 @@ def _make_tiny_deepseek_config(**overrides):
 
 @requires_transformers("5")
 class TestDeepSeekV3(ExtTestCase):
-    @pytest.mark.xfail(strict=True, raises=AssertionError, reason="#569: exported DeepSeek MoE routing differs from HF")
     @hide_stdout()
     def test_deepseek_v3_fp32_cpu_onnx_light_generate(self):
         self._test_native_generation("DeepseekV3ForCausalLM")
 
-    @pytest.mark.xfail(strict=True, raises=AssertionError, reason="#569: exported DeepSeek MoE routing differs from HF")
     @hide_stdout()
     def test_deepseek_v4_fp32_cpu_onnx_light_generate(self):
         self._test_native_generation("DeepseekV4ForCausalLM")
@@ -96,6 +92,113 @@ class TestDeepSeekV3(ExtTestCase):
         model = AutoModelForCausalLM.from_config(config).eval()
         self.run_onnx_light_model_generation_test(model, MODEL_NAME, f"native_{architecture}")
 
+    @hide_stdout()
+    @requires_onnx_light("0.2.7", cpu_version="0.2.7")
+    def test_grouped_sigmoid_routing_and_packed_experts(self):
+        import numpy as np
+        import torch
+        from onnx_light.onnx import TensorProto
+        from onnx_light.onnx.reference import ReferenceEvaluator
+        from onnx_light_cpu import register_kernels_global
+        from transformers import AutoModelForCausalLM
+
+        from modelbuilder.builders.deepseek import DeepSeekV3Model
+
+        register_kernels_global()
+        _, cache = self.get_dirs("deepseek_routing")
+        cases = [(normalize, selected_groups, 8, 2, 2, 5) for normalize in (False, True) for selected_groups in (1, 2)]
+        cases.append((True, 2, 256, 8, 8, 64))
+        for normalize, selected_groups, num_experts, top_k, groups, sequence in cases:
+            with self.subTest(normalize=normalize, selected_groups=selected_groups, num_experts=num_experts):
+                torch.manual_seed(42)
+                config = _make_tiny_deepseek_config(
+                    num_hidden_layers=1,
+                    first_k_dense_replace=0,
+                    n_routed_experts=num_experts,
+                    norm_topk_prob=normalize,
+                    topk_group=selected_groups,
+                    routed_scaling_factor=2.5,
+                    n_group=groups,
+                    num_experts_per_tok=top_k,
+                )
+                mlp = AutoModelForCausalLM.from_config(config).eval().model.layers[0].mlp
+                with torch.no_grad():
+                    bias = (
+                        torch.tensor([0.0, 0.8, -0.3, -0.1, 0.2, -0.4, 0.3, -0.7])
+                        if num_experts == 8
+                        else torch.linspace(-0.8, 0.8, num_experts)
+                    )
+                    mlp.gate.e_score_correction_bias.copy_(bias)
+                    hidden = torch.randn(2, sequence, config.hidden_size)
+                    _, expected_weights, expected_indices = mlp.gate(hidden)
+                    expected = mlp(hidden).numpy()
+                builder = DeepSeekV3Model(config, TensorProto.FLOAT, TensorProto.FLOAT, "cpu", cache, {})
+                builder.make_graph_input("hidden", TensorProto.FLOAT, [None, None, config.hidden_size])
+                builder.make_moe_layer(0, mlp, "hidden")
+                weights = "/model/layers.0/moe/router/scale/output_0"
+                indices = "/model/layers.0/moe/router/top_indices"
+                builder.make_graph_output(weights, TensorProto.FLOAT, [None, None, top_k])
+                builder.make_graph_output(indices, TensorProto.INT64, [None, None, top_k])
+                builder.make_graph_output(builder.layernorm_attrs["skip_input"], TensorProto.FLOAT, [None, None, config.hidden_size])
+                graph = builder.to_model_proto()
+                self.assertEqual(sum(node.op_type == "ScatterND" for node in graph.graph.node), 1)
+                initializers = {value.name: value for value in graph.graph.initializer}
+                projections = [node for node in graph.graph.node if node.op_type == "MatMul" and "/moe/experts." in node.name]
+                self.assertEqual(len(projections), 3 * num_experts)
+                self.assertTrue(all(len(initializers[node.input[1]].dims) == 2 for node in projections))
+                actual_weights, actual_indices, actual = ReferenceEvaluator(graph).run(None, {"hidden": hidden.numpy()})
+                actual_indices = actual_indices.reshape(-1, top_k)
+                actual_weights = actual_weights.reshape(-1, top_k)
+                order = expected_indices.argsort(-1)
+                np.testing.assert_array_equal(np.sort(actual_indices, axis=-1), expected_indices.gather(1, order).numpy())
+                np.testing.assert_allclose(
+                    np.take_along_axis(actual_weights, actual_indices.argsort(-1), axis=-1),
+                    expected_weights.gather(1, order).numpy(),
+                    atol=1e-6,
+                    rtol=1e-6,
+                )
+                np.testing.assert_allclose(actual, expected, atol=1e-6, rtol=1e-5)
+
+    @hide_stdout()
+    @requires_onnx_light("0.2.7", cpu_version="0.2.7")
+    def test_selected_experts_int4_quantization(self):
+        import os
+
+        import numpy as np
+        import torch
+        from onnx_light.onnx import TensorProto, load
+        from onnx_light.onnx.reference import ReferenceEvaluator
+        from onnx_light_cpu import register_kernels_global
+        from transformers import AutoModelForCausalLM
+
+        from modelbuilder.builders.deepseek import DeepSeekV3Model
+
+        register_kernels_global()
+        for dtype, torch_dtype in ((TensorProto.FLOAT, torch.float32), (TensorProto.FLOAT16, torch.float16)):
+            with self.subTest(dtype=dtype):
+                torch.manual_seed(42)
+                config = _make_tiny_deepseek_config(num_hidden_layers=1, first_k_dense_replace=0)
+                mlp = AutoModelForCausalLM.from_config(config).to(torch_dtype).eval().model.layers[0].mlp
+                hidden = (torch.randn(2, 5, config.hidden_size) * 3).to(torch_dtype).numpy()
+                output_dir, cache = self.get_dirs(f"deepseek_experts_int4_{dtype}")
+                builder = DeepSeekV3Model(config, dtype, TensorProto.INT4, "cpu", cache, {"int4_accuracy_level": 0})
+                builder.make_graph_input("hidden", dtype, [None, None, config.hidden_size])
+                builder.make_moe_layer(0, mlp, "hidden")
+                builder.make_graph_output(builder.layernorm_attrs["skip_input"], dtype, [None, None, config.hidden_size])
+                builder.save_model(output_dir)
+                path = os.path.join(output_dir, "model.onnx")
+                graph = load(path, load_external_data=True)
+                projections = [
+                    node for node in graph.graph.node if "/moe/experts." in node.name and node.op_type in {"MatMul", "MatMulNBits"}
+                ]
+                self.assertEqual(len(projections), 3 * config.num_local_experts)
+                self.assertTrue(all(node.op_type == "MatMulNBits" for node in projections))
+                router = next(node for node in graph.graph.node if node.name == "/model/layers.0/moe/router/MatMul")
+                self.assertEqual(router.op_type, "MatMul")
+                expected = self.check_ort(path).run(None, {"hidden": hidden})[0]
+                actual = ReferenceEvaluator(graph).run(None, {"hidden": hidden})[0]
+                np.testing.assert_allclose(actual, expected, atol=2e-5 if dtype == TensorProto.FLOAT16 else 1e-6, rtol=2e-3)
+
     def common_fast_deepseek_random_weights(self, precision, provider, arch="DeepseekV3ForCausalLM"):
         from transformers import AutoModelForCausalLM
 
@@ -107,9 +210,6 @@ class TestDeepSeekV3(ExtTestCase):
         model = AutoModelForCausalLM.from_config(config)
         model.eval().to(provider)
         tokenizer = self.make_word_level_tokenizer()
-        # The ORT fused MoE kernel uses softmax-based routing while DeepSeek V3
-        # uses sigmoid-based grouped-topk routing, so outputs will differ for MoE
-        # layers.  Use wider tolerances to accommodate this routing approximation.
         self.run_random_weights_test(
             model=model,
             tokenizer=tokenizer,
@@ -121,8 +221,8 @@ class TestDeepSeekV3(ExtTestCase):
             num_key_value_heads=config.num_key_value_heads,
             head_size=kv_head_size,
             vocab_size=config.vocab_size,
-            atol={"fp32": 0.1, "fp16": 0.15, "bf16": 0.15, "int4": 0.5},
-            rtol={"fp32": 1.0, "fp16": 1.0, "bf16": 1.0, "int4": 10000},
+            atol={"fp32": 1e-4, "fp16": 2e-3, "bf16": 1e-2, "int4": 0.5},
+            rtol={"fp32": 1e-3, "fp16": 1e-2, "bf16": 1e-2, "int4": 10000},
         )
 
     @hide_stdout()

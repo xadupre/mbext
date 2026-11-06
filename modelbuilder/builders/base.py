@@ -4582,6 +4582,126 @@ class Model(LocalFunctionsMixin):
         # Assign output 0 of previous MoE as root input to next SkipLayerNorm
         self.layernorm_attrs["skip_input"] = output
 
+    def make_selected_swiglu_experts(self, layer_id, experts, root_input, indices, weights):
+        """Execute only selected tokens per expert, without per-token weight copies."""
+        if self.activation != "silu":
+            raise NotImplementedError(f"Selected SwiGLU experts require SiLU, got {self.activation!r}.")
+        basename = f"/model/layers.{layer_id}/moe"
+        hidden = experts.down_proj.shape[1]
+        intermediate = experts.down_proj.shape[2]
+        top_k = self.moe_attrs["top_k"]
+        self.make_reshape(f"{basename}/tokens", [root_input, [-1, hidden]], self.io_dtype, ["tokens", hidden])
+        self.make_reshape(f"{basename}/indices", [indices, [-1, top_k]], TensorProto.INT64, ["tokens", top_k])
+        self.make_reshape(f"{basename}/weights", [weights, [-1, top_k]], TensorProto.FLOAT, ["tokens", top_k])
+        tokens = f"{basename}/tokens/output_0"
+        # HF accumulates in expert order, including FP16 rounding after each addition.
+        self.make_node(
+            "TopK",
+            [f"{basename}/indices/output_0", f"/model/constants/INT64/[{top_k}]"],
+            [f"{basename}/sorted_indices", f"{basename}/sort_order"],
+            name=f"{basename}/SortExperts",
+            axis=-1,
+            largest=0,
+        )
+        self.make_node(
+            "GatherElements",
+            [f"{basename}/weights/output_0", f"{basename}/sort_order"],
+            [f"{basename}/sorted_weights"],
+            name=f"{basename}/SortWeights",
+            axis=-1,
+        )
+        positions = []
+        updates = []
+        for expert in range(experts.gate_up_proj.shape[0]):
+            prefix = f"{basename}/experts.{expert}"
+            self.make_node(
+                "Equal", [f"{basename}/sorted_indices", f"/model/constants/INT64/{expert}"], [f"{prefix}/mask"], name=f"{prefix}/Equal"
+            )
+            self.make_node("NonZero", [f"{prefix}/mask"], [f"{prefix}/positions"], name=f"{prefix}/NonZero")
+            self.make_transpose(f"{prefix}/pairs", f"{prefix}/positions", TensorProto.INT64, ["selected_tokens", 2], [1, 0])
+            self.make_gather(
+                f"{prefix}/rows",
+                [f"{prefix}/pairs/output_0", "/model/constants/INT64/[0]"],
+                TensorProto.INT64,
+                ["selected_tokens", 1],
+                axis=1,
+            )
+            self.make_node("GatherND", [tokens, f"{prefix}/rows/output_0"], [f"{prefix}/tokens"], name=f"{prefix}/GatherND")
+            self.make_node(
+                "GatherND",
+                [f"{basename}/sorted_weights", f"{prefix}/pairs/output_0"],
+                [f"{prefix}/weights"],
+                name=f"{prefix}/WeightGatherND",
+            )
+            self.make_unsqueeze(
+                f"{prefix}/weight_column", [f"{prefix}/weights", "/model/constants/INT64/[-1]"], TensorProto.FLOAT, ["selected_tokens", 1]
+            )
+            for role, weight in (
+                ("gate", experts.gate_up_proj[expert, :intermediate]),
+                ("up", experts.gate_up_proj[expert, intermediate:]),
+                ("down", experts.down_proj[expert]),
+            ):
+                weight_name = f"model.layers.{layer_id}.moe.experts.{expert}.{role}_proj.weight"
+                self.make_initializer(weight.T, weight_name, to=self.io_dtype, allow_reuse=False)
+                source = f"{prefix}/activated/output_0" if role == "down" else f"{prefix}/tokens"
+                self.make_node("MatMul", [source, weight_name], [f"{prefix}/{role}"], name=f"{prefix}/{role}_proj/MatMul")
+                if role == "up":
+                    self.make_sigmoid(f"{prefix}/sigmoid", f"{prefix}/gate", self.io_dtype, ["selected_tokens", intermediate])
+                    self.make_mul(
+                        f"{prefix}/silu", [f"{prefix}/gate", f"{prefix}/sigmoid/output_0"], self.io_dtype, ["selected_tokens", intermediate]
+                    )
+                    self.make_mul(
+                        f"{prefix}/activated", [f"{prefix}/silu/output_0", f"{prefix}/up"], self.io_dtype, ["selected_tokens", intermediate]
+                    )
+            self.make_cast(f"{prefix}/down_float", f"{prefix}/down", TensorProto.FLOAT, ["selected_tokens", hidden])
+            self.make_mul(
+                f"{prefix}/weighted",
+                [f"{prefix}/down_float/output_0", f"{prefix}/weight_column/output_0"],
+                TensorProto.FLOAT,
+                ["selected_tokens", hidden],
+            )
+            self.make_cast(f"{prefix}/update", f"{prefix}/weighted/output_0", self.io_dtype, ["selected_tokens", hidden])
+            positions.append(f"{prefix}/pairs/output_0")
+            updates.append(f"{prefix}/update/output_0")
+        positions = self.make_concat(f"{basename}/positions", positions, TensorProto.INT64, ["assignments", 2])
+        updates = self.make_concat(f"{basename}/updates", updates, self.io_dtype, ["assignments", hidden])
+        self.make_shape(f"{basename}/assignment_shape", f"{basename}/sorted_indices", shape=[2])
+        shape = self.make_concat(
+            f"{basename}/dispatch_shape",
+            [f"{basename}/assignment_shape/output_0", f"/model/constants/INT64/[{hidden}]"],
+            TensorProto.INT64,
+            [3],
+        )
+        zero = numpy_helper.from_array(np.zeros((1,), dtype=onnx_helper.tensor_dtype_to_np_dtype(int(self.io_dtype))))
+        self.make_constant_of_shape(f"{basename}/dispatch_zeros", shape, zero, self.io_dtype, ["tokens", top_k, hidden])
+        # Unique (token, slot) pairs need no reduction and only one full-buffer scatter.
+        self.make_node(
+            "ScatterND",
+            [f"{basename}/dispatch_zeros/output_0", positions, updates],
+            [f"{basename}/dispatched"],
+            name=f"{basename}/ScatterND",
+        )
+        self.make_initializer(torch.tensor(0.0), f"{basename}/zero", to=self.io_dtype)
+        accumulated = self.make_mul(f"{basename}/zeros", [tokens, f"{basename}/zero"], self.io_dtype, ["tokens", hidden])
+        for slot in range(top_k):
+            self.make_gather(
+                f"{basename}/slot.{slot}",
+                [f"{basename}/dispatched", f"/model/constants/INT64/{slot}"],
+                self.io_dtype,
+                ["tokens", hidden],
+                axis=1,
+            )
+            accumulated = self.make_add(
+                f"{basename}/sum.{slot}", [accumulated, f"{basename}/slot.{slot}/output_0"], self.io_dtype, ["tokens", hidden]
+            )
+        self.make_shape(f"{basename}/output_shape", root_input, shape=[3])
+        return self.make_reshape(
+            f"{basename}/output",
+            [accumulated, f"{basename}/output_shape/output_0"],
+            self.io_dtype,
+            ["batch_size", "sequence_length", hidden],
+        )
+
     def make_fused_moe(self, layer_id, mlp, root_input, use_bias=False):
         """Build the fused-layout MoE/QMoE subgraph for one decoder layer.
 

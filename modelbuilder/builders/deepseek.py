@@ -25,12 +25,13 @@ store weights as standard bfloat16, and the transformers library exposes them as
 ordinary PyTorch tensors.  This builder exports ONNX from those float weights;
 fp8/fp4 quantization is not required and is not applied here.
 
-Note: The ORT MoE fused kernel uses softmax-based routing, which is an
-approximation of DeepSeek's sigmoid-based grouped-topk routing.  The model
-structure and weight layout are correct; numerical routing accuracy may differ.
+Routed experts use explicit sigmoid grouped-topk routing and sparse token
+dispatch, preserving the correction bias and original uncorrected weights.
 """
 
 import numpy as np
+import torch
+from onnx_light.onnx import TensorProto
 
 from .base import Model
 
@@ -91,7 +92,7 @@ class DeepSeekV3Model(Model):
 
         # ── MoE kernel settings ───────────────────────────────────────────
         self.moe_attrs["activation_type"] = "swiglu"
-        self.moe_attrs["normalize_routing_weights"] = True
+        self.moe_attrs["normalize_routing_weights"] = config.norm_topk_prob
         self.moe_attrs["swiglu_fusion"] = 1
 
     def make_attention_init(self):
@@ -293,8 +294,9 @@ class DeepSeekV3Model(Model):
     # ------------------------------------------------------------------
 
     def make_moe_layer(self, layer_id, mlp, root_input):
-        """MoE: fused routed experts + always-on shared expert."""
-        moe_out = self._make_moe_fused(layer_id, mlp, root_input)
+        """MoE: sigmoid grouped-topk routed experts + always-on shared expert."""
+        weights, indices = self._make_moe_routing(layer_id, mlp.gate, root_input)
+        moe_out = self.make_selected_swiglu_experts(layer_id, mlp.experts, root_input, indices, weights)
 
         # Shared expert: always applied
         shared_out = self._make_shared_expert(layer_id, mlp.shared_experts, root_input)
@@ -304,44 +306,126 @@ class DeepSeekV3Model(Model):
         combined = self.make_add(add_name, [moe_out, shared_out], self.io_dtype, ["batch_size", "sequence_length", self.hidden_size])
         self.layernorm_attrs["skip_input"] = combined
 
-    def _make_moe_fused(self, layer_id, mlp, root_input):
-        """Build router + fused MoE kernel for the routed experts."""
+    def _make_moe_routing(self, layer_id, gate, root_input):
+        """Select groups with biased scores, but mix using unbiased sigmoid weights."""
         basename = f"/model/layers.{layer_id}/moe"
-
-        # Router: hidden → logits [B*S, n_routed_experts]
-        # Exclude the router from int4 quantization by default: quantising
-        # the small routing matrix corrupts top-k expert selection.
+        experts = gate.num_experts
+        groups = gate.num_group
+        group_size = experts // groups
+        top_k = gate.top_k
+        shape = ["batch_size", "sequence_length", experts]
+        self.make_cast(f"{basename}/router/input", root_input, TensorProto.FLOAT, ["batch_size", "sequence_length", self.hidden_size])
+        router_weight = f"model.layers.{layer_id}.moe.gate.weight"
+        self.make_initializer(gate.weight.detach().float().T, router_weight)
         router_matmul_name = f"{basename}/router/MatMul"
-        self.make_matmul(mlp.gate, router_matmul_name, root_input)
+        self.make_node(
+            "MatMul", [f"{basename}/router/input/output_0", router_weight], [f"{router_matmul_name}/output_0"], name=router_matmul_name
+        )
+        self.make_value(f"{router_matmul_name}/output_0", TensorProto.FLOAT, shape)
         if not self.quant_attrs["int4"]["quantize_moe_router"]:
             if router_matmul_name not in self.quant_attrs["int4"]["nodes_to_exclude"]:
                 self.quant_attrs["int4"]["nodes_to_exclude"].append(router_matmul_name)
-        # Reshape to [B*S, n_experts] for MoE kernel
-        router_reshape_name = f"{basename}/router/Reshape"
-        router_reshape_inputs = [f"{router_matmul_name}/output_0", f"/model/constants/INT64/{[-1, self.moe_attrs['num_experts']]}"]
-        self.make_reshape(
-            router_reshape_name,
-            router_reshape_inputs,
-            dtype=self.io_dtype,
-            shape=["batch_size * sequence_length", self.moe_attrs["num_experts"]],
+        self.make_sigmoid(f"{basename}/router/scores", f"{router_matmul_name}/output_0", TensorProto.FLOAT, shape)
+        scores = f"{basename}/router/scores/output_0"
+        bias = f"model.layers.{layer_id}.moe.gate.e_score_correction_bias"
+        self.make_initializer(gate.e_score_correction_bias.detach().float(), bias)
+        choice = self.make_add(f"{basename}/router/choice", [scores, bias], TensorProto.FLOAT, shape)
+        if gate.topk_group < groups:
+            grouped = self.make_reshape(
+                f"{basename}/router/groups",
+                [choice, [0, 0, groups, group_size]],
+                TensorProto.FLOAT,
+                ["batch_size", "sequence_length", groups, group_size],
+            )
+            self.make_node(
+                "TopK",
+                [grouped, "/model/constants/INT64/[2]"],
+                [f"{basename}/router/group_top2", f"{basename}/router/group_top2_indices"],
+                name=f"{basename}/router/GroupTopK",
+                axis=-1,
+            )
+            self.make_reduce_sum(
+                f"{basename}/router/group_scores",
+                [f"{basename}/router/group_top2", "/model/constants/INT64/[-1]"],
+                TensorProto.FLOAT,
+                ["batch_size", "sequence_length", groups],
+                keepdims=False,
+            )
+            self.make_node(
+                "TopK",
+                [f"{basename}/router/group_scores/output_0", f"/model/constants/INT64/[{gate.topk_group}]"],
+                [f"{basename}/router/group_values", f"{basename}/router/group_indices"],
+                name=f"{basename}/router/SelectGroups",
+                axis=-1,
+            )
+            self.make_initializer(torch.arange(experts) // group_size, f"{basename}/router/expert_groups")
+            self.make_unsqueeze(
+                f"{basename}/router/selected_groups",
+                [f"{basename}/router/group_indices", "/model/constants/INT64/[-1]"],
+                TensorProto.INT64,
+                ["batch_size", "sequence_length", gate.topk_group, 1],
+            )
+            self.make_node(
+                "Equal",
+                [f"{basename}/router/selected_groups/output_0", f"{basename}/router/expert_groups"],
+                [f"{basename}/router/group_matches"],
+                name=f"{basename}/router/GroupMatches",
+            )
+            self.make_cast(
+                f"{basename}/router/group_matches_int",
+                f"{basename}/router/group_matches",
+                TensorProto.INT64,
+                ["batch_size", "sequence_length", gate.topk_group, experts],
+            )
+            self.make_reduce_sum(
+                f"{basename}/router/group_mask",
+                [f"{basename}/router/group_matches_int/output_0", "/model/constants/INT64/[-2]"],
+                TensorProto.INT64,
+                shape,
+                keepdims=False,
+            )
+            self.make_cast(f"{basename}/router/group_mask_bool", f"{basename}/router/group_mask/output_0", TensorProto.BOOL, shape)
+            self.make_initializer(torch.tensor(float("-inf")), f"{basename}/router/negative_inf")
+            self.make_where(
+                f"{basename}/router/masked_choice",
+                [f"{basename}/router/group_mask_bool/output_0", choice, f"{basename}/router/negative_inf"],
+                TensorProto.FLOAT,
+                shape,
+            )
+            choice = f"{basename}/router/masked_choice/output_0"
+        self.make_node(
+            "TopK",
+            [choice, f"/model/constants/INT64/[{top_k}]"],
+            [f"{basename}/router/top_values", f"{basename}/router/top_indices"],
+            name=f"{basename}/router/SelectExperts",
+            axis=-1,
         )
-
-        # Expert weights – already in the format expected by the ORT MoE kernel:
-        #   gate_up_proj: [n_experts, 2*moe_inter, hidden]  (matches weight1 spec)
-        #   down_proj:    [n_experts, hidden, moe_inter]     (matches weight2 spec)
-        # HuggingFace stores these as standard bfloat16 tensors; fp8/fp4
-        # quantization is specific to DeepSeek's proprietary inference engine
-        # and is not present in the HuggingFace checkpoint format.
-        gate_up_weight = f"model.layers.{layer_id}.moe.experts.gate_up_proj.weight"
-        down_weight = f"model.layers.{layer_id}.moe.experts.down_proj.weight"
-        self.make_initializer(mlp.experts.gate_up_proj, gate_up_weight, to=self.io_dtype)
-        self.make_initializer(mlp.experts.down_proj, down_weight, to=self.io_dtype)
-
-        moe_name = f"{basename}/MoE"
-        self.make_base_moe_op(
-            moe_name, root_input=root_input, router_probs=f"{router_reshape_name}/output_0", weight1=gate_up_weight, weight2=down_weight
+        indices = f"{basename}/router/top_indices"
+        self.make_node(
+            "GatherElements", [scores, indices], [f"{basename}/router/top_weights"], name=f"{basename}/router/GatherWeights", axis=-1
         )
-        return f"{moe_name}/output_0"
+        weights = f"{basename}/router/top_weights"
+        weight_shape = ["batch_size", "sequence_length", top_k]
+        if gate.norm_topk_prob:
+            self.make_reduce_sum(
+                f"{basename}/router/weight_sum",
+                [weights, "/model/constants/INT64/[-1]"],
+                TensorProto.FLOAT,
+                ["batch_size", "sequence_length", 1],
+                keepdims=True,
+            )
+            denominator = self.make_add(
+                f"{basename}/router/denominator",
+                [f"{basename}/router/weight_sum/output_0", "/model/constants/FLOAT/1e-20"],
+                TensorProto.FLOAT,
+                ["batch_size", "sequence_length", 1],
+            )
+            self.make_div(f"{basename}/router/normalize", [weights, denominator], TensorProto.FLOAT, weight_shape)
+            weights = f"{basename}/router/normalize/output_0"
+        scale = f"{basename}/router/scaling_factor"
+        self.make_initializer(torch.tensor(float(gate.routed_scaling_factor)), scale)
+        weights = self.make_mul(f"{basename}/router/scale", [weights, scale], TensorProto.FLOAT, weight_shape)
+        return weights, indices
 
     def _make_shared_expert(self, layer_id, shared_mlp, root_input):
         """Build the always-active shared expert MLP (SiLU-gated)."""
