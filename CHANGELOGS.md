@@ -37,6 +37,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Tests & fixes
 
+- Keeps generated Qwen3.5/Qwen3.8 image and video token IDs as ordinary token
+  embeddings when split embedding features are empty, preserving image-conditioned
+  native cached generation without suppressing media tokens.
 - Adds offline ONNX Runtime parity and ONNX Runtime GenAI generation coverage for
   Qwen3.8 and packed MLX exports, plus generation tests with onnx-light-cpu.
 - Preserves standalone `pipeline.onnx` exports when cleaning up stale pipeline

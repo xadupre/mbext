@@ -49,6 +49,15 @@ class EmbeddingModel(Model):
         """
         raise NotImplementedError
 
+    def make_image_token_mask(self):
+        image_mask = "is_image_only" if "video_token_id" in self.extra_options else "is_image"
+        self.make_node("Equal", inputs=["flat_ids", "image_token_id_const"], outputs=[image_mask], name="/embed/Equal")
+        if "video_token_id" in self.extra_options:
+            self.make_initializer(np.array(self.extra_options["video_token_id"], dtype=np.int64), name="video_token_id_const")
+            self.make_node("Equal", ["flat_ids", "video_token_id_const"], ["is_video"], name="/embed/Equal_video")
+            self.make_node("Or", [image_mask, "is_video"], ["is_image"], name="/embed/Or")
+        return "is_image"
+
     def make_model(self, input_path):
         """Load HF weights and build the embedding ONNX graph."""
         hf_model = self.load_hf_model(input_path)
@@ -141,14 +150,9 @@ class EmbeddingModel(Model):
         # 4. Flatten input_ids: [1, T] → [T]
         self.make_node("Squeeze", inputs=["input_ids", "squeeze_batch_axes"], outputs=["flat_ids"], name="/embed/Squeeze_ids")
         # 5. Boolean mask where tokens are image placeholders: [T] bool
-        image_mask = "is_image_only" if "video_token_id" in self.extra_options else "is_image"
-        self.make_node("Equal", inputs=["flat_ids", "image_token_id_const"], outputs=[image_mask], name="/embed/Equal")
-        if "video_token_id" in self.extra_options:
-            self.make_initializer(np.array(self.extra_options["video_token_id"], dtype=np.int64), name="video_token_id_const")
-            self.make_node("Equal", ["flat_ids", "video_token_id_const"], ["is_video"], name="/embed/Equal_video")
-            self.make_node("Or", [image_mask, "is_video"], ["is_image"], name="/embed/Or")
+        image_mask = self.make_image_token_mask()
         # 6. Positions of image placeholders: [1, N] int64
-        self.make_node("NonZero", inputs=["is_image"], outputs=["img_pos"], name="/embed/NonZero")
+        self.make_node("NonZero", inputs=[image_mask], outputs=["img_pos"], name="/embed/NonZero")
         # 7. Transpose to [N, 1] for ScatterND
         self.make_node("Transpose", inputs=["img_pos"], outputs=["img_pos_idx"], name="/embed/Transpose", perm=[1, 0])
         # 8. Scatter image_features into text embeddings at placeholder positions

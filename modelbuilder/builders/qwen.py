@@ -3353,6 +3353,16 @@ class Qwen35VisionEncoderModel(Qwen25OmniVisionEncoderModel):
 class Qwen35EmbeddingModel(EmbeddingModel):
     """Embedding mixer for Qwen3.5/Qwen3.8 image features."""
 
+    def make_image_token_mask(self):
+        image_mask = super().make_image_token_mask()
+        self.make_initializer(np.array(0, dtype=np.int64), name="/embed/feature_zero")
+        self.make_node("Shape", ["image_features"], ["/embed/feature_shape"], name="/embed/Shape_features")
+        self.make_node("Gather", ["/embed/feature_shape", "/embed/feature_zero"], ["/embed/feature_count"], name="/embed/Gather_features")
+        self.make_node("Greater", ["/embed/feature_count", "/embed/feature_zero"], ["/embed/has_features"], name="/embed/Greater_features")
+        # Cached media IDs use ordinary token embeddings when features are absent.
+        self.make_node("And", [image_mask, "/embed/has_features"], ["is_image_with_features"], name="/embed/And_features")
+        return "is_image_with_features"
+
     def load_hf_model(self, input_path):
         if self.extra_options.get("_mlx_checkpoint"):
             from ..helpers.mlx import MLXCheckpoint
