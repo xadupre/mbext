@@ -41,6 +41,8 @@ class TestArchitectures(ExtTestCase):
             ("GemmaForCausalLM", "google/gemma-2b"),
             ("LlamaForCausalLM", "meta-llama/Llama-2-7b-hf"),
             ("Phi3ForCausalLM", "microsoft/Phi-3-mini-4k-instruct"),
+            ("PhiMoEForCausalLM", "microsoft/Phi-3.5-MoE-instruct"),
+            ("PhimoeForCausalLM", "microsoft/Phi-3.5-MoE-instruct"),
             ("WhisperForConditionalGeneration", "openai/whisper-tiny"),
             ("Qwen3_5MoeForConditionalGeneration", "Qwen/Qwen3.5-35B-A3B"),
             ("Qwen3_5MoeForConditionalGeneration", "Qwen/Qwen3.5-35B-A3B-FP8"),
@@ -58,6 +60,7 @@ class TestArchitectures(ExtTestCase):
         self.assertEqual(model_ids, sorted(set(model_ids)))
         self.assertEqual(set(model_ids), {model_id for arch in list_supported_architectures() for model_id in arch.model_ids})
         self.assertEqual(model_ids.count("Qwen/Qwen2.5-Omni-3B"), 1)
+        self.assertEqual(model_ids.count("microsoft/Phi-3.5-MoE-instruct"), 1)
 
 
 if __name__ == "__main__":

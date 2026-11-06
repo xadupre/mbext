@@ -199,6 +199,60 @@ class TestDeepSeekV3(ExtTestCase):
                 actual = ReferenceEvaluator(graph).run(None, {"hidden": hidden})[0]
                 np.testing.assert_allclose(actual, expected, atol=2e-5 if dtype == TensorProto.FLOAT16 else 1e-6, rtol=2e-3)
 
+    @hide_stdout()
+    def test_router_quantization_with_reused_checkpoint(self):
+        import os
+
+        import torch
+        from onnx_light.onnx import TensorProto, load
+        from transformers import AutoModelForCausalLM
+
+        from modelbuilder.builder import create_model
+
+        torch.manual_seed(42)
+        config = _make_tiny_deepseek_config(num_hidden_layers=1, first_k_dense_replace=0)
+        model = AutoModelForCausalLM.from_config(config).eval()
+        for quantize_router in (False, True):
+            with self.subTest(quantize_router=quantize_router):
+                name = f"deepseek_reused_router_{quantize_router}"
+                source = self.get_model_dir(name)
+                output, cache = self.get_dirs(name)
+                model.save_pretrained(source)
+                self.make_word_level_tokenizer().save_pretrained(source)
+                create_model(
+                    model_name=MODEL_NAME,
+                    input_path=source,
+                    output_dir=output,
+                    precision="int4",
+                    execution_provider="cpu",
+                    cache_dir=cache,
+                    reuse_downloaded_weights=True,
+                    int4_quantize_moe_router=quantize_router,
+                )
+                graph = load(os.path.join(output, "model.onnx"), load_external_data=False)
+                router = next(node for node in graph.graph.node if node.name.startswith("/model/layers.0/moe/router/MatMul"))
+                self.assertEqual(router.op_type, "MatMulNBits" if quantize_router else "MatMul")
+                if not quantize_router:
+                    transpose = next(node for node in graph.graph.node if router.input[1] in node.output)
+                    self.assertEqual(transpose.op_type, "Transpose")
+                    weight = next(value for value in graph.graph.initializer if value.name == transpose.input[0])
+                    self.assertEqual(weight.data_location, TensorProto.EXTERNAL)
+                    self.assertStartsWith(".weights/", next(entry.value for entry in weight.external_data if entry.key == "location"))
+
+    @hide_stdout()
+    def test_selected_experts_reject_non_silu_activation(self):
+        from onnx_light.onnx import TensorProto
+        from transformers import AutoModelForCausalLM
+
+        from modelbuilder.builders.deepseek import DeepSeekV3Model
+
+        config = _make_tiny_deepseek_config(num_hidden_layers=1, first_k_dense_replace=0, hidden_act="relu")
+        experts = AutoModelForCausalLM.from_config(config).model.layers[0].mlp.experts
+        _, cache = self.get_dirs("deepseek_unsupported_activation")
+        builder = DeepSeekV3Model(config, TensorProto.FLOAT, TensorProto.FLOAT, "cpu", cache, {})
+        with self.assertRaisesRegex(NotImplementedError, "require SiLU"):
+            builder.make_selected_swiglu_experts(0, experts, "hidden", "indices", "weights")
+
     def common_fast_deepseek_random_weights(self, precision, provider, arch="DeepseekV3ForCausalLM"):
         from transformers import AutoModelForCausalLM
 

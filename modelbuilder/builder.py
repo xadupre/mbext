@@ -531,7 +531,7 @@ def create_model(model_name, input_path, output_dir, precision, execution_provid
 
         onnx_model = Phi3MiniLongRoPEModel(config, io_dtype, onnx_dtype, execution_provider, cache_dir, extra_options)
     elif (
-        config.architectures[0] in {"PhiMoEForCausalLM", "PhimoeForCausalLM"}
+        config.architectures[0] in ("PhiMoEForCausalLM", "PhimoeForCausalLM")
         and config.max_position_embeddings != config.original_max_position_embeddings
     ):
         from .builders.phi import Phi3MoELongRoPEModel

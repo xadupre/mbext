@@ -403,6 +403,11 @@ class Phi3MoELongRoPEModel(MistralModel):
         self.make_rotary_embedding_multi_cache()
 
     def make_layer(self, layer_id, layer):
+        if not hasattr(layer, "mlp"):
+            if self.onnx_dtype not in {ir.INT4, ir.UINT4}:
+                raise NotImplementedError("Legacy PhiMoE block_sparse_moe requires INT4 weights; export with precision='int4'.")
+            if self.ep != "cuda":
+                raise NotImplementedError("Legacy PhiMoE QMoE requires CUDA; export with execution_provider='cuda'.")
         # Each LLM decoder layer is typically defined as:
         # input_layernorm --> attention --> output_layernorm --> MoE
         self.make_layernorm(

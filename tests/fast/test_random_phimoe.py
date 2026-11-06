@@ -355,12 +355,99 @@ class TestPhiMoE(ExtTestCase):
             rtol={"fp16": 1e-2},
         )
 
+    @hide_stdout()
+    def test_legacy_phimoe_rejects_float_expert_weights(self):
+        from onnx_light.onnx import TensorProto
+
+        config = _make_phimoe_config()
+        _, cache = self.get_dirs("legacy_phimoe_fp16")
+        builder = _make_phimoe_builder(config, TensorProto.FLOAT16, TensorProto.FLOAT16, "cpu", cache, {})
+        with self.assertRaisesRegex(NotImplementedError, "Legacy PhiMoE.*INT4"):
+            builder.make_model(cache)
+
+    @hide_stdout()
+    def test_legacy_phimoe_int4_expert_weights(self):
+        import json
+        import subprocess
+        import sys
+
+        # CPU kernel registration in other tests overrides CUDA QMoE shape inference.
+        code = """
+import json
+import runpy
+import sys
+import tempfile
+from onnx_light.onnx import TensorProto
+
+collector = None
+if len(sys.argv) > 2:
+    import coverage
+    collector = coverage.Coverage(**json.loads(sys.argv[2]))
+    collector.start()
+try:
+    fixtures = runpy.run_path(sys.argv[1])
+    with tempfile.TemporaryDirectory() as cache:
+        builder = fixtures["_make_phimoe_builder"](
+            fixtures["_make_phimoe_config"](), TensorProto.FLOAT16, TensorProto.INT4, "cuda", cache, {}
+        )
+        builder.make_model(cache)
+        graph = builder.to_model_proto()
+        moe = next(node for node in graph.graph.node if node.op_type == "QMoE")
+        initializers = {value.name: value for value in graph.graph.initializer}
+        assert all(initializers[moe.input[i]].data_type == TensorProto.UINT8 for i in (2, 5, 8))
+finally:
+    if collector is not None:
+        collector.stop()
+        collector.save()
+"""
+        command = [sys.executable, "-c", code, os.path.abspath(__file__)]
+        if "coverage" in sys.modules:
+            collector = sys.modules["coverage"].Coverage.current()
+            if collector is not None:
+                # Preserve coverage of the legacy branch in the isolated process.
+                command.append(
+                    json.dumps(
+                        {
+                            "data_file": collector.config.data_file,
+                            "source": collector.get_option("run:source"),
+                            "branch": collector.get_option("run:branch"),
+                            "data_suffix": True,
+                        }
+                    )
+                )
+        result = subprocess.run(command, capture_output=True, text=True, timeout=60)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    @hide_stdout()
+    def test_legacy_phimoe_rejects_cpu(self):
+        from onnx_light.onnx import TensorProto
+
+        config = _make_phimoe_config()
+        _, cache = self.get_dirs("legacy_phimoe_cpu")
+        builder = _make_phimoe_builder(config, TensorProto.FLOAT16, TensorProto.INT4, "cpu", cache, {})
+        with self.assertRaisesRegex(NotImplementedError, "Legacy PhiMoE QMoE requires CUDA"):
+            builder.make_model(cache)
+
+    @hide_stdout()
+    def test_sparse_mixer_rejects_unsupported_top_k(self):
+        from onnx_light.onnx import TensorProto
+        from transformers import PhimoeForCausalLM
+
+        from modelbuilder.builders.base import Model
+        from modelbuilder.builders.phi import Phi3MoELongRoPEModel
+
+        config = _make_native_phimoe_config()
+        config.num_experts_per_tok = 1
+        router = PhimoeForCausalLM(config).model.layers[0].mlp.router
+        _, cache = self.get_dirs("phimoe_unsupported_top_k")
+        builder = Model(config, TensorProto.FLOAT16, TensorProto.FLOAT16, "cpu", cache, {})
+        with self.assertRaisesRegex(NotImplementedError, "requires exactly two experts"):
+            Phi3MoELongRoPEModel.make_sparse_mixer_routing(builder, 0, router, "hidden")
+
     def _build_phimoe_onnx(self, output_dir, cache_dir):
         """Build the PhiMoE ONNX model with synthetic random weights.
 
-        ``Phi3MoELongRoPEModel`` asserts ``io_dtype == FLOAT16`` and forces
-        ``onnx_dtype = INT4`` (QMoE), which is the only supported combination
-        for this builder.
+        The legacy expert layout requires FP16 I/O and INT4 weights (QMoE).
         """
         from modelbuilder.builder import set_io_dtype, set_onnx_dtype
 

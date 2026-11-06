@@ -316,15 +316,21 @@ class DeepSeekV3Model(Model):
         shape = ["batch_size", "sequence_length", experts]
         self.make_cast(f"{basename}/router/input", root_input, TensorProto.FLOAT, ["batch_size", "sequence_length", self.hidden_size])
         router_weight = f"model.layers.{layer_id}.moe.gate.weight"
-        self.make_initializer(gate.weight.detach().float().T, router_weight)
         router_matmul_name = f"{basename}/router/MatMul"
+        if not self.quant_attrs["int4"]["quantize_moe_router"]:
+            if router_matmul_name not in self.quant_attrs["int4"]["nodes_to_exclude"]:
+                self.quant_attrs["int4"]["nodes_to_exclude"].append(router_matmul_name)
+        quantizing = (
+            self.onnx_dtype in {TensorProto.INT4, TensorProto.UINT4}
+            and self.quant_type is None
+            and router_matmul_name not in self.quant_attrs["int4"]["nodes_to_exclude"]
+            and "MatMul" in self.quant_attrs["int4"]["op_types_to_quantize"]
+        )
+        self.make_initializer(gate.weight.detach().float().T, router_weight, allow_reuse=not quantizing)
         self.make_node(
             "MatMul", [f"{basename}/router/input/output_0", router_weight], [f"{router_matmul_name}/output_0"], name=router_matmul_name
         )
         self.make_value(f"{router_matmul_name}/output_0", TensorProto.FLOAT, shape)
-        if not self.quant_attrs["int4"]["quantize_moe_router"]:
-            if router_matmul_name not in self.quant_attrs["int4"]["nodes_to_exclude"]:
-                self.quant_attrs["int4"]["nodes_to_exclude"].append(router_matmul_name)
         self.make_sigmoid(f"{basename}/router/scores", f"{router_matmul_name}/output_0", TensorProto.FLOAT, shape)
         scores = f"{basename}/router/scores/output_0"
         bias = f"model.layers.{layer_id}.moe.gate.e_score_correction_bias"
