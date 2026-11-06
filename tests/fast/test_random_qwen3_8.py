@@ -10,7 +10,15 @@ import unittest
 import numpy as np
 import pytest
 
-from modelbuilder.ext_test_case import ExtTestCase, PvVersion, hide_stdout, requires_cuda, requires_genai, requires_transformers
+from modelbuilder.ext_test_case import (
+    ExtTestCase,
+    PvVersion,
+    hide_stdout,
+    requires_cuda,
+    requires_genai,
+    requires_onnx_light,
+    requires_transformers,
+)
 
 QWEN3_8_MODEL_NAME = "Qwen/Qwen3.8-27B"
 TERNARY_BONSAI_MODEL_NAME = "prism-ml/Ternary-Bonsai-27B-unpacked"
@@ -79,11 +87,13 @@ def _make_qwen3_8_config():
 
 @requires_transformers("5")
 class TestRandomQwen3_8(ExtTestCase):
+    @requires_onnx_light("0.2.7", cpu_version="0.2.7")
     @hide_stdout()
     def test_qwen3_8_onnx_light_generate(self):
         _, model, output_dir = self._build_multimodal_model()
         self._test_native_text_generation(model, output_dir)
 
+    @requires_onnx_light("0.2.7", cpu_version="0.2.7")
     @hide_stdout()
     def test_ternary_bonsai_int2_onnx_light_generate(self):
         _, model, output_dir = self._build_multimodal_model(ternary=True)
@@ -98,6 +108,7 @@ class TestRandomQwen3_8(ExtTestCase):
         self.run_onnx_light_generation_test(output_dir, None, 0, None, prompt_ids=prompt, pt_tokens=reference)
 
     @pytest.mark.xfail(strict=True, raises=ValueError, reason="#570: generated media tokens cannot be embedded with empty features")
+    @requires_onnx_light("0.2.7", cpu_version="0.2.7")
     @hide_stdout()
     def test_qwen3_8_image_features_onnx_light_generate(self):
         """Native embedding/decode with real HF vision features, not native vision.

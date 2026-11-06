@@ -127,6 +127,22 @@ def requires_genai(version: str = "", msg: str = "") -> Callable:
     return lambda x: x
 
 
+def requires_onnx_light(version: str = "", *, cpu_version: str = "", msg: str = "") -> Callable:
+    """Skip when native generation dependencies are older than the required versions."""
+    import onnx_light
+
+    if version and PvVersion(onnx_light.__version__) < PvVersion(version):
+        return unittest.skip(msg or f"onnx-light version {onnx_light.__version__} < {version}")
+    if cpu_version:
+        try:
+            import onnx_light_cpu
+        except ImportError:
+            return unittest.skip(msg or "onnx-light-cpu is not installed")
+        if PvVersion(onnx_light_cpu.__version__) < PvVersion(cpu_version):
+            return unittest.skip(msg or f"onnx-light-cpu version {onnx_light_cpu.__version__} < {cpu_version}")
+    return lambda x: x
+
+
 def requires_llama_cpp(version: str = "", msg: str = "") -> Callable:
     """Skips a test if ``llama_cpp`` (llama-cpp-python) is not installed."""
     try:
@@ -1429,6 +1445,7 @@ class ExtTestCase(unittest.TestCase):
             self.assertEqual(pt_tokens, runtime_tokens)
         return runtime_tokens
 
+    @requires_onnx_light("0.2.7", cpu_version="0.2.7")
     def run_onnx_light_model_generation_test(self, model, model_name, basename, *, precision="fp32", create_model_kwargs=None):
         """Export a random-weight model and compare prefill plus four cached steps.
 

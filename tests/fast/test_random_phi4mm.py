@@ -9,7 +9,7 @@ import unittest
 import numpy as np
 
 from modelbuilder.builders.phi import Phi4MMModel
-from modelbuilder.ext_test_case import ExtTestCase, hide_stdout, requires_cuda
+from modelbuilder.ext_test_case import ExtTestCase, hide_stdout, requires_cuda, requires_onnx_light
 
 # Use a small Phi-3 configuration as the base for the synthetic Phi4MM model.
 # Phi4MM extends Phi3MiniLongRoPE (which requires short/long RoPE factors) and
@@ -117,6 +117,7 @@ class _Phi4MMModelWithSyntheticWeights(Phi4MMModel):
 
 
 class TestPhi4MM(ExtTestCase):
+    @requires_onnx_light("0.2.7", cpu_version="0.2.7")
     @hide_stdout()
     def test_phi4mm_fp32_cpu_onnx_light_generate(self):
         import torch

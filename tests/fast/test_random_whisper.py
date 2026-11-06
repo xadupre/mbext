@@ -8,7 +8,7 @@ import unittest
 
 import numpy as np
 
-from modelbuilder.ext_test_case import ExtTestCase, hide_stdout, requires_cuda
+from modelbuilder.ext_test_case import ExtTestCase, hide_stdout, requires_cuda, requires_onnx_light
 
 WHISPER_MODEL_NAME = "openai/whisper-tiny"
 
@@ -23,6 +23,7 @@ class TestWhisperModel(ExtTestCase):
         """Real HF audio encoder; native cross-cache decoding, not native encoding."""
         self._test_native_generation(native_encoder=False)
 
+    @requires_onnx_light("0.2.7", cpu_version="0.2.7")
     def _test_native_generation(self, *, native_encoder):
         import torch
         import onnx_light.onnx as onnx
