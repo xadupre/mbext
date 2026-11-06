@@ -60,6 +60,25 @@ class TestRandomVideoChatFlashQwen(ExtTestCase):
             tie_word_embeddings=False,
         )
 
+    def _test_native_generation(self, architecture, model_name):
+        import torch
+        from transformers import Qwen2ForCausalLM
+
+        config = self._make_config()
+        config.architectures = [architecture]
+        config.vocab_size = 257
+        torch.manual_seed(42)
+        model = Qwen2ForCausalLM(config).eval()
+        self.run_onnx_light_model_generation_test(model, model_name, f"native_{architecture}")
+
+    @hide_stdout()
+    def test_qwen2_fp32_cpu_onnx_light_generate(self):
+        self._test_native_generation("Qwen2ForCausalLM", "Qwen/Qwen2-0.5B")
+
+    @hide_stdout()
+    def test_videochat_flash_qwen_fp32_cpu_onnx_light_generate(self):
+        self._test_native_generation("VideoChatFlashQwenForCausalLM", VIDEOCHAT_FLASH_QWEN_MODEL_NAME)
+
     def common_fast_videochat_flash_qwen_random_weights(self, precision, provider):
         from transformers import Qwen2ForCausalLM
 

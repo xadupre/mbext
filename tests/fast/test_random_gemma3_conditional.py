@@ -43,6 +43,21 @@ class TestRandomGemma3Conditional(ExtTestCase):
         )
         return Gemma3Config(architectures=["Gemma3ForConditionalGeneration"], text_config=text_config)
 
+    @hide_stdout()
+    def test_gemma3_cond_fp32_cpu_onnx_light_generate(self):
+        import torch
+        from transformers import Gemma3ForConditionalGeneration
+
+        config = self._make_config()
+        config.text_config.vocab_size = 257
+        config.vision_config.hidden_size = 32
+        config.vision_config.intermediate_size = 64
+        config.vision_config.num_hidden_layers = 1
+        config.vision_config.num_attention_heads = 4
+        torch.manual_seed(42)
+        model = Gemma3ForConditionalGeneration(config).eval()
+        self.run_onnx_light_model_generation_test(model, MODEL_NAME, "native_gemma3_cond")
+
     def common_fast_gemma3_conditional_random_weights(self, precision, provider):
         from transformers import Gemma3ForConditionalGeneration
 

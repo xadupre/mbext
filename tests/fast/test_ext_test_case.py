@@ -10,7 +10,28 @@ import unittest
 
 import numpy as np
 
-from modelbuilder.ext_test_case import ExtTestCase, _make_json_serializable, _read_results, results_to_dataframe
+from modelbuilder.ext_test_case import ExtTestCase, _make_json_serializable, _read_results, requires_onnx_light, results_to_dataframe
+
+
+class TestRequiresOnnxLight(ExtTestCase):
+    def test_supported_versions_run(self):
+        import onnx_light
+        import onnx_light_cpu
+
+        for version, cpu_version in (("0.0.0", "0.0.0"), (onnx_light.__version__, onnx_light_cpu.__version__)):
+            with self.subTest(version=version, cpu_version=cpu_version):
+                called = []
+                requires_onnx_light(version, cpu_version=cpu_version)(lambda: called.append(True))()
+                self.assertEqual(called, [True])
+
+    def test_old_versions_skip_before_execution(self):
+        for version, cpu_version, package in (("999.0.0", "", "onnx-light"), ("", "999.0.0", "onnx-light-cpu")):
+            with self.subTest(package=package):
+                called = []
+                guarded = requires_onnx_light(version, cpu_version=cpu_version)(lambda: called.append(True))
+                with self.assertRaisesRegex(unittest.SkipTest, f"{package} version .* < 999.0.0"):
+                    guarded()
+                self.assertEqual(called, [])
 
 
 class TestResultsToMarkdown(unittest.TestCase):

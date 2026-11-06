@@ -8,8 +8,17 @@ import os
 import unittest
 
 import numpy as np
+import pytest
 
-from modelbuilder.ext_test_case import ExtTestCase, PvVersion, hide_stdout, requires_cuda, requires_genai, requires_transformers
+from modelbuilder.ext_test_case import (
+    ExtTestCase,
+    PvVersion,
+    hide_stdout,
+    requires_cuda,
+    requires_genai,
+    requires_onnx_light,
+    requires_transformers,
+)
 
 QWEN3_8_MODEL_NAME = "Qwen/Qwen3.8-27B"
 TERNARY_BONSAI_MODEL_NAME = "prism-ml/Ternary-Bonsai-27B-unpacked"
@@ -78,6 +87,72 @@ def _make_qwen3_8_config():
 
 @requires_transformers("5")
 class TestRandomQwen3_8(ExtTestCase):
+    @requires_onnx_light("0.2.7", cpu_version="0.2.7")
+    @hide_stdout()
+    def test_qwen3_8_onnx_light_generate(self):
+        _, model, output_dir = self._build_multimodal_model()
+        self._test_native_text_generation(model, output_dir)
+
+    @requires_onnx_light("0.2.7", cpu_version="0.2.7")
+    @hide_stdout()
+    def test_ternary_bonsai_int2_onnx_light_generate(self):
+        _, model, output_dir = self._build_multimodal_model(ternary=True)
+        self._test_native_text_generation(model, output_dir)
+
+    def _test_native_text_generation(self, model, output_dir):
+        import torch
+
+        prompt = torch.tensor([[3, 4, 5, 6]], dtype=torch.int64)
+        with torch.no_grad():
+            reference = model.generate(prompt, max_new_tokens=5, do_sample=False, eos_token_id=None, pad_token_id=0)[0].tolist()
+        self.run_onnx_light_generation_test(output_dir, None, 0, None, prompt_ids=prompt, pt_tokens=reference)
+
+    @pytest.mark.xfail(strict=True, raises=ValueError, reason="#570: generated media tokens cannot be embedded with empty features")
+    @requires_onnx_light("0.2.7", cpu_version="0.2.7")
+    @hide_stdout()
+    def test_qwen3_8_image_features_onnx_light_generate(self):
+        """Native embedding/decode with real HF vision features, not native vision.
+
+        Native vision execution remains blocked by xadupre/onnx-light-cpu#1111.
+        """
+        import inspect
+
+        import torch
+        from onnx_light.onnx.reference import ReferenceEvaluator
+
+        if "prefill_only_inputs" not in inspect.signature(ReferenceEvaluator.generate).parameters:
+            self.skipTest("Installed onnx-light lacks the prefill_only_inputs API added in xadupre/onnx-light#5802.")
+        config, model, output_dir = self._build_multimodal_model()
+        grid = torch.tensor([[1, 4, 4]], dtype=torch.int64)
+        width = config.vision_config.in_channels * config.vision_config.temporal_patch_size * config.vision_config.patch_size**2
+        torch.manual_seed(7)
+        pixels = torch.randn(16, width)
+        prompt = torch.tensor([[3, config.vision_start_token_id] + [config.image_token_id] * 4 + [config.vision_end_token_id, 4]])
+        token_types = (prompt == config.image_token_id).int()
+        with torch.no_grad():
+            features = model.model.visual(pixels, grid).pooler_output.numpy()
+            positions, _ = model.model.get_rope_index(prompt, token_types, image_grid_thw=grid)
+            reference = model.generate(
+                prompt,
+                pixel_values=pixels,
+                image_grid_thw=grid,
+                mm_token_type_ids=token_types,
+                max_new_tokens=5,
+                do_sample=False,
+                eos_token_id=None,
+                pad_token_id=0,
+            )[0].tolist()
+        self.run_onnx_light_generation_test(
+            output_dir,
+            None,
+            0,
+            None,
+            prompt_ids=prompt,
+            pt_tokens=reference,
+            extra_feeds={"image_features": features, "position_ids": positions.numpy()},
+            prefill_only_inputs=["image_features"],
+        )
+
     @staticmethod
     def _quantize_fp8(weight):
         import torch

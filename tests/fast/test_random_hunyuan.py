@@ -35,6 +35,15 @@ def _make_config(num_hidden_layers=1):
 
 
 class TestHunyuanDenseV1(ExtTestCase):
+    @hide_stdout()
+    def test_hunyuan_fp32_cpu_onnx_light_generate(self):
+        import torch
+        from transformers import AutoModelForCausalLM
+
+        torch.manual_seed(42)
+        model = AutoModelForCausalLM.from_config(_make_config()).eval()
+        self.run_onnx_light_model_generation_test(model, MODEL_NAME, "native_hunyuan")
+
     def common_fast_hunyuan_random_weights(self, precision, provider):
         from transformers import AutoModelForCausalLM
 

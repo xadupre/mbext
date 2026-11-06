@@ -146,6 +146,30 @@ class TestRandomPrivateQwen(ExtTestCase):
         test_file = _write(os.path.join(tmp, "test.py"), "# fast test placeholder\n")
         return f"{modeling};{convert};{test_file}"
 
+    @hide_stdout()
+    def test_private_qwen_fp32_cpu_onnx_light_generate(self):
+        import torch
+        from transformers import Qwen3Config, Qwen3ForCausalLM
+
+        config = Qwen3Config(
+            architectures=[PRIVATE_ARCHITECTURE],
+            hidden_size=64,
+            intermediate_size=128,
+            num_hidden_layers=1,
+            num_attention_heads=4,
+            num_key_value_heads=2,
+            head_dim=16,
+            vocab_size=256,
+            max_position_embeddings=128,
+        )
+        torch.manual_seed(42)
+        model = Qwen3ForCausalLM(config).eval()
+        with tempfile.TemporaryDirectory() as tmp:
+            private = self._make_private_files(tmp)
+            self.run_onnx_light_model_generation_test(
+                model, PRIVATE_MODEL_NAME, "native_private_qwen", create_model_kwargs={"private": private}
+            )
+
     def common_fast_private_random_weights(self, precision, provider):
         from transformers import AutoModelForCausalLM, Qwen3Config
 

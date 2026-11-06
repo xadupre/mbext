@@ -72,6 +72,22 @@ def _make_small_phi4mm_config():
 
 @requires_transformers("5")
 class TestPhi4Multimodal(ExtTestCase):
+    @hide_stdout()
+    def test_phi4_multimodal_fp32_cpu_onnx_light_generate(self):
+        import torch
+        from transformers import Phi4MultimodalForCausalLM
+
+        config = _make_small_phi4mm_config()
+        config.vocab_size = 257
+        config.bos_token_id = 1
+        config.eos_token_id = 2
+        config.pad_token_id = 0
+        config.image_token_id = 240
+        config.audio_token_id = 241
+        torch.manual_seed(42)
+        model = Phi4MultimodalForCausalLM(config).eval()
+        self.run_onnx_light_model_generation_test(model, _MODEL_NAME, "native_phi4_multimodal")
+
     # ------------------------------------------------------------------ #
     #  Vision encoder tests                                               #
     # ------------------------------------------------------------------ #

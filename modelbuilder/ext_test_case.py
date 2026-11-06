@@ -127,6 +127,22 @@ def requires_genai(version: str = "", msg: str = "") -> Callable:
     return lambda x: x
 
 
+def requires_onnx_light(version: str = "", *, cpu_version: str = "", msg: str = "") -> Callable:
+    """Skip when native generation dependencies are older than the required versions."""
+    import onnx_light
+
+    if version and PvVersion(onnx_light.__version__) < PvVersion(version):
+        return unittest.skip(msg or f"onnx-light version {onnx_light.__version__} < {version}")
+    if cpu_version:
+        try:
+            import onnx_light_cpu
+        except ImportError:
+            return unittest.skip(msg or "onnx-light-cpu is not installed")
+        if PvVersion(onnx_light_cpu.__version__) < PvVersion(cpu_version):
+            return unittest.skip(msg or f"onnx-light-cpu version {onnx_light_cpu.__version__} < {cpu_version}")
+    return lambda x: x
+
+
 def requires_llama_cpp(version: str = "", msg: str = "") -> Callable:
     """Skips a test if ``llama_cpp`` (llama-cpp-python) is not installed."""
     try:
@@ -1247,7 +1263,15 @@ class ExtTestCase(unittest.TestCase):
         return og_tokens
 
     def run_onnx_light_generation(
-        self, output_dir: str, prompt_ids, max_new_tokens: int = 5, eos_token_id: Optional[int] = None
+        self,
+        output_dir: str,
+        prompt_ids,
+        max_new_tokens: int = 5,
+        eos_token_id: Optional[int] = None,
+        *,
+        embedding_model=None,
+        extra_feeds=None,
+        prefill_only_inputs=None,
     ) -> List[int]:
         """Run greedy generation through onnx-light with onnx-light-cpu kernels.
 
@@ -1255,6 +1279,9 @@ class ExtTestCase(unittest.TestCase):
         Auxiliary embedding inputs are empty for text-only generation. Position
         IDs (including M-RoPE) and persistent decoder state are maintained by
         the native runtime; ONNX Runtime is never used as a fallback.
+        ``embedding_model`` supplies a native frontend when no component is
+        exported. ``extra_feeds`` supplies media features/initial positions;
+        ``prefill_only_inputs`` forwards their native lifetime contract.
         """
         import onnx_light.onnx as onnx
         from onnx_light.onnx.helper import tensor_dtype_to_np_dtype
@@ -1264,8 +1291,7 @@ class ExtTestCase(unittest.TestCase):
         register_kernels_global()
         model = onnx.load(os.path.join(output_dir, "model.onnx"), load_external_data=True)
         input_names = {value.name for value in model.graph.input}
-        embedding_model = None
-        if "input_ids" not in input_names and "inputs_embeds" in input_names:
+        if embedding_model is None and "input_ids" not in input_names and "inputs_embeds" in input_names:
             with open(os.path.join(output_dir, "genai_config.json")) as stream:
                 config = json.load(stream)
             self.assertIn("embedding", config["model"], "Export token embeddings for native generation of an inputs_embeds decoder.")
@@ -1310,6 +1336,9 @@ class ExtTestCase(unittest.TestCase):
                 else:
                     shape.append(0)
             feeds[value.name] = np.zeros(tuple(shape), dtype=tensor_dtype_to_np_dtype(tensor_type.elem_type))
+        if extra_feeds is not None:
+            feeds.update(extra_feeds)
+        generation_options = {} if prefill_only_inputs is None else {"prefill_only_inputs": prefill_only_inputs}
 
         tokens = ReferenceEvaluator(model).generate(
             feeds,
@@ -1317,6 +1346,7 @@ class ExtTestCase(unittest.TestCase):
             temperature=0.0,
             eos_token_ids=None if eos_token_id is None else [eos_token_id],
             embedding=None if embedding_model is None else ReferenceEvaluator(embedding_model),
+            **generation_options,
         )
         return tokens[0].tolist()
 
@@ -1378,10 +1408,13 @@ class ExtTestCase(unittest.TestCase):
         output_dir: str,
         model,
         vocab_size: int,
-        eos_token_id: int,
+        eos_token_id: Optional[int],
         max_new_tokens: int = 5,
         pt_tokens: Optional[List[int]] = None,
         prompt_ids=None,
+        embedding_model=None,
+        extra_feeds=None,
+        prefill_only_inputs=None,
     ) -> List[int]:
         """Compare PyTorch generation with onnx-light native generation."""
         import torch
@@ -1398,11 +1431,84 @@ class ExtTestCase(unittest.TestCase):
                 pt_output = model.generate(prompt_ids, max_new_tokens=max_new_tokens, do_sample=False, pad_token_id=eos_token_id)
             pt_tokens = pt_output[0].tolist()
 
-        runtime_tokens = self.run_onnx_light_generation(output_dir, prompt_ids, max_new_tokens, eos_token_id=eos_token_id)
+        runtime_tokens = self.run_onnx_light_generation(
+            output_dir,
+            prompt_ids,
+            max_new_tokens,
+            eos_token_id=eos_token_id,
+            embedding_model=embedding_model,
+            extra_feeds=extra_feeds,
+            prefill_only_inputs=prefill_only_inputs,
+        )
 
         if pt_tokens is not None:
             self.assertEqual(pt_tokens, runtime_tokens)
         return runtime_tokens
+
+    @requires_onnx_light("0.2.7", cpu_version="0.2.7")
+    def run_onnx_light_model_generation_test(self, model, model_name, basename, *, precision="fp32", create_model_kwargs=None):
+        """Export a random-weight model and compare prefill plus four cached steps.
+
+        Text-only VLM exports without an embedding component get a native Gather
+        graph from their actual PyTorch embedding, including learned scaling.
+        This does not qualify image/video-conditioned generation.
+        """
+        import torch
+        import onnx_light.onnx as onnx
+
+        from modelbuilder.builder import create_model
+
+        model_dir = self.get_model_dir(basename)
+        output_dir, cache_dir = self.get_dirs(basename)
+        architectures = model.config.architectures
+        model.save_pretrained(model_dir)
+        model.config.architectures = architectures
+        model.config.save_pretrained(model_dir)
+        self.make_word_level_tokenizer().save_pretrained(model_dir)
+        create_model(
+            model_name=model_name,
+            input_path=model_dir,
+            output_dir=output_dir,
+            precision=precision,
+            execution_provider="cpu",
+            cache_dir=cache_dir,
+            **(create_model_kwargs or {}),
+        )
+        decoder = onnx.load(os.path.join(output_dir, "model.onnx"), load_external_data=False)
+        embedding_model = None
+        embedding_input = next((value for value in decoder.graph.input if value.name == "inputs_embeds"), None)
+        with open(os.path.join(output_dir, "genai_config.json")) as stream:
+            config = json.load(stream)
+        if embedding_input is not None and "embedding" not in config["model"]:
+            embedding_model = self.make_onnx_light_embedding_model(model.get_input_embeddings(), embedding_input.type.tensor_type.elem_type)
+        prompt = torch.tensor([[3, 4, 5, 6]], dtype=torch.int64)
+        with torch.no_grad():
+            reference = model.generate(prompt, max_new_tokens=5, do_sample=False, eos_token_id=None, pad_token_id=0)[0].tolist()
+        return self.run_onnx_light_generation_test(
+            output_dir, None, 0, None, pt_tokens=reference, prompt_ids=prompt, embedding_model=embedding_model
+        )
+
+    def make_onnx_light_embedding_model(self, embedding, dtype):
+        """Make a native token lookup graph, preserving the embedding's scaling."""
+        import torch
+        import onnx_light.onnx as onnx
+        import onnx_light.onnx.helper as oh
+        import onnx_light.onnx.numpy_helper as onh
+        from onnx_light.onnx.helper import tensor_dtype_to_np_dtype
+
+        with torch.no_grad():
+            table = embedding(torch.arange(embedding.weight.shape[0])).float().numpy()
+        table = table.astype(tensor_dtype_to_np_dtype(dtype))
+        return oh.make_model(
+            oh.make_graph(
+                [oh.make_node("Gather", ["weight", "input_ids"], ["inputs_embeds"], axis=0)],
+                "text_embedding",
+                [oh.make_tensor_value_info("input_ids", onnx.TensorProto.INT64, [None, None])],
+                [oh.make_tensor_value_info("inputs_embeds", dtype, [None, None, table.shape[1]])],
+                initializer=[onh.from_array(table, name="weight")],
+            ),
+            opset_imports=[oh.make_opsetid("", 18)],
+        )
 
     def check_phi3v_genai_config(
         self,

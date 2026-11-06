@@ -12,9 +12,9 @@ QWEN3_VL_MODEL_NAME = "Qwen/Qwen3-VL-4B-Instruct"
 
 @requires_transformers("5")
 class TestRandomQwen3VL(ExtTestCase):
-    def common_fast_qwen3_vl_random_weights(self, precision, provider):
-        import torch
-        from transformers import Qwen3VLConfig, Qwen3VLForConditionalGeneration
+    @staticmethod
+    def _make_config():
+        from transformers import Qwen3VLConfig
         from transformers.models.qwen3_vl.configuration_qwen3_vl import Qwen3VLTextConfig
 
         num_hidden_layers = 1
@@ -38,6 +38,32 @@ class TestRandomQwen3VL(ExtTestCase):
         config.architectures = ["Qwen3VLForConditionalGeneration"]
         config.bos_token_id = 1
         config.eos_token_id = 2
+        return config
+
+    @hide_stdout()
+    def test_qwen3_vl_fp32_cpu_onnx_light_generate(self):
+        import torch
+        from transformers import Qwen3VLForConditionalGeneration
+
+        config = self._make_config()
+        config.text_config.vocab_size = 257
+        config.vision_config.depth = 1
+        config.vision_config.hidden_size = 32
+        config.vision_config.intermediate_size = 64
+        config.vision_config.num_heads = 4
+        config.vision_config.out_hidden_size = config.text_config.hidden_size
+        config.vision_config.deepstack_visual_indexes = []
+        torch.manual_seed(42)
+        model = Qwen3VLForConditionalGeneration(config).eval()
+        self.run_onnx_light_model_generation_test(model, QWEN3_VL_MODEL_NAME, "native_qwen3_vl")
+
+    def common_fast_qwen3_vl_random_weights(self, precision, provider):
+        import torch
+        from transformers import Qwen3VLForConditionalGeneration
+
+        config = self._make_config()
+        text_config = config.text_config
+        num_hidden_layers = text_config.num_hidden_layers
 
         torch.manual_seed(0)
         model = Qwen3VLForConditionalGeneration(config)
