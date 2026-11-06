@@ -24,6 +24,8 @@ def load_nemotron_checkpoint(directory, config, num_layers):
         del config.quantization_config
     with torch.device("meta"):
         model = NemotronHForCausalLM(config)
+    if config.tie_word_embeddings:
+        model.lm_head.weight = model.model.embeddings.weight
     checkpoint = SafetensorsCheckpoint(checkpoint_paths(directory))
     handles = {}
     dtype = getattr(config, "dtype", None) or torch.float32
@@ -45,9 +47,7 @@ def load_nemotron_checkpoint(directory, config, num_layers):
     def tensor(name):
         path = checkpoint.files[name]
         if path not in handles:
-            handles[path] = stack.enter_context(
-                safe_open(path, framework="pt", device="cpu")
-            )
+            handles[path] = stack.enter_context(safe_open(path, framework="pt", device="cpu"))
         return handles[path].get_tensor(name)
 
     def read_weight(name, shape, target_dtype=None):
@@ -88,31 +88,17 @@ def load_nemotron_checkpoint(directory, config, num_layers):
                 global_scale = global_scale.flatten().expand(shape[0])
                 parts = []
                 for i in range(shape[0]):
-                    QwenCompressedTensorsModel._validate_positive_scalar(
-                        global_scale[i], base + ".weight_scale_2"
-                    )
+                    QwenCompressedTensorsModel._validate_positive_scalar(global_scale[i], base + ".weight_scale_2")
                     parts.append(
-                        QwenCompressedTensorsModel._dequantize(
-                            weight[i],
-                            block_scale[i],
-                            global_scale[i],
-                            source,
-                            dtype=output_dtype,
-                        )
+                        QwenCompressedTensorsModel._dequantize(weight[i], block_scale[i], global_scale[i], source, dtype=output_dtype)
                     )
                 weight = torch.stack(parts)
             else:
-                QwenCompressedTensorsModel._validate_positive_scalar(
-                    global_scale, base + ".weight_scale_2"
-                )
-                weight = QwenCompressedTensorsModel._dequantize(
-                    weight, block_scale, global_scale, source, dtype=output_dtype
-                )
+                QwenCompressedTensorsModel._validate_positive_scalar(global_scale, base + ".weight_scale_2")
+                weight = QwenCompressedTensorsModel._dequantize(weight, block_scale, global_scale, source, dtype=output_dtype)
         elif weight.dtype == torch.float8_e4m3fn:
             weight_scale = scale(".weight_scale")
-            QwenCompressedTensorsModel._validate_positive_weight_scale(
-                weight_scale, base + ".weight_scale", weight.shape[0]
-            )
+            QwenCompressedTensorsModel._validate_positive_weight_scale(weight_scale, base + ".weight_scale", weight.shape[0])
             output_dtype = target_dtype if target_dtype is not None else dtype
             if weight.ndim == 3:
                 scales = weight_scale.float().reshape(-1, 1, 1)
@@ -120,25 +106,15 @@ def load_nemotron_checkpoint(directory, config, num_layers):
                     scales = scales.expand(weight.shape[0], 1, 1)
                 weight = (weight.float() * scales).to(output_dtype)
             else:
-                weight = QwenCompressedTensorsModel._dequantize(
-                    weight, weight_scale, None, source, dtype=output_dtype
-                )
+                weight = QwenCompressedTensorsModel._dequantize(weight, weight_scale, None, source, dtype=output_dtype)
         if tuple(weight.shape) != tuple(shape):
-            raise ValueError(
-                f"Nemotron tensor {source!r} has shape {tuple(weight.shape)}, "
-                f"expected {tuple(shape)}."
-            )
+            raise ValueError(f"Nemotron tensor {source!r} has shape {tuple(weight.shape)}, " f"expected {tuple(shape)}.")
         return weight if target_dtype is None else weight.to(target_dtype)
 
     def read_tensor(name, shape):
         if ".experts." in name and len(shape) == 3 and find_name(name) is None:
             prefix, projection = name.rsplit(".", 1)
-            return torch.stack(
-                [
-                    read_weight(f"{prefix}.{i}.{projection}.weight", shape[1:])
-                    for i in range(shape[0])
-                ]
-            )
+            return torch.stack([read_weight(f"{prefix}.{i}.{projection}.weight", shape[1:]) for i in range(shape[0])])
         return read_weight(name, shape)
 
     with ExitStack() as stack:
@@ -151,14 +127,7 @@ def load_nemotron_checkpoint(directory, config, num_layers):
         for name, parameter in named_parameters:
             loaded = loaded_parameters.get(id(parameter))
             if loaded is None:
-                source_name = next(
-                    (
-                        alias
-                        for alias in parameter_names[id(parameter)]
-                        if find_name(alias) is not None
-                    ),
-                    name,
-                )
+                source_name = next((alias for alias in parameter_names[id(parameter)] if find_name(alias) is not None), name)
                 value = read_tensor(source_name, parameter.shape)
                 loaded = torch.nn.Parameter(value, requires_grad=False)
                 loaded_parameters[id(parameter)] = loaded

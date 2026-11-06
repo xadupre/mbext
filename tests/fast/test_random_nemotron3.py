@@ -19,9 +19,7 @@ MODEL_IDS = (
 
 
 class TestRandomNemotron3(ExtTestCase):
-    def _make_model(
-        self, variant, tie_word_embeddings=False, mamba_ssm_cache_dtype=None
-    ):
+    def _make_model(self, variant, tie_word_embeddings=False, mamba_ssm_cache_dtype=None):
         import torch
         from transformers import NemotronHConfig, NemotronHForCausalLM
 
@@ -75,9 +73,7 @@ class TestRandomNemotron3(ExtTestCase):
         reference = {}
         linear_names = {name for name, module in model.named_modules() if isinstance(module, torch.nn.Linear)}
 
-        def add_weight(
-            name, weight, fp8=False, quantized=True, fp8_expert=False
-        ):
+        def add_weight(name, weight, fp8=False, quantized=True, fp8_expert=False):
             source = name.replace("model.", "backbone.", 1) if name.startswith("model.") else name
             base = source.removesuffix(".weight")
             if not quantized:
@@ -229,19 +225,14 @@ class TestRandomNemotron3(ExtTestCase):
         if cache_dtype is not None:
             for name, input_type in input_types.items():
                 if name.endswith(".recurrent_state"):
-                    self.assertEqual(input_type, f"tensor({cache_dtype})")
+                    self.assertEqual(np.dtype(_ort_type_to_numpy_dtype(input_type)).name, cache_dtype)
                     output_name = name.replace("past_key_values.", "present.")
                     self.assertEqual(output_types[output_name], input_type)
         state = {}
         for value in sess.get_inputs():
             if value.name.startswith("past_key_values."):
-                shape = [
-                    batch if i == 0 else d if isinstance(d, int) else 0
-                    for i, d in enumerate(value.shape)
-                ]
-                state[value.name] = np.zeros(
-                    shape, dtype=_ort_type_to_numpy_dtype(value.type)
-                )
+                shape = [batch if i == 0 else d if isinstance(d, int) else 0 for i, d in enumerate(value.shape)]
+                state[value.name] = np.zeros(shape, dtype=_ort_type_to_numpy_dtype(value.type))
         rng = np.random.default_rng(42)
         past = None
         total_length = 0
@@ -259,11 +250,7 @@ class TestRandomNemotron3(ExtTestCase):
             has_bfloat16_output = "tensor(bfloat16)" in output_types.values()
             if precision == "bf16" or has_bfloat16_output:
                 bound_outputs = {}
-                output_torch_dtypes = {
-                    "tensor(float)": torch.float32,
-                    "tensor(float16)": torch.float16,
-                    "tensor(bfloat16)": torch.bfloat16,
-                }
+                output_torch_dtypes = {"tensor(float)": torch.float32, "tensor(float16)": torch.float16, "tensor(bfloat16)": torch.bfloat16}
                 for output_name, output_type in output_types.items():
                     if output_name == "logits":
                         shape = (batch, length, model.config.vocab_size)
@@ -273,15 +260,10 @@ class TestRandomNemotron3(ExtTestCase):
                         if output_name.endswith((".key", ".value")):
                             shape[2] = total_length
                     output_dtype = output_torch_dtypes[output_type]
-                    bound_outputs[output_name] = torch.empty(
-                        shape, dtype=output_dtype, device=provider
-                    )
+                    bound_outputs[output_name] = torch.empty(shape, dtype=output_dtype, device=provider)
                 _ort_io_binding_helper(sess, feed, bound_outputs, device=provider)
                 outputs = {
-                    name: value.float()
-                    .cpu()
-                    .numpy()
-                    .astype(_ort_type_to_numpy_dtype(output_types[name]))
+                    name: value.float().cpu().numpy().astype(_ort_type_to_numpy_dtype(output_types[name]))
                     for name, value in bound_outputs.items()
                 }
             else:
@@ -347,7 +329,8 @@ class TestRandomNemotron3(ExtTestCase):
         for variant in (1, 2):
             for precision in ("fp32", "fp16"):
                 with self.subTest(model=MODEL_IDS[variant], precision=precision):
-                    self._check_prefill_decode(variant, precision, modelopt=True)
+                    model = self._make_model(variant, mamba_ssm_cache_dtype="float32")
+                    self._check_prefill_decode(variant, precision, modelopt=True, model=model)
 
     @hide_stdout()
     def test_modelopt_invalid_scales(self):
@@ -424,6 +407,7 @@ class TestRandomNemotron3(ExtTestCase):
         loaded = load_nemotron_checkpoint(model_dir, model.config, model.config.num_hidden_layers)
         self.assertFalse(loaded.lm_head.weight.is_meta)
         self.assertIs(loaded.lm_head.weight, loaded.model.embeddings.weight)
+        self.assertEqualArray(model.model.embeddings.weight.detach().numpy(), loaded.lm_head.weight.detach().numpy())
 
     @hide_stdout()
     def test_expert_dispatch_does_not_gather_weights(self):
