@@ -7,6 +7,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Model support
 
+- Adds Nemotron 3 Nano 4B BF16, Nano 30B-A3B NVFP4, and Nemotron 3.5
+  Lightning 30B-A3B NVFP4 conversion, with offline hybrid-model parity and
+  generation tests. ModelOpt NVFP4/FP8 weights are dequantized for export;
+  activation and KV-cache quantization are not reproduced.
 - Adds Qwen3.8 conversion with native compressed-tensors NVFP4/FP8 weights and
   floating-point, INT2, INT4, and INT8 exports.
 - Adds exact INT2 conversion for Ternary Bonsai and direct conversion of packed

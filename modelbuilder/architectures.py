@@ -38,6 +38,11 @@ _MODEL_IDS: dict[str, tuple[str, ...]] = {
     "Mistral3ForConditionalGeneration": ("mistralai/Ministral-3-3B-Instruct-2512",),
     "MixtralForCausalLM": ("mistralai/Mixtral-8x7B-v0.1",),
     "NemotronForCausalLM": ("nvidia/Minitron-8B-Base",),
+    "NemotronHForCausalLM": (
+        "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4",
+        "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-NVFP4",
+        "nvidia/NVIDIA-Nemotron-3-Nano-4B-BF16",
+    ),
     "OlmoForCausalLM": ("allenai/OLMo-7B-hf",),
     "Olmo2ForCausalLM": ("allenai/OLMo-2-1124-7B",),
     "PhiForCausalLM": ("microsoft/phi-2",),

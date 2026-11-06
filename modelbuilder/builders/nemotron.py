@@ -13,6 +13,29 @@ from .llama import LlamaModel
 
 
 class NemotronHModel(LlamaModel):
+    def load_weights(self, input_path):
+        if input_path.endswith(".gguf") or "adapter_path" in self.extra_options:
+            return super().load_weights(input_path)
+        directory = input_path if os.path.isdir(input_path) else self.model_name_or_path
+        if not os.path.isdir(directory):
+            from huggingface_hub import constants, snapshot_download
+
+            directory = snapshot_download(
+                repo_id=directory,
+                revision=getattr(self._checkpoint_config, "_commit_hash", None),
+                cache_dir=self.cache_dir,
+                token=self.hf_token,
+                local_files_only=constants.HF_HUB_OFFLINE,
+                allow_patterns=["*.json", "*.safetensors"],
+            )
+        if not any(name.endswith(".safetensors") for name in os.listdir(directory)):
+            return super().load_weights(input_path)
+        from ..helpers.nemotron import load_nemotron_checkpoint
+
+        model = load_nemotron_checkpoint(directory, self._checkpoint_config, self.num_layers)
+        self.quant_type = None
+        return model
+
     def __init__(self, config, io_dtype, onnx_dtype, ep, cache_dir, extra_options):
         # NemotronH uses `mlp_hidden_act` instead of `hidden_act`
         if not hasattr(config, "hidden_act"):
@@ -52,6 +75,9 @@ class NemotronHModel(LlamaModel):
             ssm_state_size = getattr(config, "ssm_state_size", 0)
             n_groups = getattr(config, "n_groups", 1)
             conv_kernel = getattr(config, "conv_kernel", 4)
+            self.ssm_dtype = {"float32": ir.FLOAT, "float16": ir.FLOAT16, "bfloat16": ir.BFLOAT16}[
+                getattr(config, "mamba_ssm_cache_dtype", "float32")
+            ]
             mamba_intermediate = mamba_num_heads * mamba_head_dim
             mamba_conv_dim = mamba_intermediate + 2 * n_groups * ssm_state_size
 
@@ -67,11 +93,11 @@ class NemotronHModel(LlamaModel):
 
                 # SSM recurrent state: [batch_size, num_heads, head_dim, ssm_state_size]
                 self.input_names[f"past_state.{layer_id}.ssm"] = f"past_key_values.{layer_id}.recurrent_state"
-                self.input_types[f"past_state.{layer_id}.ssm"] = self.io_dtype
+                self.input_types[f"past_state.{layer_id}.ssm"] = self.ssm_dtype
                 self.input_shapes[f"past_state.{layer_id}.ssm"] = ["batch_size", mamba_num_heads, mamba_head_dim, ssm_state_size]
 
                 self.output_names[f"present_state.{layer_id}.ssm"] = f"present.{layer_id}.recurrent_state"
-                self.output_types[f"present_state.{layer_id}.ssm"] = self.io_dtype
+                self.output_types[f"present_state.{layer_id}.ssm"] = self.ssm_dtype
                 self.output_shapes[f"present_state.{layer_id}.ssm"] = ["batch_size", mamba_num_heads, mamba_head_dim, ssm_state_size]
 
     @staticmethod
@@ -111,10 +137,13 @@ class NemotronHModel(LlamaModel):
         elif block_type == "mamba":
             self.make_layernorm(layer_id, layer.norm, skip=not self.layernorm_attrs["first_layernorm"], simple=True, location="input")
             self.make_nemotronh_mamba(layer_id, layer.mixer, root_input=self.layernorm_attrs["output_0"])
+        elif block_type == "mlp":
+            self.make_layernorm(layer_id, layer.norm, skip=not self.layernorm_attrs["first_layernorm"], simple=True, location="input")
+            NemotronModel.make_mlp_proj(self, layer_id, layer.mixer, root_input=self.layernorm_attrs["output_0"])
         else:
             raise NotImplementedError(
                 f"NemotronH block type '{layer.block_type}' is not supported for ONNX export. "
-                "Only 'attention', 'mamba' and 'MoE' layers are currently supported."
+                "Only 'attention', 'mamba', 'mlp' and 'moe' layers are currently supported."
             )
 
         self.layernorm_attrs["first_layernorm"] = False
@@ -434,7 +463,10 @@ class NemotronHModel(LlamaModel):
         # 12. Y_init: initial SSM state contribution  →  [B, H, S, D]
         #     Y_init[b,h,s,d] = sum_n past_ssm[b,h,d,n] * C[b,h,s,n] * exp(A_ci_T[b,h,s])
         # ================================================================
-        past_ssm_fp32 = cast_fp32(f"{basename}/Y_init/past_ssm_fp32", past_ssm, ["batch_size", H, D, N])
+        past_ssm_fp32 = past_ssm
+        if self.ssm_dtype != ssm_dtype:
+            self.make_cast(f"{basename}/Y_init/past_ssm_fp32", past_ssm, ssm_dtype, ["batch_size", H, D, N])
+            past_ssm_fp32 = f"{basename}/Y_init/past_ssm_fp32/output_0"
         C_4d_Tn = f"{basename}/Y_init/C_T/Transpose"
         self.make_transpose(C_4d_Tn, C_4d, ssm_dtype, ["batch_size", H, N, "sequence_length"], [0, 1, 3, 2])
         # init_C = past_ssm @ C^T  →  [B, H, D, S]
@@ -604,7 +636,7 @@ class NemotronHModel(LlamaModel):
 
         # new_ssm = new_state_new + new_state_init  →  present_ssm [B, H, D, N]
         new_ssm_name = f"{basename}/ssm_state/new_ssm"
-        if use_cast:
+        if self.ssm_dtype != ssm_dtype:
             # Compute in fp32, then cast to io_dtype for the output
             new_ssm_fp32_name = f"{basename}/ssm_state/new_ssm_fp32"
             self.make_node(
@@ -614,9 +646,9 @@ class NemotronHModel(LlamaModel):
                 name=new_ssm_fp32_name,
             )
             self.make_value(f"{new_ssm_fp32_name}/output_0", ssm_dtype, ["batch_size", H, D, N])
-            self.make_cast(new_ssm_name, f"{new_ssm_fp32_name}/output_0", self.io_dtype, ["batch_size", H, D, N])
+            self.make_cast(new_ssm_name, f"{new_ssm_fp32_name}/output_0", self.ssm_dtype, ["batch_size", H, D, N])
             self.make_node("Identity", inputs=[f"{new_ssm_name}/output_0"], outputs=[present_ssm], name=f"{basename}/ssm_state/identity")
-            self.make_value(present_ssm, self.io_dtype, ["batch_size", H, D, N])
+            self.make_value(present_ssm, self.ssm_dtype, ["batch_size", H, D, N])
         else:
             self.make_node("Add", inputs=[new_state_new, f"{new_state_init_name}/output_0"], outputs=[present_ssm], name=new_ssm_name)
             self.make_value(present_ssm, ssm_dtype, ["batch_size", H, D, N])
@@ -653,7 +685,7 @@ class NemotronHModel(LlamaModel):
 
         # com.microsoft.MoE does not support relu2 activation on CPU, so fall back to a
         # decomposed implementation using standard ONNX ops when targeting CPU.
-        if self.ep == "cpu":
+        if self.ep == "cpu" or hasattr(moe.gate, "e_score_correction_bias") or hasattr(moe.fc1_latent_proj, "weight"):
             moe_expert_output = self._make_nemotronh_moe_routed_decomposed(layer_id, moe, root_input)
         else:
             moe_expert_output = self._make_nemotronh_moe_routed_fused(layer_id, moe, root_input)
@@ -776,33 +808,33 @@ class NemotronHModel(LlamaModel):
         """Routed experts via standard ONNX ops (CPU-compatible; no com.microsoft.MoE).
 
         ORT's CPU com.microsoft.MoE kernel does not support the relu2 activation type
-        used by NemotronH.  This method implements the same computation using Gather,
-        batched MatMul, Relu, and Pow so the model runs on all ORT builds including
-        the one bundled with onnxruntime-genai.
-
-        Graph outline (per selected expert):
-            root_input → [Unsqueeze → Expand → Unsqueeze] → x_col  [B,S,k,H,1]
-            gate(root_input) → Sigmoid → TopK → (optional Div normalise)
-            Gather(up_proj, topk_idx) → [B,S,k,intermediate,H]
-            MatMul(up_gathered, x_col)  → [B,S,k,intermediate,1]
-            Relu → Pow(2)               → [B,S,k,intermediate,1]
-            Gather(down_proj, topk_idx) → [B,S,k,H,intermediate]
-            MatMul(down_gathered, relu2) → [B,S,k,H,1]
-            Mul(down_out, weights)  → ReduceSum(axis=2) → Squeeze → [B,S,H]
+        used by NemotronH. Gather only the tokens assigned to each expert, then
+        scatter their weighted outputs back. Never gather full expert matrices
+        per token: that would exhaust memory on the 30B checkpoints.
         """
         basename = f"/model/layers.{layer_id}/moe"
         num_experts = self.moe_attrs["num_experts"]
         top_k = self.moe_attrs["top_k"]
         normalize = self.moe_attrs["normalize_routing_weights"]
+        expert_size = moe.experts.up_proj.shape[-1]
+        expert_input = root_input
+        if hasattr(moe.fc1_latent_proj, "weight"):
+            latent_name = self.make_matmul(moe.fc1_latent_proj, f"{basename}/fc1_latent_proj/MatMul", root_input)
+            expert_input = f"{latent_name}/output_0"
         # Use fp32 intermediate for TopK and weighted-sum when io_dtype is not fp32.
         use_cast = self.io_dtype != ir.DataType.FLOAT
-        # experts.up_proj: [n_experts, moe_intermediate_size, hidden_size]
-        moe_interm_size = moe.experts.up_proj.shape[1]
-
         # 1. Router: gate MatMul → Sigmoid → TopK
         # Exclude the router from int4 quantization by default: quantising
         # the small routing matrix corrupts top-k expert selection.
-        gate_matmul_name = self.make_matmul(moe.gate, f"{basename}/gate/MatMul", root_input)
+        router_input = root_input
+        if use_cast:
+            router_input = f"{basename}/gate/input_Cast/output_0"
+            self.make_cast(f"{basename}/gate/input_Cast", root_input, ir.FLOAT, ["batch_size", "sequence_length", self.hidden_size])
+        gate_weight = f"model.layers.{layer_id}.moe.gate.weight"
+        self.make_initializer(moe.gate.weight.detach().float().T, gate_weight)
+        gate_matmul_name = f"{basename}/gate/MatMul"
+        self.make_node("MatMul", inputs=[router_input, gate_weight], outputs=[f"{gate_matmul_name}/output_0"], name=gate_matmul_name)
+        self.make_value(f"{gate_matmul_name}/output_0", ir.FLOAT, ["batch_size", "sequence_length", num_experts])
         if not self.quant_attrs["int4"]["quantize_moe_router"]:
             if gate_matmul_name not in self.quant_attrs["int4"]["nodes_to_exclude"]:
                 self.quant_attrs["int4"]["nodes_to_exclude"].append(gate_matmul_name)
@@ -811,17 +843,75 @@ class NemotronHModel(LlamaModel):
         self.make_node(
             "Sigmoid", inputs=[f"{gate_matmul_name}/output_0"], outputs=[f"{gate_sigmoid_name}/output_0"], name=gate_sigmoid_name
         )
-        self.make_value(f"{gate_sigmoid_name}/output_0", self.io_dtype, shape=["batch_size", "sequence_length", num_experts])
+        self.make_value(f"{gate_sigmoid_name}/output_0", ir.FLOAT, shape=["batch_size", "sequence_length", num_experts])
+        topk_input = f"{gate_sigmoid_name}/output_0"
+        correction_bias = getattr(moe.gate, "e_score_correction_bias", None)
+        if correction_bias is not None:
+            bias_name = f"model.layers.{layer_id}.moe.gate.e_score_correction_bias"
+            self.make_initializer(correction_bias.detach().float(), bias_name)
+            self.make_add(f"{basename}/gate/choice", [topk_input, bias_name], ir.FLOAT, ["batch_size", "sequence_length", num_experts])
+            topk_input = f"{basename}/gate/choice/output_0"
 
-        # TopK on fp32 for numerical correctness; cast if io_dtype is fp16/bf16.
-        if use_cast:
-            topk_cast_name = f"{basename}/gate/TopK_Cast"
-            self.make_cast(
-                topk_cast_name, f"{gate_sigmoid_name}/output_0", ir.DataType.FLOAT, shape=["batch_size", "sequence_length", num_experts]
+        num_group = getattr(moe.gate, "num_group", 1)
+        topk_group = getattr(moe.gate, "topk_group", num_group)
+        if topk_group < num_group:
+            grouped = f"{basename}/gate/groups"
+            self.make_reshape(
+                grouped,
+                [topk_input, [0, 0, num_group, num_experts // num_group]],
+                ir.FLOAT,
+                ["batch_size", "sequence_length", num_group, num_experts // num_group],
             )
-            topk_input = f"{topk_cast_name}/output_0"
-        else:
-            topk_input = f"{gate_sigmoid_name}/output_0"
+            self.make_node(
+                "TopK",
+                [f"{grouped}/output_0", "/model/constants/INT64/[2]"],
+                [f"{grouped}/top2", f"{grouped}/top2_indices"],
+                name=f"{grouped}/TopK",
+                axis=-1,
+            )
+            self.make_reduce_sum(
+                f"{grouped}/sum",
+                [f"{grouped}/top2", "/model/constants/INT64/[-1]"],
+                ir.FLOAT,
+                ["batch_size", "sequence_length", num_group],
+                keepdims=False,
+            )
+            self.make_node(
+                "TopK",
+                [f"{grouped}/sum/output_0", f"/model/constants/INT64/[{topk_group}]"],
+                [f"{grouped}/selected_scores", f"{grouped}/selected"],
+                name=f"{grouped}/Select",
+                axis=-1,
+            )
+            self.make_initializer(torch.arange(num_experts) // (num_experts // num_group), f"{grouped}/expert_groups")
+            self.make_unsqueeze(
+                f"{grouped}/indices",
+                [f"{grouped}/selected", "/model/constants/INT64/[-1]"],
+                ir.INT64,
+                ["batch_size", "sequence_length", topk_group, 1],
+            )
+            self.make_node(
+                "Equal", [f"{grouped}/indices/output_0", f"{grouped}/expert_groups"], [f"{grouped}/matches"], name=f"{grouped}/Equal"
+            )
+            self.make_cast(
+                f"{grouped}/matches_Cast", f"{grouped}/matches", ir.INT64, ["batch_size", "sequence_length", topk_group, num_experts]
+            )
+            self.make_reduce_sum(
+                f"{grouped}/mask",
+                [f"{grouped}/matches_Cast/output_0", "/model/constants/INT64/[-2]"],
+                ir.INT64,
+                ["batch_size", "sequence_length", num_experts],
+                keepdims=False,
+            )
+            self.make_cast(f"{grouped}/mask_Cast", f"{grouped}/mask/output_0", ir.BOOL, ["batch_size", "sequence_length", num_experts])
+            self.make_initializer(torch.tensor(float("-inf")), f"{grouped}/negative_inf")
+            self.make_node(
+                "Where",
+                [f"{grouped}/mask_Cast/output_0", topk_input, f"{grouped}/negative_inf"],
+                [f"{grouped}/masked"],
+                name=f"{grouped}/Where",
+            )
+            topk_input = f"{grouped}/masked"
 
         topk_name = f"{basename}/gate/TopK"
         topk_val_out = f"{topk_name}/output_0"
@@ -837,6 +927,14 @@ class NemotronHModel(LlamaModel):
         )
         self.make_value(topk_val_out, ir.DataType.FLOAT, shape=["batch_size", "sequence_length", top_k])
         self.make_value(topk_idx_out, ir.DataType.INT64, shape=["batch_size", "sequence_length", top_k])
+        self.make_node(
+            "GatherElements",
+            inputs=[f"{gate_sigmoid_name}/output_0", topk_idx_out],
+            outputs=[f"{topk_name}/weights"],
+            name=f"{topk_name}/GatherElements",
+            axis=-1,
+        )
+        topk_val_out = f"{topk_name}/weights"
 
         # 2. Optional: normalise routing weights (norm_topk_prob).
         if normalize:
@@ -848,154 +946,100 @@ class NemotronHModel(LlamaModel):
                 shape=["batch_size", "sequence_length", 1],
                 keepdims=True,
             )
+            self.make_add(
+                f"{topk_sum_name}/epsilon",
+                [f"{topk_sum_name}/output_0", "/model/constants/FLOAT/1e-20"],
+                ir.FLOAT,
+                ["batch_size", "sequence_length", 1],
+            )
             topk_div_name = f"{basename}/gate/TopK_div"
             self.make_div(
                 topk_div_name,
-                [topk_val_out, f"{topk_sum_name}/output_0"],
+                [topk_val_out, f"{topk_sum_name}/epsilon/output_0"],
                 dtype=ir.DataType.FLOAT,
                 shape=["batch_size", "sequence_length", top_k],
             )
             topk_weights = f"{topk_div_name}/output_0"
         else:
             topk_weights = topk_val_out
+        scaling_factor = getattr(moe.gate, "routed_scaling_factor", 1.0)
+        if scaling_factor != 1.0:
+            scale_name = f"{basename}/gate/scaling_factor"
+            self.make_initializer(torch.tensor(float(scaling_factor)), scale_name)
+            self.make_mul(f"{basename}/gate/scale", [topk_weights, scale_name], ir.FLOAT, ["batch_size", "sequence_length", top_k])
+            topk_weights = f"{basename}/gate/scale/output_0"
 
-        # 3. Expert weight initializers (already [n_experts, out, in] format).
-        up_proj_weight = f"model.layers.{layer_id}.moe.experts.up_proj.weight"
-        down_proj_weight = f"model.layers.{layer_id}.moe.experts.down_proj.weight"
-        self.make_initializer(moe.experts.up_proj.detach(), up_proj_weight, to=self.io_dtype)
-        self.make_initializer(moe.experts.down_proj.detach(), down_proj_weight, to=self.io_dtype)
-
-        # 4. Gather selected expert weights using top-k indices.
-        #    Gather([n_experts, out, in], [B,S,k], axis=0) → [B,S,k,out,in]
-        up_gather_name = f"{basename}/experts/up_proj/Gather"
-        self.make_gather(
-            up_gather_name,
-            [up_proj_weight, topk_idx_out],
-            dtype=self.io_dtype,
-            shape=["batch_size", "sequence_length", top_k, moe_interm_size, self.hidden_size],
-            axis=0,
-        )
-        down_gather_name = f"{basename}/experts/down_proj/Gather"
-        self.make_gather(
-            down_gather_name,
-            [down_proj_weight, topk_idx_out],
-            dtype=self.io_dtype,
-            shape=["batch_size", "sequence_length", top_k, self.hidden_size, moe_interm_size],
-            axis=0,
-        )
-
-        # 5. Expand root_input: [B,S,H] → [B,S,1,H] → [B,S,k,H] → [B,S,k,H,1]
-        x_unsq1_name = f"{basename}/x_expand/Unsqueeze_1"
-        self.make_unsqueeze(
-            x_unsq1_name,
-            [root_input, "/model/constants/INT64/[2]"],
-            dtype=self.io_dtype,
-            shape=["batch_size", "sequence_length", 1, self.hidden_size],
-        )
-        x_expand_name = f"{basename}/x_expand/Expand"
-        # Shape [1,1,top_k,1] broadcasts to [B,S,top_k,H] via numpy broadcast rules.
-        self.make_expand(
-            x_expand_name,
-            [f"{x_unsq1_name}/output_0", f"/model/constants/INT64/[1, 1, {top_k}, 1]"],
-            dtype=self.io_dtype,
-            shape=["batch_size", "sequence_length", top_k, self.hidden_size],
-        )
-        x_unsq2_name = f"{basename}/x_expand/Unsqueeze_2"
-        self.make_unsqueeze(
-            x_unsq2_name,
-            [f"{x_expand_name}/output_0", "/model/constants/INT64/[-1]"],
-            dtype=self.io_dtype,
-            shape=["batch_size", "sequence_length", top_k, self.hidden_size, 1],
-        )
-
-        # 6. Expert up projection: [B,S,k,intermediate,H] @ [B,S,k,H,1] → [B,S,k,intermediate,1]
-        up_matmul_name = f"{basename}/experts/up_proj/MatMul"
-        up_matmul_out = f"{up_matmul_name}/output_0"
-        self.make_node(
-            "MatMul", inputs=[f"{up_gather_name}/output_0", f"{x_unsq2_name}/output_0"], outputs=[up_matmul_out], name=up_matmul_name
-        )
-        self.make_value(up_matmul_out, self.io_dtype, shape=["batch_size", "sequence_length", top_k, moe_interm_size, 1])
-
-        # 7. relu2 activation: Relu(x)^2
-        relu_name = f"{basename}/experts/act/Relu"
-        self.make_node("Relu", inputs=[up_matmul_out], outputs=[f"{relu_name}/output_0"], name=relu_name)
-        self.make_value(f"{relu_name}/output_0", self.io_dtype, shape=["batch_size", "sequence_length", top_k, moe_interm_size, 1])
-
-        pow_name = f"{basename}/experts/act/Pow"
-        self.make_node(
-            "Pow", inputs=[f"{relu_name}/output_0", "/model/constants/INT32/[2]"], outputs=[f"{pow_name}/output_0"], name=pow_name
-        )
-        self.make_value(f"{pow_name}/output_0", self.io_dtype, shape=["batch_size", "sequence_length", top_k, moe_interm_size, 1])
-
-        # 8. Expert down projection: [B,S,k,H,intermediate] @ [B,S,k,intermediate,1] → [B,S,k,H,1]
-        down_matmul_name = f"{basename}/experts/down_proj/MatMul"
-        down_matmul_out = f"{down_matmul_name}/output_0"
-        self.make_node(
-            "MatMul", inputs=[f"{down_gather_name}/output_0", f"{pow_name}/output_0"], outputs=[down_matmul_out], name=down_matmul_name
-        )
-        self.make_value(down_matmul_out, self.io_dtype, shape=["batch_size", "sequence_length", top_k, self.hidden_size, 1])
-
-        # 9. Weighted sum (computed in fp32 for numerical stability).
+        self.make_reshape(f"{basename}/tokens", [expert_input, [-1, expert_size]], self.io_dtype, ["tokens", expert_size])
+        self.make_reshape(f"{basename}/indices", [topk_idx_out, [-1, top_k]], ir.INT64, ["tokens", top_k])
+        self.make_reshape(f"{basename}/weights", [topk_weights, [-1, top_k]], ir.FLOAT, ["tokens", top_k])
+        tokens = f"{basename}/tokens/output_0"
+        sum_input = tokens
         if use_cast:
-            down_fp32_name = f"{basename}/experts/weighted_sum/down_Cast"
-            self.make_cast(
-                down_fp32_name, down_matmul_out, ir.DataType.FLOAT, shape=["batch_size", "sequence_length", top_k, self.hidden_size, 1]
+            self.make_cast(f"{basename}/sum_input", tokens, ir.FLOAT, ["tokens", expert_size])
+            sum_input = f"{basename}/sum_input/output_0"
+        self.make_mul(f"{basename}/zeros", [sum_input, "/model/constants/FLOAT/0"], ir.FLOAT, ["tokens", expert_size])
+        accumulated = f"{basename}/zeros/output_0"
+        for expert in range(num_experts):
+            prefix = f"{basename}/experts.{expert}"
+            self.make_node(
+                "Equal", [f"{basename}/indices/output_0", f"/model/constants/INT64/{expert}"], [f"{prefix}/mask"], name=f"{prefix}/Equal"
             )
-            down_for_sum = f"{down_fp32_name}/output_0"
-        else:
-            down_for_sum = down_matmul_out
-
-        # Unsqueeze routing weights: [B,S,k] → [B,S,k,1] → [B,S,k,1,1]
-        weights_unsq1_name = f"{basename}/experts/weighted_sum/weights_Unsqueeze_1"
-        self.make_unsqueeze(
-            weights_unsq1_name,
-            [topk_weights, "/model/constants/INT64/[-1]"],
-            dtype=ir.DataType.FLOAT,
-            shape=["batch_size", "sequence_length", top_k, 1],
+            self.make_node("NonZero", [f"{prefix}/mask"], [f"{prefix}/positions"], name=f"{prefix}/NonZero")
+            self.make_transpose(f"{prefix}/pairs", f"{prefix}/positions", ir.INT64, ["selected_tokens", 2], [1, 0])
+            self.make_gather(
+                f"{prefix}/rows", [f"{prefix}/pairs/output_0", "/model/constants/INT64/[0]"], ir.INT64, ["selected_tokens", 1], axis=1
+            )
+            self.make_node("GatherND", [tokens, f"{prefix}/rows/output_0"], [f"{prefix}/tokens"], name=f"{prefix}/GatherND")
+            self.make_node(
+                "GatherND",
+                [f"{basename}/weights/output_0", f"{prefix}/pairs/output_0"],
+                [f"{prefix}/weights"],
+                name=f"{prefix}/WeightGatherND",
+            )
+            self.make_unsqueeze(
+                f"{prefix}/weight_column", [f"{prefix}/weights", "/model/constants/INT64/[-1]"], ir.FLOAT, ["selected_tokens", 1]
+            )
+            up_weight = f"model.layers.{layer_id}.moe.experts.{expert}.up_proj.weight"
+            down_weight = f"model.layers.{layer_id}.moe.experts.{expert}.down_proj.weight"
+            self.make_initializer(moe.experts.up_proj[expert].detach().T, up_weight, to=self.io_dtype)
+            self.make_initializer(moe.experts.down_proj[expert].detach().T, down_weight, to=self.io_dtype)
+            self.make_node("MatMul", [f"{prefix}/tokens", up_weight], [f"{prefix}/up"], name=f"{prefix}/up_proj/MatMul")
+            self.make_node("Relu", [f"{prefix}/up"], [f"{prefix}/relu"], name=f"{prefix}/Relu")
+            self.make_node("Mul", [f"{prefix}/relu", f"{prefix}/relu"], [f"{prefix}/relu2"], name=f"{prefix}/Relu2")
+            self.make_node("MatMul", [f"{prefix}/relu2", down_weight], [f"{prefix}/down"], name=f"{prefix}/down_proj/MatMul")
+            down_output = f"{prefix}/down"
+            if use_cast:
+                self.make_cast(f"{prefix}/down_Cast", down_output, ir.FLOAT, ["selected_tokens", expert_size])
+                down_output = f"{prefix}/down_Cast/output_0"
+            self.make_mul(
+                f"{prefix}/weighted", [down_output, f"{prefix}/weight_column/output_0"], ir.FLOAT, ["selected_tokens", expert_size]
+            )
+            self.make_node("GatherND", [accumulated, f"{prefix}/rows/output_0"], [f"{prefix}/previous"], name=f"{prefix}/PreviousGatherND")
+            self.make_add(
+                f"{prefix}/updated", [f"{prefix}/previous", f"{prefix}/weighted/output_0"], ir.FLOAT, ["selected_tokens", expert_size]
+            )
+            self.make_node(
+                "ScatterND",
+                [accumulated, f"{prefix}/rows/output_0", f"{prefix}/updated/output_0"],
+                [f"{prefix}/accumulated"],
+                name=f"{prefix}/ScatterND",
+            )
+            accumulated = f"{prefix}/accumulated"
+        self.make_shape(f"{basename}/output_shape", expert_input, shape=[3])
+        self.make_reshape(
+            f"{basename}/output",
+            [accumulated, f"{basename}/output_shape/output_0"],
+            ir.FLOAT,
+            ["batch_size", "sequence_length", expert_size],
         )
-        weights_unsq2_name = f"{basename}/experts/weighted_sum/weights_Unsqueeze_2"
-        self.make_unsqueeze(
-            weights_unsq2_name,
-            [f"{weights_unsq1_name}/output_0", "/model/constants/INT64/[-1]"],
-            dtype=ir.DataType.FLOAT,
-            shape=["batch_size", "sequence_length", top_k, 1, 1],
-        )
-
-        # Mul: [B,S,k,H,1] * [B,S,k,1,1] → [B,S,k,H,1]
-        weighted_mul_name = f"{basename}/experts/weighted_sum/Mul"
-        self.make_mul(
-            weighted_mul_name,
-            [down_for_sum, f"{weights_unsq2_name}/output_0"],
-            dtype=ir.DataType.FLOAT,
-            shape=["batch_size", "sequence_length", top_k, self.hidden_size, 1],
-        )
-
-        # ReduceSum over top-k dimension: [B,S,k,H,1] → [B,S,H,1]
-        reduce_sum_name = f"{basename}/experts/weighted_sum/ReduceSum"
-        self.make_reduce_sum(
-            reduce_sum_name,
-            [f"{weighted_mul_name}/output_0", "/model/constants/INT64/[2]"],
-            dtype=ir.DataType.FLOAT,
-            shape=["batch_size", "sequence_length", self.hidden_size, 1],
-        )
-
-        # Squeeze trailing dim: [B,S,H,1] → [B,S,H]
-        squeeze_name = f"{basename}/experts/weighted_sum/Squeeze"
-        self.make_squeeze(
-            squeeze_name,
-            [f"{reduce_sum_name}/output_0", "/model/constants/INT64/[-1]"],
-            dtype=ir.DataType.FLOAT,
-            shape=["batch_size", "sequence_length", self.hidden_size],
-        )
-
+        expert_output = f"{basename}/output/output_0"
         if use_cast:
-            output_cast_name = f"{basename}/experts/weighted_sum/output_Cast"
-            self.make_cast(
-                output_cast_name, f"{squeeze_name}/output_0", self.io_dtype, shape=["batch_size", "sequence_length", self.hidden_size]
-            )
-            return f"{output_cast_name}/output_0"
-        else:
-            return f"{squeeze_name}/output_0"
+            self.make_cast(f"{basename}/output_Cast", expert_output, self.io_dtype, ["batch_size", "sequence_length", expert_size])
+            expert_output = f"{basename}/output_Cast/output_0"
+        if hasattr(moe.fc2_latent_proj, "weight"):
+            latent_name = self.make_matmul(moe.fc2_latent_proj, f"{basename}/fc2_latent_proj/MatMul", expert_output)
+            expert_output = f"{latent_name}/output_0"
+        return expert_output
 
     def make_genai_config(self, model_name_or_path, extra_kwargs, out_dir):
         """`nemotronh` is not supported as an architecture, let's replace with `llama`."""
