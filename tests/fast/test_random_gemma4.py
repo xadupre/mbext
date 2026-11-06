@@ -415,6 +415,19 @@ class TestRandomGemma4(ExtTestCase):
     def test_gemma4_fp32_cpu_onnx_light_generate(self):
         return self._test_gemma4_fp32_cpu_generate(self.run_onnx_light_generation_test, "test_gemma4_fp32_cpu_onnx_light_generate")
 
+    @hide_stdout()
+    def test_gemma4_cond_fp32_cpu_onnx_light_generate(self):
+        import torch
+        from transformers import Gemma4Config, Gemma4ForConditionalGeneration
+
+        text_config = self._make_config()
+        text_config.vocab_size = 257
+        config = Gemma4Config(text_config=text_config, vision_config=None, audio_config=None)
+        config.architectures = ["Gemma4ForConditionalGeneration"]
+        torch.manual_seed(42)
+        model = Gemma4ForConditionalGeneration(config).eval()
+        self.run_onnx_light_model_generation_test(model, MODEL_NAME, "native_gemma4_cond")
+
     def _test_gemma4_fp32_cpu_generate(self, generation_test, test_name):
         import torch
         from transformers import AutoModelForCausalLM

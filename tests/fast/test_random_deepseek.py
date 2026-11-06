@@ -22,6 +22,8 @@ requiring a separate registered config class.
 
 import unittest
 
+import pytest
+
 from modelbuilder.ext_test_case import ExtTestCase, hide_stdout, requires_cuda, requires_transformers
 
 MODEL_NAME = "deepseek-ai/DeepSeek-V4-Flash"
@@ -75,6 +77,25 @@ def _make_tiny_deepseek_config(**overrides):
 
 @requires_transformers("5")
 class TestDeepSeekV3(ExtTestCase):
+    @pytest.mark.xfail(strict=True, raises=AssertionError, reason="#569: exported DeepSeek MoE routing differs from HF")
+    @hide_stdout()
+    def test_deepseek_v3_fp32_cpu_onnx_light_generate(self):
+        self._test_native_generation("DeepseekV3ForCausalLM")
+
+    @pytest.mark.xfail(strict=True, raises=AssertionError, reason="#569: exported DeepSeek MoE routing differs from HF")
+    @hide_stdout()
+    def test_deepseek_v4_fp32_cpu_onnx_light_generate(self):
+        self._test_native_generation("DeepseekV4ForCausalLM")
+
+    def _test_native_generation(self, architecture):
+        import torch
+        from transformers import AutoModelForCausalLM
+
+        torch.manual_seed(42)
+        config = _make_tiny_deepseek_config(architectures=[architecture])
+        model = AutoModelForCausalLM.from_config(config).eval()
+        self.run_onnx_light_model_generation_test(model, MODEL_NAME, f"native_{architecture}")
+
     def common_fast_deepseek_random_weights(self, precision, provider, arch="DeepseekV3ForCausalLM"):
         from transformers import AutoModelForCausalLM
 

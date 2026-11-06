@@ -12,8 +12,9 @@ QWEN2_5_VL_MODEL_NAME = "Qwen/Qwen2.5-VL-7B-Instruct"
 
 @requires_transformers("5")  # text_config missing
 class TestRandomQwen25VL(ExtTestCase):
-    def common_fast_qwen25vl_random_weights(self, precision, provider):
-        from transformers import Qwen2_5_VLConfig, Qwen2_5_VLForConditionalGeneration, Qwen2_5_VLTextConfig
+    @staticmethod
+    def _make_config():
+        from transformers import Qwen2_5_VLConfig, Qwen2_5_VLTextConfig
 
         num_hidden_layers = 1
 
@@ -50,6 +51,25 @@ class TestRandomQwen25VL(ExtTestCase):
         }
         config = Qwen2_5_VLConfig(text_config=text_config, vision_config=vision_config)
         config.architectures = ["Qwen2_5_VLForConditionalGeneration"]
+        return config
+
+    @hide_stdout()
+    def test_qwen25vl_fp32_cpu_onnx_light_generate(self):
+        import torch
+        from transformers import Qwen2_5_VLForConditionalGeneration
+
+        config = self._make_config()
+        config.text_config.vocab_size = 257
+        torch.manual_seed(42)
+        model = Qwen2_5_VLForConditionalGeneration(config).eval()
+        self.run_onnx_light_model_generation_test(model, QWEN2_5_VL_MODEL_NAME, "native_qwen25vl")
+
+    def common_fast_qwen25vl_random_weights(self, precision, provider):
+        from transformers import Qwen2_5_VLForConditionalGeneration
+
+        config = self._make_config()
+        text_config = config.text_config
+        num_hidden_layers = text_config.num_hidden_layers
 
         model = Qwen2_5_VLForConditionalGeneration(config)
         model.eval().to(provider)

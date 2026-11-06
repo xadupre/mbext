@@ -7,6 +7,7 @@ import os
 import unittest
 
 import numpy as np
+import pytest
 
 from modelbuilder.ext_test_case import ExtTestCase, hide_stdout, requires_cuda, run_session_or_io_binding
 
@@ -246,6 +247,41 @@ def _make_phimoe_builder(config, io_dtype, onnx_dtype, ep, cache_dir, extra_opti
 
 
 class TestPhiMoE(ExtTestCase):
+    @pytest.mark.xfail(strict=True, raises=AttributeError, reason="#568: real PhimoeDecoderLayer has no block_sparse_moe")
+    @hide_stdout()
+    def test_phimoe_fp16_cpu_onnx_light_generate(self):
+        import torch
+        from transformers import PhimoeConfig, PhimoeForCausalLM
+
+        config = PhimoeConfig(
+            architectures=["PhiMoEForCausalLM"],
+            hidden_size=_HIDDEN_SIZE,
+            intermediate_size=_INTERMEDIATE_SIZE,
+            num_hidden_layers=1,
+            num_attention_heads=_NUM_ATTN_HEADS,
+            num_key_value_heads=_NUM_KV_HEADS,
+            num_local_experts=_NUM_EXPERTS,
+            num_experts_per_tok=_NUM_EXPERTS_PER_TOK,
+            vocab_size=257,
+            max_position_embeddings=_MAX_POS,
+            bos_token_id=1,
+            eos_token_id=2,
+            pad_token_id=0,
+            rope_parameters={
+                "rope_type": "longrope",
+                "short_factor": [1.0] * _ROTARY_DIM_HALF,
+                "long_factor": [1.0] * _ROTARY_DIM_HALF,
+                "original_max_position_embeddings": _ORIG_MAX_POS,
+                "factor": _MAX_POS / _ORIG_MAX_POS,
+                "short_mscale": 1.0,
+                "long_mscale": 1.0,
+            },
+        )
+        config.original_max_position_embeddings = _ORIG_MAX_POS
+        torch.manual_seed(42)
+        model = PhimoeForCausalLM(config).half().eval()
+        self.run_onnx_light_model_generation_test(model, _MODEL_NAME, "native_phimoe", precision="fp16")
+
     def _build_phimoe_onnx(self, output_dir, cache_dir):
         """Build the PhiMoE ONNX model with synthetic random weights.
 

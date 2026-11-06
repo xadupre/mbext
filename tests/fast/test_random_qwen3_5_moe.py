@@ -115,6 +115,30 @@ def _make_qwen3_5_moe_text_config(layer_types, num_hidden_layers=None):
 
 
 class TestRandomQwen3_5Moe(ExtTestCase):
+    @requires_transformers("5")
+    @hide_stdout()
+    def test_qwen3_5_moe_fp32_cpu_onnx_light_generate(self):
+        import torch
+        from transformers import AutoModelForCausalLM, AutoModelForImageTextToText
+
+        for composite in (False, True):
+            with self.subTest(composite=composite):
+                layer_types = ["linear_attention", "full_attention"]
+                config = _make_qwen3_5_moe_config(layer_types) if composite else _make_qwen3_5_moe_text_config(layer_types)
+                text_config = config.text_config if composite else config
+                text_config.vocab_size = 256
+                if composite:
+                    config.vision_config.depth = 1
+                    config.vision_config.hidden_size = 32
+                    config.vision_config.intermediate_size = 64
+                    config.vision_config.num_heads = 4
+                torch.manual_seed(42)
+                factory = AutoModelForImageTextToText if composite else AutoModelForCausalLM
+                model = factory.from_config(config).eval()
+                self.run_onnx_light_model_generation_test(
+                    model, QWEN3_5_MOE_MODEL_NAME, f"native_qwen3_5_moe_{composite}", create_model_kwargs={"exclude_embeds": False}
+                )
+
     def _build_model(self, config, precision, provider, **extra_options):
         """Create a random-weight HF MoE model and build its ONNX export.
 

@@ -61,6 +61,24 @@ def _make_qwen3_5_config(layer_types, num_hidden_layers=None):
 
 
 class TestRandomQwen3_5(ExtTestCase):
+    @requires_transformers("5")
+    @hide_stdout()
+    def test_qwen3_5_composite_fp32_cpu_onnx_light_generate(self):
+        import torch
+        from transformers import Qwen3_5ForConditionalGeneration
+
+        config = _make_qwen3_5_config(["linear_attention"] * 3 + ["full_attention"])
+        config.text_config.vocab_size = 256
+        config.vision_config.depth = 1
+        config.vision_config.hidden_size = 32
+        config.vision_config.intermediate_size = 64
+        config.vision_config.num_heads = 4
+        torch.manual_seed(42)
+        model = Qwen3_5ForConditionalGeneration(config).eval()
+        self.run_onnx_light_model_generation_test(
+            model, QWEN3_5_MODEL_NAME, "native_qwen3_5_composite", create_model_kwargs={"exclude_embeds": False}
+        )
+
     # ------------------------------------------------------------------ #
     # Internal helpers                                                    #
     # ------------------------------------------------------------------ #

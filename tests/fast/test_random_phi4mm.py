@@ -61,7 +61,7 @@ def _make_phi4mm_config():
     return config
 
 
-def _make_peft_model(config):
+def _make_peft_model(config, *, use_longrope=False):
     """Build a Phi3ForCausalLM base and wrap it in a PEFT LoRA model.
 
     Two adapters are created: "default" and "vision".  Because lora_B is
@@ -69,9 +69,9 @@ def _make_peft_model(config):
     the plain base model.  Phi4MMModel.make_layer reassigns the vision adapter
     to default before building the ONNX graph, so both outputs agree at init.
 
-    The base config intentionally omits ``rope_scaling`` (uses default RoPE)
-    to avoid version-specific rope-validation across transformers 4.x / 5.x.
-    The weight shapes are identical regardless of the rotary-embedding variant.
+    By default the base config omits ``rope_scaling`` for compatibility with
+    transformers 4.x / 5.x. ``use_longrope`` instead matches the exported
+    rotary embedding for generation parity.
     """
     from peft import LoraConfig, get_peft_model
     from transformers import AutoModelForCausalLM, Phi3Config
@@ -93,6 +93,8 @@ def _make_peft_model(config):
         eos_token_id=config.eos_token_id,
         pad_token_id=config.pad_token_id,
     )
+    if use_longrope:
+        base_cfg.rope_parameters = dict(config.rope_parameters)
     base_model = AutoModelForCausalLM.from_config(base_cfg)
 
     lora_cfg = LoraConfig(r=4, target_modules=["qkv_proj", "o_proj", "gate_up_proj", "down_proj"])
@@ -115,6 +117,37 @@ class _Phi4MMModelWithSyntheticWeights(Phi4MMModel):
 
 
 class TestPhi4MM(ExtTestCase):
+    @hide_stdout()
+    def test_phi4mm_fp32_cpu_onnx_light_generate(self):
+        import torch
+        from onnx_light.onnx import TensorProto
+
+        config = _make_phi4mm_config()
+        config.rope_parameters.update(
+            original_max_position_embeddings=config.original_max_position_embeddings,
+            factor=2.0,
+            rope_type="longrope",
+            rope_theta=10000.0,
+            partial_rotary_factor=1.0,
+        )
+        torch.manual_seed(42)
+        model = _make_peft_model(config, use_longrope=True).eval()
+        prompt = torch.tensor([[3, 4, 5, 6]])
+        with torch.no_grad():
+            reference = model.generate(prompt, max_new_tokens=5, do_sample=False, eos_token_id=None, pad_token_id=0)[0].tolist()
+        embedding = self.make_onnx_light_embedding_model(model.get_input_embeddings(), TensorProto.FLOAT)
+        output_dir, cache_dir = self.get_dirs("native_phi4mm")
+        config.save_pretrained(cache_dir)
+        builder = _Phi4MMModelWithSyntheticWeights(
+            config, TensorProto.FLOAT, TensorProto.FLOAT, "cpu", cache_dir, {"exclude_embeds": True}, synthetic_weights=model
+        )
+        builder.make_model(cache_dir)
+        builder.save_model(output_dir)
+        builder.make_genai_config(cache_dir, {}, output_dir)
+        self.run_onnx_light_generation_test(
+            output_dir, None, config.vocab_size, None, pt_tokens=reference, prompt_ids=prompt, embedding_model=embedding
+        )
+
     def common_fast_phi4mm_random_weights(self, precision, provider):
         """Build the ONNX model and run prefill + decode, comparing against PyTorch.
 

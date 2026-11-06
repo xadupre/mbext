@@ -67,6 +67,24 @@ def _make_fara1_5_config(num_hidden_layers=8, full_attention_interval=4):
 
 
 class TestRandomFara1_5(ExtTestCase):
+    @requires_transformers("5")
+    @hide_stdout()
+    def test_fara1_5_fp32_cpu_onnx_light_generate(self):
+        import torch
+        from transformers import Qwen3_5ForConditionalGeneration
+
+        config = _make_fara1_5_config(num_hidden_layers=4)
+        config.text_config.vocab_size = 256
+        config.vision_config.depth = 1
+        config.vision_config.hidden_size = 32
+        config.vision_config.intermediate_size = 64
+        config.vision_config.num_heads = 4
+        torch.manual_seed(42)
+        model = Qwen3_5ForConditionalGeneration(config).eval()
+        self.run_onnx_light_model_generation_test(
+            model, FARA1_5_MODEL_NAME, "native_fara1_5", create_model_kwargs={"exclude_embeds": False}
+        )
+
     def _build_and_save_model(self, config, precision, provider):
         import torch
         from transformers import AutoModelForImageTextToText
