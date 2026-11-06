@@ -39,6 +39,7 @@ class TestArchitectures(ExtTestCase):
         archs = {arch.name: arch for arch in list_supported_architectures()}
         for name, model_id in (
             ("GemmaForCausalLM", "google/gemma-2b"),
+            ("Gemma4ForConditionalGeneration", "nvidia/NVIDIA-Nemotron-3.5-Bolt-E4B-BF16"),
             ("LlamaForCausalLM", "meta-llama/Llama-2-7b-hf"),
             ("Phi3ForCausalLM", "microsoft/Phi-3-mini-4k-instruct"),
             ("PhiMoEForCausalLM", "microsoft/Phi-3.5-MoE-instruct"),

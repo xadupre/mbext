@@ -238,6 +238,8 @@ class Gemma4Model(Gemma3Model):
         # separate vocabulary table.  Store the PLE dimension for use in
         # make_embedding() and make_layer().
         self._ple_dim = getattr(config, "hidden_size_per_layer_input", 0)
+        if self._ple_dim and self.exclude_embeds:
+            raise ValueError("Gemma4 per-layer embeddings require token IDs; export with exclude_embeds=false.")
         # Tensor name for the pre-computed packed PLE inputs, set by make_embedding().
         self._ple_inputs_name: str = ""
 
@@ -324,10 +326,9 @@ class Gemma4Model(Gemma3Model):
         cast = self.io_dtype != norm_dtype
 
         # Locate the text-model sub-module that owns the PLE weights.
-        m = self.weights
-        if hasattr(m, "language_model"):
-            m = m.language_model
-        text_model = m.model
+        text_model = self.weights.model
+        if self._original_architecture == "Gemma4ForConditionalGeneration":
+            text_model = text_model.language_model
 
         # ------------------------------------------------------------------
         # 1. Token-identity component: embed_tokens_per_layer(input_ids)
