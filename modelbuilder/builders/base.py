@@ -684,6 +684,10 @@ class Model(LocalFunctionsMixin):
         self.kv_size = self.num_kv_heads * self.head_size
 
         if self.ep == "any":
+            if self.model_type == "WhisperForConditionalGeneration":
+                raise NotImplementedError(
+                    "--ep any does not yet support Whisper's encoder/cross-attention export."
+                )
             self.attention_attrs["op_type"] = "PortableAttention"
         elif self.is_gqa_supported():
             # Change model settings for GroupQueryAttention
