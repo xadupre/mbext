@@ -5240,6 +5240,24 @@ class Model(LocalFunctionsMixin):
 
     def make_attention_mask_reformatting(self):
         if self.ep == "any":
+            if "multi_cache" in self.rope_attrs:
+                basename = "/model/attn_mask_reformat/attn_mask_subgraph"
+                shape_name = f"{basename}/Shape"
+                self.make_shape(
+                    shape_name, self.input_names["attention_mask"], shape=[2]
+                )
+                gather = (
+                    "Gather"
+                    if self.attention_attrs["op_type"] == "GroupQueryAttention"
+                    else "Gather_2"
+                )
+                self.make_gather(
+                    f"{basename}/{gather}",
+                    [f"{shape_name}/output_0", "/model/constants/INT64/1"],
+                    dtype=TensorProto.INT64,
+                    shape=[],
+                    axis=0,
+                )
             return
         if self.extra_options.get("enable_cuda_graph", False) or self.extra_options.get("enable_webgpu_graph", False) or self.ep == "dml":
             # ORT does not allow nodes to be placed on mulitple execution providers
