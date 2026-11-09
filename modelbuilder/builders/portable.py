@@ -92,7 +92,7 @@ def make_portable_node(model, op_type, inputs, outputs, name, domain, attributes
 
 
 def make_portable_attention(model, name, **kwargs):
-    """Build causal grouped-query attention with compact, growing KV caches."""
+    """Use standard Attention, decomposing only the unsupported sink variant."""
 
     def node(op_type, inputs, suffix, *, output=None, **attributes):
         output = output or f"{name}/{suffix}/output"
@@ -105,9 +105,45 @@ def make_portable_attention(model, name, **kwargs):
     zero = constant(0, "zero")
     one = constant(1, "one")
     two = constant(2, "two")
-    axes_2 = constant([2], "axes_2")
     axes_01 = constant([0, 1], "axes_01")
     axes_12 = constant([1, 2], "axes_12")
+    query_length = node("Gather", [node("Shape", [kwargs["q_path"]], "q_size"), one], "q_length", axis=0)
+    key_length = node("Gather", [node("Shape", [kwargs["k_path"]], "k_size"), one], "k_length", axis=0)
+    past_k = kwargs.get("past_k", "")
+    past_length = node("Gather", [node("Shape", [past_k], "past_size"), two], "past_length", axis=0) if past_k else zero
+    total_length = node("Add", [past_length, key_length], "total_length")
+    query_end = node("Add", [past_length, query_length], "query_end")
+    query_positions = node("Range", [past_length, query_end, one], "query_positions")
+    query_positions = node("Unsqueeze", [query_positions, constant([1], "axis_1")], "query_column")
+    key_positions = node("Range", [zero, total_length, one], "key_positions")
+    allowed = node("LessOrEqual", [key_positions, query_positions], "causal")
+    if model.window_size is not None and model.window_size > 0:
+        lower = node("Sub", [query_positions, constant(model.window_size, "window")], "window_start")
+        local = node("Greater", [key_positions, lower], "local")
+        allowed = node("And", [allowed, local], "causal_local")
+    allowed = node("Unsqueeze", [allowed, axes_01], "causal_4d")
+    if model.input_names.get("attention_mask"):
+        padding = node("Cast", [model.input_names["attention_mask"]], "padding_bool", to=TensorProto.BOOL)
+        padding = node("Unsqueeze", [padding, axes_12], "padding_4d")
+        allowed = node("And", [allowed, padding], "allowed")
+
+    sinks = kwargs.get("sinks", "")
+    if not sinks:
+        model.make_node(
+            "Attention",
+            [kwargs["q_path"], kwargs["k_path"], kwargs["v_path"], allowed, past_k, kwargs.get("past_v", "")],
+            [f"{name}/output_0", kwargs.get("present_k", ""), kwargs.get("present_v", "")],
+            name=name,
+            q_num_heads=model.num_attn_heads,
+            kv_num_heads=model.num_kv_heads,
+            scale=model.attention_attrs["scale"],
+            softcap=model.attention_attrs["softcap"],
+            softmax_precision=TensorProto.FLOAT,
+        )
+        model.make_value(f"{name}/output_0", model.io_dtype, ["batch_size", "sequence_length", model.q_size])
+        return
+
+    axes_2 = constant([2], "axes_2")
     q_shape = constant([0, 0, model.num_attn_heads, model.head_size], "q_shape")
     kv_shape = constant([0, 0, model.num_kv_heads, model.head_size], "kv_shape")
     q = node("Reshape", [kwargs["q_path"], q_shape], "q_reshape")
@@ -124,23 +160,6 @@ def make_portable_attention(model, name, **kwargs):
             current = node("Identity", [current], f"{label}_cache", output=present)
         cache[label] = current
     k, v = cache["k"], cache["v"]
-    query_length = node("Gather", [node("Shape", [q], "q_size"), two], "q_length", axis=0)
-    total_length = node("Gather", [node("Shape", [k], "k_size"), two], "total_length", axis=0)
-    past_length = node("Sub", [total_length, query_length], "past_length")
-    query_positions = node("Range", [past_length, total_length, one], "query_positions")
-    query_positions = node("Unsqueeze", [query_positions, constant([1], "axis_1")], "query_column")
-    key_positions = node("Range", [zero, total_length, one], "key_positions")
-    allowed = node("LessOrEqual", [key_positions, query_positions], "causal")
-    if model.window_size is not None and model.window_size > 0:
-        lower = node("Sub", [query_positions, constant(model.window_size, "window")], "window_start")
-        local = node("Greater", [key_positions, lower], "local")
-        allowed = node("And", [allowed, local], "causal_local")
-    allowed = node("Unsqueeze", [allowed, axes_01], "causal_4d")
-    if model.input_names.get("attention_mask"):
-        padding = node("Cast", [model.input_names["attention_mask"]], "padding_bool", to=TensorProto.BOOL)
-        padding = node("Unsqueeze", [padding, axes_12], "padding_4d")
-        allowed = node("And", [allowed, padding], "allowed")
-
     if model.num_attn_heads != model.num_kv_heads:
         repeats = constant([1, 1, model.num_attn_heads // model.num_kv_heads, 1, 1], "kv_repeats")
         shape = constant([0, model.num_attn_heads, -1, model.head_size], "repeated_shape")
@@ -164,27 +183,24 @@ def make_portable_attention(model, name, **kwargs):
         scores = node("Tanh", [scores], "tanh")
         scores = node("Mul", [scores, cap], "capped")
     scores = node("Where", [allowed, scores, constant(float("-inf"), "masked_value", np.float32)], "masked")
-    sinks = kwargs.get("sinks", "")
-    if sinks:
-        sink = node("Cast", [sinks], "sinks_float", to=TensorProto.FLOAT)
-        sink = node("Unsqueeze", [sink, constant([0, 2, 3], "sinks_axes")], "sinks_4d")
-        score_shape = node("Shape", [scores], "score_shape")
-        prefix = node("Slice", [score_shape, constant([0], "prefix_start"), constant([3], "prefix_end")], "score_prefix")
-        sink_shape = node("Concat", [prefix, constant([1], "sink_one")], "sink_shape", axis=0)
-        sink = node("Expand", [sink, sink_shape], "sinks_expanded")
-        scores = node("Concat", [scores, sink], "scores_with_sinks", axis=-1)
+    sink = node("Cast", [sinks], "sinks_float", to=TensorProto.FLOAT)
+    sink = node("Unsqueeze", [sink, constant([0, 2, 3], "sinks_axes")], "sinks_4d")
+    score_shape = node("Shape", [scores], "score_shape")
+    prefix = node("Slice", [score_shape, constant([0], "prefix_start"), constant([3], "prefix_end")], "score_prefix")
+    sink_shape = node("Concat", [prefix, constant([1], "sink_one")], "sink_shape", axis=0)
+    sink = node("Expand", [sink, sink_shape], "sinks_expanded")
+    scores = node("Concat", [scores, sink], "scores_with_sinks", axis=-1)
     probabilities = node("Softmax", [scores], "softmax", axis=-1)
-    if sinks:
-        probabilities = node(
-            "Slice",
-            [
-                probabilities,
-                constant([0], "probability_start"),
-                node("Unsqueeze", [total_length, constant([0], "axis_0")], "probability_end"),
-                constant([3], "probability_axis"),
-            ],
-            "without_sinks",
-        )
+    probabilities = node(
+        "Slice",
+        [
+            probabilities,
+            constant([0], "probability_start"),
+            node("Unsqueeze", [total_length, constant([0], "axis_0")], "probability_end"),
+            constant([3], "probability_axis"),
+        ],
+        "without_sinks",
+    )
     # A fully padded query must contribute zero rather than propagate NaNs.
     probabilities = node("Where", [allowed, probabilities, constant(0, "zero_float", np.float32)], "valid_probabilities")
     probabilities = node("Cast", [probabilities], "probability_cast", to=model.io_dtype)

@@ -60,6 +60,9 @@ class TestAnyEP(ExtTestCase):
             self.assertLessEqual({item.domain for item in proto.opset_import}, {"", "ai.onnx"})
             self.assertTrue(all(node.domain in {"", "ai.onnx"} for node in proto.graph.node))
             self.assertNotIn("GroupQueryAttention", {node.op_type for node in proto.graph.node})
+            self.assertEqual(sum(node.op_type == "Attention" for node in proto.graph.node), config.num_hidden_layers)
+            self.assertNotIn("Softmax", {node.op_type for node in proto.graph.node})
+            self.assertNotIn("Tile", {node.op_type for node in proto.graph.node})
             locations = {entry.value for tensor in proto.graph.initializer for entry in tensor.external_data if entry.key == "location"}
             self.assertTrue(locations)
             self.assertLessEqual(locations, {"model.onnx.data", ".weights/model.safetensors"})
@@ -245,12 +248,17 @@ class TestAnyEP(ExtTestCase):
                     sinks="sinks" if use_sinks else "",
                 )
                 model.make_graph_output("attention/output_0", TensorProto.FLOAT, [2, 3, 32])
+                for label in ("k", "v"):
+                    model.make_graph_output(f"present_{label}", TensorProto.FLOAT, [2, 2, 5, 8])
                 proto = model.to_model_proto()
+                self.assertEqual(sum(node.op_type == "Attention" for node in proto.graph.node), 0 if use_sinks else 1)
                 session = ort.InferenceSession(proto.SerializeToString(), providers=["CPUExecutionProvider"])
-                actual = session.run(None, feeds)[0]
+                actual, actual_key, actual_value = session.run(None, feeds)
                 query = torch.from_numpy(q).reshape(2, 3, 4, 8).transpose(1, 2)
                 key = torch.cat([torch.from_numpy(past_k), torch.from_numpy(k).reshape(2, 3, 2, 8).transpose(1, 2)], dim=2)
                 value = torch.cat([torch.from_numpy(past_v), torch.from_numpy(v).reshape(2, 3, 2, 8).transpose(1, 2)], dim=2)
+                self.assertEqualArray(key.numpy(), actual_key)
+                self.assertEqualArray(value.numpy(), actual_value)
                 key, value = key.repeat_interleave(2, dim=1), value.repeat_interleave(2, dim=1)
                 scores = torch.tanh((query @ key.transpose(-1, -2)) / np.sqrt(8) / 1.5) * 1.5
                 positions = torch.arange(5)

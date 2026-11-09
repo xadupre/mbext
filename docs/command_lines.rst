@@ -98,14 +98,16 @@ Main arguments
     operators (opset 23 or newer), without ORT contrib operators or a fixed
     provider in the GenAI configuration. It supports ``fp32``, ``fp16`` and
     ``bf16``; integer export precisions and provider-specific options raise
-    explicit errors. Attention is decomposed into standard operations with
-    growing KV caches, causal/padding masks and grouped-query support.
+    explicit errors. The standard ONNX ``Attention`` operator handles growing
+    KV caches and grouped queries, with explicit causal/padding/sliding-window
+    masks. Only attention with sinks is decomposed into standard operations,
+    because the standard ``Attention`` operator has no sink input.
     Unsupported custom operators also raise an explicit error rather than
     silently selecting CPU or CUDA. This is a base export, not a CPU/CUDA
     rewriting bundle; no additional models are generated. Runtime support
     for the selected standard opset and floating-point type is still required.
-    This unfused reference graph materializes attention scores and can be
-    slower and use more runtime memory than provider-specific exports.
+    This reference graph is not provider-optimized and can be slower or use
+    more runtime memory than provider-specific exports.
     Model and external-data filenames are unchanged.
 
 ``-c``, ``--cache_dir``
