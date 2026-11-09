@@ -104,13 +104,10 @@ def make_portable_attention(model, name, **kwargs):
 
     zero = constant(0, "zero")
     one = constant(1, "one")
-    two = constant(2, "two")
-    axes_01 = constant([0, 1], "axes_01")
-    axes_12 = constant([1, 2], "axes_12")
     query_length = node("Gather", [node("Shape", [kwargs["q_path"]], "q_size"), one], "q_length", axis=0)
     key_length = node("Gather", [node("Shape", [kwargs["k_path"]], "k_size"), one], "k_length", axis=0)
     past_k = kwargs.get("past_k", "")
-    past_length = node("Gather", [node("Shape", [past_k], "past_size"), two], "past_length", axis=0) if past_k else zero
+    past_length = node("Gather", [node("Shape", [past_k], "past_size"), constant(2, "two")], "past_length", axis=0) if past_k else zero
     total_length = node("Add", [past_length, key_length], "total_length")
     query_end = node("Add", [past_length, query_length], "query_end")
     query_positions = node("Range", [past_length, query_end, one], "query_positions")
@@ -121,10 +118,10 @@ def make_portable_attention(model, name, **kwargs):
         lower = node("Sub", [query_positions, constant(model.window_size, "window")], "window_start")
         local = node("Greater", [key_positions, lower], "local")
         allowed = node("And", [allowed, local], "causal_local")
-    allowed = node("Unsqueeze", [allowed, axes_01], "causal_4d")
+    allowed = node("Unsqueeze", [allowed, constant([0, 1], "axes_01")], "causal_4d")
     if model.input_names.get("attention_mask"):
         padding = node("Cast", [model.input_names["attention_mask"]], "padding_bool", to=TensorProto.BOOL)
-        padding = node("Unsqueeze", [padding, axes_12], "padding_4d")
+        padding = node("Unsqueeze", [padding, constant([1, 2], "axes_12")], "padding_4d")
         allowed = node("And", [allowed, padding], "allowed")
 
     sinks = kwargs.get("sinks", "")
@@ -143,7 +140,6 @@ def make_portable_attention(model, name, **kwargs):
         model.make_value(f"{name}/output_0", model.io_dtype, ["batch_size", "sequence_length", model.q_size])
         return
 
-    axes_2 = constant([2], "axes_2")
     q_shape = constant([0, 0, model.num_attn_heads, model.head_size], "q_shape")
     kv_shape = constant([0, 0, model.num_kv_heads, model.head_size], "kv_shape")
     q = node("Reshape", [kwargs["q_path"], q_shape], "q_reshape")
@@ -161,6 +157,7 @@ def make_portable_attention(model, name, **kwargs):
         cache[label] = current
     k, v = cache["k"], cache["v"]
     if model.num_attn_heads != model.num_kv_heads:
+        axes_2 = constant([2], "axes_2")
         repeats = constant([1, 1, model.num_attn_heads // model.num_kv_heads, 1, 1], "kv_repeats")
         shape = constant([0, model.num_attn_heads, -1, model.head_size], "repeated_shape")
 

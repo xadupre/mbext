@@ -225,12 +225,27 @@ class TestAnyEP(ExtTestCase):
         past_k = rng.normal(size=(2, 2, 2, 8)).astype(np.float32)
         past_v = rng.normal(size=(2, 2, 2, 8)).astype(np.float32)
         mask = np.array([[0, 1, 1, 1, 1], [0, 0, 0, 0, 0]], dtype=np.int64)
-        for use_sinks in (False, True):
-            with self.subTest(sinks=use_sinks), tempfile.TemporaryDirectory() as tmp:
+        cases = (
+            (False, None, False, False),
+            (False, None, False, True),
+            (False, None, True, True),
+            (False, 3, True, True),
+            (True, None, True, True),
+            (True, 3, True, True),
+        )
+        for use_sinks, window, use_past, use_padding in cases:
+            with self.subTest(sinks=use_sinks, window=window, past=use_past, padding=use_padding), tempfile.TemporaryDirectory() as tmp:
                 model = Model(self._config(LlamaConfig), TensorProto.FLOAT, TensorProto.FLOAT, "any", tmp, {"onnx_opset": 23})
-                model.window_size = 3
+                model.window_size = window
                 model.attention_attrs["softcap"] = 1.5
-                feeds = {"q": q, "k": k, "v": v, "past_k": past_k, "past_v": past_v, "attention_mask": mask}
+                current_mask = mask if use_past else mask[:, -3:]
+                feeds = {"q": q, "k": k, "v": v, "attention_mask": current_mask}
+                if not use_padding:
+                    model.input_names.pop("attention_mask")
+                    feeds.pop("attention_mask")
+                    current_mask = np.ones_like(current_mask)
+                if use_past:
+                    feeds.update(past_k=past_k, past_v=past_v)
                 if use_sinks:
                     feeds["sinks"] = np.linspace(-1, 1, 4, dtype=np.float32)
                 for key, value in feeds.items():
@@ -241,35 +256,42 @@ class TestAnyEP(ExtTestCase):
                     q_path="q",
                     k_path="k",
                     v_path="v",
-                    past_k="past_k",
-                    past_v="past_v",
+                    past_k="past_k" if use_past else "",
+                    past_v="past_v" if use_past else "",
                     present_k="present_k",
                     present_v="present_v",
                     sinks="sinks" if use_sinks else "",
                 )
                 model.make_graph_output("attention/output_0", TensorProto.FLOAT, [2, 3, 32])
+                total_length = 5 if use_past else 3
                 for label in ("k", "v"):
-                    model.make_graph_output(f"present_{label}", TensorProto.FLOAT, [2, 2, 5, 8])
+                    model.make_graph_output(f"present_{label}", TensorProto.FLOAT, [2, 2, total_length, 8])
                 proto = model.to_model_proto()
                 self.assertEqual(sum(node.op_type == "Attention" for node in proto.graph.node), 0 if use_sinks else 1)
+                used = {value for node in proto.graph.node for value in node.input} | {value.name for value in proto.graph.output}
+                self.assertEqual([node.name for node in proto.graph.node if not any(value in used for value in node.output)], [])
                 session = ort.InferenceSession(proto.SerializeToString(), providers=["CPUExecutionProvider"])
                 actual, actual_key, actual_value = session.run(None, feeds)
                 query = torch.from_numpy(q).reshape(2, 3, 4, 8).transpose(1, 2)
-                key = torch.cat([torch.from_numpy(past_k), torch.from_numpy(k).reshape(2, 3, 2, 8).transpose(1, 2)], dim=2)
-                value = torch.cat([torch.from_numpy(past_v), torch.from_numpy(v).reshape(2, 3, 2, 8).transpose(1, 2)], dim=2)
+                previous_key = past_k if use_past else past_k[:, :, :0]
+                previous_value = past_v if use_past else past_v[:, :, :0]
+                key = torch.cat([torch.from_numpy(previous_key), torch.from_numpy(k).reshape(2, 3, 2, 8).transpose(1, 2)], dim=2)
+                value = torch.cat([torch.from_numpy(previous_value), torch.from_numpy(v).reshape(2, 3, 2, 8).transpose(1, 2)], dim=2)
                 self.assertEqualArray(key.numpy(), actual_key)
                 self.assertEqualArray(value.numpy(), actual_value)
                 key, value = key.repeat_interleave(2, dim=1), value.repeat_interleave(2, dim=1)
                 scores = torch.tanh((query @ key.transpose(-1, -2)) / np.sqrt(8) / 1.5) * 1.5
-                positions = torch.arange(5)
-                queries = torch.arange(2, 5)[:, None]
-                allowed = (positions <= queries) & (positions > queries - 3)
-                allowed = allowed[None, None] & torch.from_numpy(mask[:, None, None].astype(bool))
+                positions = torch.arange(total_length)
+                queries = torch.arange(total_length - 3, total_length)[:, None]
+                allowed = positions <= queries
+                if window:
+                    allowed &= positions > queries - window
+                allowed = allowed[None, None] & torch.from_numpy(current_mask[:, None, None].astype(bool))
                 scores = scores.masked_fill(~allowed, float("-inf"))
                 if use_sinks:
                     sink = torch.from_numpy(feeds["sinks"])[None, :, None, None].expand(2, 4, 3, 1)
                     scores = torch.cat([scores, sink], dim=-1)
-                probabilities = torch.softmax(scores, dim=-1)[..., :5]
+                probabilities = torch.softmax(scores, dim=-1)[..., :total_length]
                 probabilities = torch.where(allowed, probabilities, 0)
                 expected = (probabilities @ value).transpose(1, 2).reshape(2, 3, 32)
                 self.assertEqualArray(expected.numpy(), actual, atol=1e-6, rtol=1e-5)
