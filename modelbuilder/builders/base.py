@@ -33,6 +33,7 @@ from ..helpers.checkpoint import CheckpointTensor, DenseCheckpoint, SourceTensor
 from ..helpers.onnx_helper import from_torch_dtype, get_default_onnx_opset, onnx, to_torch_dtype, torch_tensor_to_numpy
 from ..helpers.weight_reuse import WeightReuse
 from .local_functions import LocalFunctionsMixin, normalize_function_opsets
+from .portable import make_portable_attention, make_portable_node, validate_portable_model
 
 
 @dataclass
@@ -128,6 +129,8 @@ def _make_constant_subgraph(name: str, values: Sequence[tuple[str, str, torch.Te
 
 class Model(LocalFunctionsMixin):
     def __init__(self, config, io_dtype, onnx_dtype, ep, cache_dir, extra_options):
+        if ep == "any" and onnx_dtype not in {TensorProto.FLOAT, TensorProto.FLOAT16, TensorProto.BFLOAT16}:
+            raise ValueError("--ep any supports only floating-point exports (fp32, fp16, bf16).")
         self.context_length = config.seq_length if hasattr(config, "seq_length") else config.max_position_embeddings
         self.original_context_length = (
             config.original_max_position_embeddings
@@ -187,9 +190,12 @@ class Model(LocalFunctionsMixin):
 
         # States for building the model
         onnx_opset = int(extra_options.get("onnx_opset", get_default_onnx_opset()))
+        if ep == "any" and onnx_opset < 23:
+            raise ValueError("--ep any requires ONNX opset 23 or newer for standard RMSNormalization and RotaryEmbedding.")
         self.graph = GraphBuilder("main_graph")
         self.graph.set_opset_version("", onnx_opset)
-        self.graph.set_opset_version("com.microsoft", 1)
+        if ep != "any":
+            self.graph.set_opset_version("com.microsoft", 1)
         self._initialize_graph_state()
         self.local_functions: dict[tuple[str, str, str], object] = {}
 
@@ -677,7 +683,11 @@ class Model(LocalFunctionsMixin):
         self.q_size = self.num_attn_heads * self.head_size
         self.kv_size = self.num_kv_heads * self.head_size
 
-        if self.is_gqa_supported():
+        if self.ep == "any":
+            if self.model_type == "WhisperForConditionalGeneration":
+                raise NotImplementedError("--ep any does not yet support Whisper's encoder/cross-attention export.")
+            self.attention_attrs["op_type"] = "PortableAttention"
+        elif self.is_gqa_supported():
             # Change model settings for GroupQueryAttention
             self.attention_attrs["op_type"] = "GroupQueryAttention"
             print("GroupQueryAttention (GQA) is used in this model.")
@@ -855,7 +865,7 @@ class Model(LocalFunctionsMixin):
                 "layers": layer_idxs,
             }
 
-        if self.ep != "cpu":
+        if self.ep not in {"cpu", "any"}:
             ep_name = self.ep.replace("trt-rtx", "NvTensorRtRtx")
             ep_options = {ep_name: self.ep_attrs[self.ep]}
             genai_config["model"]["decoder"]["session_options"]["provider_options"].append(ep_options)
@@ -961,6 +971,8 @@ class Model(LocalFunctionsMixin):
         model.functions.extend(self.local_functions.values())
         for function in model.functions:
             normalize_function_opsets(function)
+        if getattr(self, "ep", None) == "any":
+            validate_portable_model(model)
         return model
 
     def _initialize_graph_state(self) -> None:
@@ -1445,6 +1457,8 @@ class Model(LocalFunctionsMixin):
 
     def make_node(self, op_type, inputs: Sequence[str], outputs: Sequence[str], *, name: str, domain="", **kwargs):
         assert name, "Node name must be provided"
+        if getattr(self, "ep", None) == "any" and make_portable_node(self, op_type, inputs, outputs, name, domain, kwargs):
+            return
         attributes = [onnx_helper.make_attribute(key, value) for key, value in kwargs.items() if value is not None]
         node_spec = (op_type, tuple(inputs), tuple(outputs), domain or "", tuple(attributes))
         if name in self.node_names:
@@ -2869,7 +2883,7 @@ class Model(LocalFunctionsMixin):
             name=name,
             domain="com.microsoft",
             interleaved=self.rope_attrs["interleaved"],
-            num_heads=(0 if self.rope_attrs["partial_rotary_factor"] == 1.0 else num_heads),  # default is 0 in RotaryEmbedding kernel
+            num_heads=(0 if self.ep != "any" and self.rope_attrs["partial_rotary_factor"] == 1.0 else num_heads),
             rotary_embedding_dim=self.rope_attrs["rotary_embedding_dim"],
         )
         self.make_value(output, self.io_dtype, shape=["batch_size", "sequence_length", self.head_size * num_heads])
@@ -3487,7 +3501,11 @@ class Model(LocalFunctionsMixin):
     def make_attention_op(self, name, **kwargs):
         op_type = self.attention_attrs["op_type"]
 
-        if op_type == "Attention":
+        if self.ep == "any":
+            if op_type not in {"PortableAttention", "GroupQueryAttention"}:
+                raise NotImplementedError(f"--ep any has no portable lowering for {op_type}.")
+            make_portable_attention(self, name, **kwargs)
+        elif op_type == "Attention":
             self.make_packed_attention(name, **kwargs)
         elif op_type == "MultiHeadAttention":
             self.make_multi_head_attention(
@@ -5223,6 +5241,20 @@ class Model(LocalFunctionsMixin):
         self.make_attention_mask_reformatting()
 
     def make_attention_mask_reformatting(self):
+        if self.ep == "any":
+            if "multi_cache" in self.rope_attrs:
+                basename = "/model/attn_mask_reformat/attn_mask_subgraph"
+                shape_name = f"{basename}/Shape"
+                self.make_shape(shape_name, self.input_names["attention_mask"], shape=[2])
+                gather = "Gather" if self.attention_attrs["op_type"] == "GroupQueryAttention" else "Gather_2"
+                self.make_gather(
+                    f"{basename}/{gather}",
+                    [f"{shape_name}/output_0", "/model/constants/INT64/1"],
+                    dtype=TensorProto.INT64,
+                    shape=[],
+                    axis=0,
+                )
+            return
         if self.extra_options.get("enable_cuda_graph", False) or self.extra_options.get("enable_webgpu_graph", False) or self.ep == "dml":
             # ORT does not allow nodes to be placed on mulitple execution providers
             # with graph capture enabled. We've only verified it works with GQA and with

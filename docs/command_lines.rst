@@ -90,9 +90,25 @@ Main arguments
     Precision of the model. One of ``int2``, ``int4``, ``int8``, ``int16``,
     ``bf16``, ``fp16`` or ``fp32``.
 
-``-e``, ``--execution_provider``
-    Execution provider to target: ``cpu``, ``cuda``, ``dml``, ``webgpu`` or
+``-e``, ``--ep``, ``--execution_provider``
+    Execution provider to target: ``any``, ``cpu``, ``cuda``, ``dml``, ``webgpu`` or
     ``NvTensorRtRtx``.
+
+    ``--ep any`` builds a provider-independent base using only standard ONNX
+    operators (opset 23 or newer), without ORT contrib operators or a fixed
+    provider in the GenAI configuration. It supports ``fp32``, ``fp16`` and
+    ``bf16``; integer export precisions and provider-specific options raise
+    explicit errors. The standard ONNX ``Attention`` operator handles growing
+    KV caches and grouped queries, with explicit causal/padding/sliding-window
+    masks. Only attention with sinks is decomposed into standard operations,
+    because the standard ``Attention`` operator has no sink input.
+    Unsupported custom operators also raise an explicit error rather than
+    silently selecting CPU or CUDA. This is a base export, not a CPU/CUDA
+    rewriting bundle; no additional models are generated. Runtime support
+    for the selected standard opset and floating-point type is still required.
+    This reference graph is not provider-optimized and can be slower or use
+    more runtime memory than provider-specific exports.
+    Model and external-data filenames are unchanged.
 
 ``-c``, ``--cache_dir``
     Cache directory for Hugging Face files and temporary ONNX external data
