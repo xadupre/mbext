@@ -685,9 +685,7 @@ class Model(LocalFunctionsMixin):
 
         if self.ep == "any":
             if self.model_type == "WhisperForConditionalGeneration":
-                raise NotImplementedError(
-                    "--ep any does not yet support Whisper's encoder/cross-attention export."
-                )
+                raise NotImplementedError("--ep any does not yet support Whisper's encoder/cross-attention export.")
             self.attention_attrs["op_type"] = "PortableAttention"
         elif self.is_gqa_supported():
             # Change model settings for GroupQueryAttention
@@ -5247,14 +5245,8 @@ class Model(LocalFunctionsMixin):
             if "multi_cache" in self.rope_attrs:
                 basename = "/model/attn_mask_reformat/attn_mask_subgraph"
                 shape_name = f"{basename}/Shape"
-                self.make_shape(
-                    shape_name, self.input_names["attention_mask"], shape=[2]
-                )
-                gather = (
-                    "Gather"
-                    if self.attention_attrs["op_type"] == "GroupQueryAttention"
-                    else "Gather_2"
-                )
+                self.make_shape(shape_name, self.input_names["attention_mask"], shape=[2])
+                gather = "Gather" if self.attention_attrs["op_type"] == "GroupQueryAttention" else "Gather_2"
                 self.make_gather(
                     f"{basename}/{gather}",
                     [f"{shape_name}/output_0", "/model/constants/INT64/1"],
