@@ -65,6 +65,74 @@ class TestDenseCheckpoint(ExtTestCase):
         return results if outputs is not None else results[0]
 
     @hide_stdout()
+    def test_module_graph_lm_head_with_matching_projection_dimensions(self):
+        legacy_type = type("LegacyLlamaModel", (LlamaModel,), {})
+        for vocab_size in (32, 48, 41):
+            for tied in (False, True):
+                with self.subTest(vocab_size=vocab_size, tied=tied), tempfile.TemporaryDirectory() as directory:
+                    root = Path(directory)
+                    config = LlamaConfig(
+                        vocab_size=vocab_size,
+                        hidden_size=32,
+                        intermediate_size=48,
+                        num_hidden_layers=1,
+                        num_attention_heads=2,
+                        num_key_value_heads=1,
+                        head_dim=16,
+                        max_position_embeddings=32,
+                        tie_word_embeddings=tied,
+                    )
+                    torch.manual_seed(42)
+                    reference = LlamaForCausalLM(config).eval()
+                    reference.save_pretrained(root / "checkpoint")
+                    exported = self.export(legacy_type, root / "checkpoint", root / "output", onnx.TensorProto.FLOAT)
+                    self.assertEqual(sum(node.name == "/lm_head/MatMul" for node in exported.graph.node), 1)
+                    actual = self.run_decoder(root / "output" / "model.onnx", config)
+                    with torch.no_grad():
+                        expected = reference(torch.tensor([[1, 2, 3]])).logits.numpy()
+                    np.testing.assert_allclose(actual, expected, rtol=2e-2, atol=2e-3)
+
+    def test_has_lm_head_uses_output_embedding_identity(self):
+        builder = object.__new__(LlamaModel)
+        builder.vocab_size = 32
+        builder.weights = LlamaForCausalLM(
+            LlamaConfig(
+                vocab_size=32,
+                hidden_size=32,
+                intermediate_size=48,
+                num_hidden_layers=1,
+                num_attention_heads=2,
+                num_key_value_heads=1,
+                head_dim=16,
+            )
+        )
+        self.assertEqual([name for name, module in builder.weights.named_modules() if builder.has_lm_head(module)], ["lm_head"])
+        builder.weights.set_output_embeddings(torch.nn.Identity())
+        self.assertTrue(builder.has_lm_head(builder.weights.get_output_embeddings()))
+
+        class OutputEmbeddingModel(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.output_projection = torch.nn.Linear(32, 32)
+
+            def get_output_embeddings(self):
+                return self.output_projection
+
+        builder.weights = OutputEmbeddingModel()
+        self.assertTrue(builder.has_lm_head(builder.weights.output_projection))
+        self.assertFalse(builder.has_lm_head(torch.nn.Linear(32, 32)))
+        builder.weights.lm_head = torch.nn.Linear(32, 32)
+        self.assertFalse(builder.has_lm_head(builder.weights.lm_head))
+        builder.weights.output_projection = None
+        self.assertTrue(builder.has_lm_head(builder.weights.lm_head))
+        builder.weights = torch.nn.Module()
+        builder.weights.lm_head = torch.nn.Linear(32, 32)
+        self.assertTrue(builder.has_lm_head(builder.weights.lm_head))
+        self.assertFalse(builder.has_lm_head(torch.nn.Linear(32, 32)))
+        del builder.weights.lm_head
+        self.assertFalse(builder.has_lm_head(torch.nn.Linear(32, 32)))
+
+    @hide_stdout()
     def test_dense_exports_match_transformers_path_and_reference(self):
         cases = (
             (LlamaConfig, LlamaForCausalLM, LlamaModel, torch.float32, onnx.TensorProto.FLOAT),

@@ -5229,13 +5229,14 @@ class Model(LocalFunctionsMixin):
         return any(hf_names + gguf_names)
 
     def has_lm_head(self, module):
-        # Hugging Face names
-        hf_lm_head = isinstance(module, torch.nn.Linear) and module.out_features == self.vocab_size
+        # Hugging Face output embedding module
+        if hasattr(self.weights, "get_output_embeddings"):
+            output_embeddings = self.weights.get_output_embeddings()
+            if output_embeddings is not None:
+                return module is output_embeddings
 
-        # Quantized model names
-        quant_lm_head = hasattr(self.weights, "lm_head") and module == self.weights.lm_head
-
-        return hf_lm_head or quant_lm_head
+        # GGUF and quantized model names
+        return hasattr(self.weights, "lm_head") and module is self.weights.lm_head
 
     def make_preprocessing_nodes(self):
         self.make_attention_mask_reformatting()
