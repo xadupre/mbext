@@ -23,6 +23,13 @@ if TYPE_CHECKING:
     from onnx_light.onnx import TensorProto
 
 
+def _check_any_options(kv_pairs, execution_provider):
+    if execution_provider == "any" and any(
+        kv_pairs.get(key) for key in ("enable_cuda_graph", "enable_webgpu_graph", "use_cuda_bf16", "use_webgpu_fp32")
+    ):
+        raise ValueError("--ep any cannot use provider-specific graph capture or precision options.")
+
+
 def check_extra_options(kv_pairs, execution_provider):
     """
     Check key-value pairs and set values correctly
@@ -71,6 +78,7 @@ def check_extra_options(kv_pairs, execution_provider):
         # 'include_hidden_states' is for when 'hidden_states' are outputted and 'logits' are outputted
         raise ValueError("Both 'exclude_lm_head' and 'include_hidden_states' cannot be used together. Please use only one of them at once.")
 
+    _check_any_options(kv_pairs, execution_provider)
     if kv_pairs.get("enable_webgpu_graph", False) and execution_provider != "webgpu":
         print("WARNING: enable_webgpu_graph is only supported with WebGPU execution provider. Disabling enable_webgpu_graph.")
         kv_pairs["enable_webgpu_graph"] = False
@@ -118,6 +126,8 @@ INT_PRECISION_BITS = {"int2": 2, "int4": 4, "int8": 8, "int16": 16}
 def set_io_dtype(precision, execution_provider, extra_options) -> "TensorProto.DataType":
     from onnx_light.onnx import TensorProto
 
+    if execution_provider == "any" and precision not in {"fp32", "fp16", "bf16"}:
+        raise ValueError("--ep any supports only fp32, fp16 and bf16; quantized exports are not portable yet.")
     int_precision = precision in INT_PRECISION_BITS
     int_cpu = int_precision and execution_provider == "cpu"
     fp32_webgpu = execution_provider == "webgpu" and extra_options.get("use_webgpu_fp32", False)
@@ -264,6 +274,10 @@ def create_model(model_name, input_path, output_dir, precision, execution_provid
     from transformers import AutoConfig
 
     from .builders import Model
+
+    if execution_provider == "any":
+        set_io_dtype(precision, execution_provider, extra_options)
+        _check_any_options(extra_options, execution_provider)
 
     if execution_provider == "NvTensorRtRtx":
         execution_provider = "trt-rtx"
@@ -489,6 +503,8 @@ def create_model(model_name, input_path, output_dir, precision, execution_provid
 
         onnx_model = MistralNeMoModel(config, io_dtype, onnx_dtype, execution_provider, cache_dir, extra_options)
     elif config.architectures[0] == "MixtralForCausalLM":
+        if execution_provider == "any":
+            raise NotImplementedError("--ep any does not yet support the Mixtral builder's CUDA-only QMoE export.")
         print(
             "WARNING: This model only works for CUDA currently because `MoE` is only supported for CUDA in ONNX Runtime. Setting `--execution_provider cuda` by default."
         )
@@ -743,11 +759,13 @@ def get_args():
 
     parser.add_argument(
         "-e",
+        "--ep",
         "--execution_provider",
+        dest="execution_provider",
         required=False,
         default=None,
-        choices=["cpu", "cuda", "dml", "webgpu", "NvTensorRtRtx"],
-        help="Execution provider to target with precision of model (e.g. FP16 CUDA, INT4 CPU, INT4 WebGPU)",
+        choices=["any", "cpu", "cuda", "dml", "webgpu", "NvTensorRtRtx"],
+        help="Execution provider to target; any exports standard ONNX only (fp32/fp16/bf16).",
     )
 
     parser.add_argument(
