@@ -33,6 +33,4 @@ class ChatGLMModel(Model):
             if output_embeddings is not None:
                 return module is output_embeddings
 
-        return super().has_lm_head(module) or (
-            hasattr(self.weights, "output_layer") and module is self.weights.output_layer
-        )
+        return super().has_lm_head(module) or (hasattr(self.weights, "output_layer") and module is self.weights.output_layer)
