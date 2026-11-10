@@ -377,6 +377,24 @@ def _save_mini_chatglm(model_dir, num_layers=1):
 
 
 class TestChatGLM(ExtTestCase):
+    def test_chatglm_output_layer_is_lm_head(self):
+        import torch
+
+        from modelbuilder.builders.chatglm import ChatGLMModel
+
+        class Model(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.output_layer = torch.nn.Linear(8, 16)
+
+            def get_output_embeddings(self):
+                return None
+
+        builder = object.__new__(ChatGLMModel)
+        builder.weights = Model()
+        self.assertTrue(builder.has_lm_head(builder.weights.output_layer))
+        self.assertFalse(builder.has_lm_head(torch.nn.Linear(8, 16)))
+
     def common_fast_chatglm_random_weights(self, precision, provider):
         """Prefill + single-step decode: compare PyTorch logits vs ONNX logits."""
         from modelbuilder.builder import create_model
