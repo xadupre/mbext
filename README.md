@@ -35,6 +35,7 @@ It lives under [`docs/`](docs) and is built with
 [Sphinx](https://www.sphinx-doc.org/):
 
 ```bash
+python tools/onnx_light_release.py
 pip install -e .[doc]
 sphinx-build -b html docs docs/_build/html
 ```
@@ -111,9 +112,7 @@ bit width (including 4-bit matrices); floating-point state tensors are loaded
 separately. The package contains text, vision, embedding and processor files.
 Offline CPU text and image generation parity is tested with ONNX Runtime
 GenAI 0.17.1; 0.15.2 lacks the required Qwen3.5 hybrid-state support.
-Native onnx-light / onnx-light-cpu 0.2.0 and earlier cannot yet execute the packed
-embedding operator, tracked in
-[onnx-light-cpu#972](https://github.com/xadupre/onnx-light-cpu/issues/972).
+Native packed-embedding execution uses onnx-light / onnx-light-cpu 0.2.7 or newer.
 CUDA execution and optimized INT2 kernel
 performance depend on the installed ONNX Runtime build and are not guaranteed
 to match CPU behavior.
@@ -234,7 +233,12 @@ black . && ruff check .
 
 ## Development
 
+The native dependencies require `onnx-light>=0.2.7` and
+`onnx-light-cpu>=0.2.7`. Bootstrap their minimum-version GitHub wheels before
+installing the development dependencies (CPU wheels support Linux and macOS):
+
 ```bash
+python tools/onnx_light_release.py --cpu
 pip install -e .[dev]
 ```
 

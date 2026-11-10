@@ -70,7 +70,7 @@ jobs:
         run: pip install "torch==${{ matrix.torch.version }}+cpu" torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
 
       - name: Install onnx-light release
-        run: python tools/onnx_light_release.py
+        run: python tools/onnx_light_release.py --cpu
 
       - name: Install dependencies
         run: pip install -e ".[dev${{ matrix.tokenizers-extra }}]" torch "transformers==${{ matrix.transformers-version }}" "tokenizers==${{ matrix.tokenizers-version }}" "onnxruntime-genai==${{ matrix.onnxruntime-genai-version }}"

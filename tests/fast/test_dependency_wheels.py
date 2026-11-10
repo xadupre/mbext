@@ -3,7 +3,7 @@
 # Licensed under the MIT License.  See License.txt in the project root for
 # license information.
 # --------------------------------------------------------------------------
-"""Check native dependency requirements and pinned wheel releases."""
+"""Check native dependency requirements and minimum wheel releases."""
 
 import runpy
 import tomllib
@@ -24,8 +24,8 @@ class TestDependencyWheels(ExtTestCase):
             project = tomllib.load(f)["project"]
 
         requirements = [req for req in project["dependencies"] if req.startswith("onnx-light")]
-        self.assertEqual(requirements, ["onnx-light==0.2.7"])
-        self.assertEqual(release_version(), requirements[0].split("==")[1])
+        self.assertEqual(requirements, ["onnx-light>=0.2.7"])
+        self.assertEqual(release_version(), requirements[0].split(">=")[1])
 
     def test_release_version_from_pyproject(self):
         with TemporaryDirectory() as directory:
@@ -57,13 +57,18 @@ class TestDependencyWheels(ExtTestCase):
             ("Windows", "AMD64", "win_amd64"),
             ("Windows", "ARM64", "win_arm64"),
         ):
-            for minor in (12, 13, 14):
-                with self.subTest(system=system, machine=machine, minor=minor):
-                    self.assertEqual(
-                        wheel_url(system, machine, (3, minor), version),
-                        f"https://github.com/xadupre/onnx-light/releases/download/{version}/"
-                        f"onnx_light-{version}-cp3{minor}-cp3{minor}-{tag}.whl",
-                    )
+            for package in ("onnx-light", "onnx-light-cpu"):
+                if system == "Windows" and package == "onnx-light-cpu":
+                    with self.assertRaisesRegex(ValueError, "Unsupported onnx-light"):
+                        wheel_url(system, machine, (3, 12), version, package=package)
+                    continue
+                for minor in (12, 13, 14):
+                    with self.subTest(system=system, machine=machine, minor=minor, package=package):
+                        self.assertEqual(
+                            wheel_url(system, machine, (3, minor), version, package=package),
+                            f"https://github.com/xadupre/{package}/releases/download/{version}/"
+                            f"{package.replace('-', '_')}-{version}-cp3{minor}-cp3{minor}-{tag}.whl",
+                        )
 
     def test_unsupported_release_wheels(self):
         for system, machine, python_version in (
@@ -78,15 +83,23 @@ class TestDependencyWheels(ExtTestCase):
                 with self.assertRaisesRegex(ValueError, "Unsupported onnx-light"):
                     wheel_url(system, machine, python_version, release_version())
 
-    def test_onnx_light_wheels(self):
+    def test_onnx_light_cpu_requirement(self):
         with (ROOT / "pyproject.toml").open("rb") as f:
             project = tomllib.load(f)["project"]
 
-        wheels = [requirement for requirement in project["optional-dependencies"]["dev"] if requirement.startswith("onnx-light-cpu @ ")]
-        self.assertEqual(len(wheels), 9)
-        for wheel in wheels:
-            self.assertIn("/releases/download/0.2.7/", wheel)
-            self.assertIn("/onnx_light_cpu-0.2.7-", wheel)
+        requirements = [req for req in project["optional-dependencies"]["dev"] if req.startswith("onnx-light-cpu")]
+        self.assertEqual(requirements, ["onnx-light-cpu>=0.2.7; sys_platform == 'linux' or sys_platform == 'darwin'"])
+        self.assertEqual(release_version(package="onnx-light-cpu"), "0.2.7")
+
+    def test_cpu_release_version_from_pyproject(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "pyproject.toml"
+            path.write_text(
+                '[project]\ndependencies = ["onnx-light>=0.2.7"]\n'
+                "[project.optional-dependencies]\ndev = [\"onnx-light-cpu>=0.2.8; sys_platform == 'linux'\"]\n",
+                encoding="utf-8",
+            )
+            self.assertEqual(release_version(path, package="onnx-light-cpu"), "0.2.8")
 
     def test_ci_uses_github_wheels(self):
         installations = 0
@@ -96,7 +109,10 @@ class TestDependencyWheels(ExtTestCase):
                 if "run: pip install" in line and ('".[dev' in line or line.rstrip().endswith(" .")):
                     with self.subTest(workflow=path.name, command=line):
                         previous_step = "\n".join(lines[:index]).rsplit("- name:", 2)[-2]
-                        self.assertIn("run: python tools/onnx_light_release.py", previous_step)
+                        command = "run: python tools/onnx_light_release.py"
+                        if '".[dev' in line:
+                            command += " --cpu"
+                        self.assertIn(command, previous_step)
                     installations += 1
         self.assertEqual(installations, 8)
 

@@ -29,18 +29,13 @@ class TestWhisperModel(ExtTestCase):
         import onnx_light.onnx as onnx
         import onnx_light.onnx.helper as oh
         from onnx_light.onnx.reference import ReferenceEvaluator
-        from onnx_light_cpu import register_kernels_global, registered_kernels
+        from onnx_light_cpu import register_kernels_global
         from transformers import GenerationConfig, WhisperConfig, WhisperForConditionalGeneration
         from transformers.generation import GenerationMixin
 
         from modelbuilder.builder import create_model
 
         register_kernels_global()
-        if native_encoder and not any(
-            kernel.domain == "com.microsoft" and kernel.op_type == "Attention" for kernel in registered_kernels()
-        ):
-            self.skipTest("Native Whisper encoder requires com.microsoft::Attention: xadupre/onnx-light-cpu#1114.")
-
         config = WhisperConfig(
             architectures=["WhisperForConditionalGeneration"],
             vocab_size=128,
