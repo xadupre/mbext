@@ -10,7 +10,6 @@ import os
 import tempfile
 
 import numpy as np
-import onnx_light
 import onnx_light.onnx as onnx
 import onnx_light.onnx.helper as helper
 import onnx_light.onnx.numpy_helper as numpy_helper
@@ -20,7 +19,7 @@ from onnx_light.onnx import TensorProto
 from safetensors.numpy import save_file
 from safetensors.torch import save_file as save_torch_file
 
-from modelbuilder.ext_test_case import ExtTestCase, PvVersion, hide_stdout, requires_genai, requires_transformers
+from modelbuilder.ext_test_case import ExtTestCase, hide_stdout, requires_genai, requires_transformers
 from modelbuilder.helpers.mlx import MLXCheckpoint, repack_mlx
 
 
@@ -523,14 +522,7 @@ class TestMLXCheckpoint(ExtTestCase):
             for with_image in (False, True):
                 with self.subTest(runtime="genai", with_image=with_image):
                     self._check_genai_generation(package_directory, reference_model, config, with_image)
-            # Both text and image native generation need the packed embedding
-            # kernel, even though 0.2.0 already supports multi-graph/3-D positions.
             with self.subTest(runtime="onnx-light"):
-                if PvVersion(onnx_light.__version__) <= PvVersion("0.2.0"):
-                    self.skipTest(
-                        "onnx-light[-cpu] <=0.2.0 lacks com.microsoft::GatherBlockQuantized; "
-                        "text/image generation tracked by https://github.com/xadupre/onnx-light-cpu/issues/972"
-                    )
                 self.run_onnx_light_generation_test(
                     package_directory,
                     reference_model,
