@@ -24,8 +24,8 @@ class TestDependencyWheels(ExtTestCase):
             project = tomllib.load(f)["project"]
 
         requirements = [req for req in project["dependencies"] if req.startswith("onnx-light")]
-        self.assertEqual(requirements, ["onnx-light>=0.2.5"])
-        self.assertEqual(release_version(), requirements[0].split(">=")[1])
+        self.assertEqual(requirements, ["onnx-light==0.2.7"])
+        self.assertEqual(release_version(), requirements[0].split("==")[1])
 
     def test_release_version_from_pyproject(self):
         with TemporaryDirectory() as directory:
@@ -85,8 +85,8 @@ class TestDependencyWheels(ExtTestCase):
         wheels = [requirement for requirement in project["optional-dependencies"]["dev"] if requirement.startswith("onnx-light-cpu @ ")]
         self.assertEqual(len(wheels), 9)
         for wheel in wheels:
-            self.assertIn("/releases/download/0.2.5/", wheel)
-            self.assertIn("/onnx_light_cpu-0.2.5-", wheel)
+            self.assertIn("/releases/download/0.2.7/", wheel)
+            self.assertIn("/onnx_light_cpu-0.2.7-", wheel)
 
     def test_ci_uses_github_wheels(self):
         installations = 0
