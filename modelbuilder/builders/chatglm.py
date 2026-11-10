@@ -26,3 +26,13 @@ class ChatGLMModel(Model):
 
     def is_layer(self, module):
         return module.__class__.__name__.endswith("GLMBlock") or super().is_layer(module)
+
+    def has_lm_head(self, module):
+        if hasattr(self.weights, "get_output_embeddings"):
+            output_embeddings = self.weights.get_output_embeddings()
+            if output_embeddings is not None:
+                return module is output_embeddings
+
+        return super().has_lm_head(module) or (
+            hasattr(self.weights, "output_layer") and module is self.weights.output_layer
+        )
