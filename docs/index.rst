@@ -1,6 +1,8 @@
 mbext documentation
 ====================
 
+**Version:** |release|. **Last generated:** |today|.
+
 **mbext** (``modelbuilder``) is a Fast Experimental Exporter for transformers,
 powered by `onnx-light <https://github.com/xadupre/onnx-light>`_ for fast ONNX
 graph construction and serialization.
