@@ -4,6 +4,10 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    groups:
+      onnxruntime:
+        patterns:
+          - "onnxruntime*"
   - package-ecosystem: pip
     directory: /docs
     schedule:
