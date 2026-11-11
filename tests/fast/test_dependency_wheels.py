@@ -119,9 +119,7 @@ class TestDependencyWheels(ExtTestCase):
     def test_ci_transformers_matrix(self):
         with (ROOT / "pyproject.toml").open("rb") as f:
             project = tomllib.load(f)["project"]
-        self.assertIn(
-            "transformers<=5.22.2,>=5.22.2", project["optional-dependencies"]["dev"]
-        )
+        self.assertIn("transformers<=5.22.2,>=5.22.2", project["optional-dependencies"]["dev"])
 
         for name in ("fast_tests.yml", "trained_private_model_tests.yml", "trained_tiny_llm_tests.yml"):
             with self.subTest(workflow=name):
