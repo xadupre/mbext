@@ -86,6 +86,13 @@ Main arguments
 ``-o``, ``--output``
     Folder where the ONNX model and the additional files are written.
 
+``--onnx_opset``
+    ONNX opset for the main graph. By default, the highest opset supported by
+    the installed ONNX Runtime is used, or opset 26 if ONNX Runtime is absent.
+    ONNX Runtime 1.31.1 supports up to opset 26 and IR version 13; exported
+    models use IR version 13. Registered schemas for the unreleased opset 27
+    do not imply runtime support.
+
 ``-p``, ``--precision``
     Precision of the model. One of ``int2``, ``int4``, ``int8``, ``int16``,
     ``bf16``, ``fp16`` or ``fp32``.

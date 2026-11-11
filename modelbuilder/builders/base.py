@@ -30,7 +30,14 @@ from onnx_light.onnx_core.graph_builder import GraphBuilder
 from tqdm import tqdm
 
 from ..helpers.checkpoint import CheckpointTensor, DenseCheckpoint, SourceTensor, read_checkpoint_metadata
-from ..helpers.onnx_helper import from_torch_dtype, get_default_onnx_opset, onnx, to_torch_dtype, torch_tensor_to_numpy
+from ..helpers.onnx_helper import (
+    DEFAULT_ONNX_IR_VERSION,
+    from_torch_dtype,
+    get_default_onnx_opset,
+    onnx,
+    to_torch_dtype,
+    torch_tensor_to_numpy,
+)
 from ..helpers.weight_reuse import WeightReuse
 from .local_functions import LocalFunctionsMixin, normalize_function_opsets
 from .portable import make_portable_attention, make_portable_node, validate_portable_model
@@ -965,7 +972,7 @@ class Model(LocalFunctionsMixin):
         for value in self._pending_graph_outputs.values():
             self.graph.make_output(value)
         self._pending_graph_outputs.clear()
-        model = self.graph.to_model(ir_version=13)
+        model = self.graph.to_model(ir_version=DEFAULT_ONNX_IR_VERSION)
         self._restore_optional_node_outputs(model)
         model.producer_name = "onnxruntime-genai"
         model.functions.extend(self.local_functions.values())
