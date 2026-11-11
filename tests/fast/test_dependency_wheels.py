@@ -119,19 +119,20 @@ class TestDependencyWheels(ExtTestCase):
     def test_ci_transformers_matrix(self):
         with (ROOT / "pyproject.toml").open("rb") as f:
             project = tomllib.load(f)["project"]
-        self.assertIn("transformers<=5.22.1,>=5.19", project["optional-dependencies"]["dev"])
+        self.assertIn(
+            "transformers<=5.22.2,>=5.22.2", project["optional-dependencies"]["dev"]
+        )
 
         for name in ("fast_tests.yml", "trained_private_model_tests.yml", "trained_tiny_llm_tests.yml"):
             with self.subTest(workflow=name):
                 workflow = (ROOT / ".github/workflows" / name).read_text(encoding="utf-8")
-                self.assertIn('transformers-version: ["5.19.0", "5.22.1"]', workflow)
+                self.assertIn('transformers-version: ["5.22.2"]', workflow)
                 self.assertIn('- version: "2.14.1"', workflow)
-                for version in ("5.19.0", "5.22.1"):
-                    self.assertIn(f'- transformers-version: "{version}"', workflow)
+                self.assertIn('- transformers-version: "5.22.2"', workflow)
 
     def test_ci_transformers_nightly(self):
         workflow = (ROOT / ".github/workflows/fast_tests_ort_nightly.yml").read_text(encoding="utf-8")
-        self.assertIn('"transformers==5.22.1"', workflow)
+        self.assertIn('"transformers==5.22.2"', workflow)
 
     def test_ci_onnx_light_wheel_matrix(self):
         workflow = (ROOT / ".github/workflows/fast_tests.yml").read_text(encoding="utf-8")
