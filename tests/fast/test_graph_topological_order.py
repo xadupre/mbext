@@ -36,10 +36,12 @@ class TestGraphTopologicalOrder(ExtTestCase):
         import onnxruntime as ort
         from transformers import LlamaConfig
 
-        from modelbuilder.helpers.onnx_helper import get_default_onnx_opset
+        from modelbuilder.helpers.onnx_helper import DEFAULT_ONNX_IR_VERSION, DEFAULT_ONNX_OPSET, get_default_onnx_opset
 
+        self.assertEqual(DEFAULT_ONNX_OPSET, 26)
+        self.assertEqual(DEFAULT_ONNX_IR_VERSION, 13)
         config = LlamaConfig(architectures=["LlamaForCausalLM"])
-        for opset in (None, 21):
+        for opset in (None, 21, DEFAULT_ONNX_OPSET):
             with self.subTest(opset=opset), tempfile.TemporaryDirectory() as directory:
                 options = {} if opset is None else {"onnx_opset": opset}
                 builder = Model(config, TensorProto.FLOAT, TensorProto.FLOAT, "cpu", directory, options)

@@ -97,6 +97,9 @@ def torch_tensor_to_numpy(tensor: torch.Tensor) -> np.ndarray:
 #: determined (for example when ``onnxruntime`` is not installed).
 DEFAULT_ONNX_OPSET = 26
 
+#: Maximum IR version supported by ONNX Runtime 1.31.1 (ONNX 1.22.0).
+DEFAULT_ONNX_IR_VERSION = 13
+
 
 def get_default_onnx_opset() -> int:
     """Returns the highest ONNX opset supported by the installed onnxruntime.
