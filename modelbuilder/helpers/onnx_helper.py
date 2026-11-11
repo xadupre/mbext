@@ -95,7 +95,7 @@ def torch_tensor_to_numpy(tensor: torch.Tensor) -> np.ndarray:
 
 #: Opset used when the maximum opset supported by ``onnxruntime`` cannot be
 #: determined (for example when ``onnxruntime`` is not installed).
-DEFAULT_ONNX_OPSET = 21
+DEFAULT_ONNX_OPSET = 26
 
 
 def get_default_onnx_opset() -> int:
