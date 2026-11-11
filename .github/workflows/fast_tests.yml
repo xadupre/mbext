@@ -46,7 +46,7 @@ jobs:
           - version: "2.14.1"
         include:
           - transformers-version: "5.22.2"
-            onnxruntime-genai-version: "0.17.1"
+            onnxruntime-genai-version: "0.19.0"
             tokenizers-version: "0.23.3"
             tokenizers-extra: ",dev-latest-tokenizers"
     steps:
