@@ -965,7 +965,7 @@ class Model(LocalFunctionsMixin):
         for value in self._pending_graph_outputs.values():
             self.graph.make_output(value)
         self._pending_graph_outputs.clear()
-        model = self.graph.to_model(ir_version=10)
+        model = self.graph.to_model(ir_version=13)
         self._restore_optional_node_outputs(model)
         model.producer_name = "onnxruntime-genai"
         model.functions.extend(self.local_functions.values())

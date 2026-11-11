@@ -61,7 +61,8 @@ class TestOnnxHelper(ExtTestCase):
             return real_import(name, *args, **kwargs)
 
         with mock.patch("builtins.__import__", side_effect=fake_import):
-            self.assertEqual(onnx_helper.get_default_onnx_opset(), onnx_helper.DEFAULT_ONNX_OPSET)
+            self.assertEqual(onnx_helper.DEFAULT_ONNX_OPSET, 26)
+            self.assertEqual(onnx_helper.get_default_onnx_opset(), 26)
 
 
 if __name__ == "__main__":

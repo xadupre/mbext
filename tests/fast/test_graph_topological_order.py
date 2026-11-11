@@ -32,6 +32,33 @@ class TestGraphTopologicalOrder(ExtTestCase):
         builder.reuse_downloaded_weights = False
         return builder
 
+    def test_export_versions_load_in_onnxruntime(self):
+        import onnxruntime as ort
+        from transformers import LlamaConfig
+
+        from modelbuilder.helpers.onnx_helper import get_default_onnx_opset
+
+        config = LlamaConfig(architectures=["LlamaForCausalLM"])
+        for opset in (None, 21):
+            with self.subTest(opset=opset), tempfile.TemporaryDirectory() as directory:
+                options = {} if opset is None else {"onnx_opset": opset}
+                builder = Model(config, TensorProto.FLOAT, TensorProto.FLOAT, "cpu", directory, options)
+                builder.make_graph_input("source", TensorProto.FLOAT, [1])
+                builder.make_graph_output("result", TensorProto.FLOAT, [1])
+                builder.make_node("Identity", ["source"], ["result"], name="identity")
+                model = builder.to_model_proto()
+                self.assertEqual(model.ir_version, 13)
+                self.assertEqual(
+                    {"" if item.domain == "ai.onnx" else item.domain: item.version for item in model.opset_import},
+                    {"": get_default_onnx_opset() if opset is None else opset, "com.microsoft": 1},
+                )
+                checker.check_model(model)
+                path = os.path.join(directory, "model.onnx")
+                save_model(model, path)
+                session = ort.InferenceSession(path, providers=["CPUExecutionProvider"])
+                value = np.array([2], dtype=np.float32)
+                self.assertEqualArray(value, session.run(None, {"source": value})[0])
+
     def test_consumer_before_producer_uses_complete_native_graph(self):
         builder = self.make_builder()
         builder.make_graph_input("source", TensorProto.FLOAT, [1])
