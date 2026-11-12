@@ -9,7 +9,7 @@ import unittest
 
 import numpy as np
 
-from modelbuilder.ext_test_case import ExtTestCase, hide_stdout, requires_cuda, requires_genai, requires_transformers
+from modelbuilder.ext_test_case import ExtTestCase, hide_stdout, requires_cuda, requires_genai, requires_onnx_light, requires_transformers
 
 MODEL_NAME = "Qwen/Qwen3.5-35B-A3B"
 
@@ -524,11 +524,60 @@ class TestRandomQwen3_5_35BA3B(ExtTestCase):
 
     @hide_stdout()
     def test_multimodal_onnx_light_generation(self):
-        # Text-only split-pipeline generation works natively. Image/video
-        # generation still needs xadupre/onnx-light-cpu#1111 (vision Gelu) and
-        # xadupre/onnx-light#5801 (prefill-only embedding features).
+        # Text-only generation through the split multimodal export.
         config, model, directory = self._build(multimodal=True)
         self.run_onnx_light_generation_test(directory, model, config.text_config.vocab_size, config.text_config.eos_token_id)
+
+    @hide_stdout()
+    @requires_onnx_light("0.2.7", cpu_version="0.2.7")
+    def test_image_onnx_light_generation(self):
+        import onnx_light.onnx as onnx
+        import torch
+        from onnx_light.onnx.reference import ReferenceEvaluator
+        from onnx_light_cpu import register_kernels_global
+
+        config, model, directory = self._build(multimodal=True)
+        grid = torch.tensor([[1, 4, 4]], dtype=torch.int64)
+        vc = config.vision_config
+        patch_width = vc.in_channels * vc.temporal_patch_size * vc.patch_size**2
+        pixels = torch.linspace(-0.5, 0.5, 16 * patch_width).reshape(16, patch_width)
+        prompt = torch.tensor([[5, config.vision_start_token_id] + [config.image_token_id] * 4 + [config.vision_end_token_id, 6]])
+        token_types = (prompt == config.image_token_id).int()
+        positions, _ = model.model.get_rope_index(prompt, token_types, image_grid_thw=grid)
+        self.assertTrue(torch.any(positions[1] != positions[2]))
+        register_kernels_global()
+        vision = ReferenceEvaluator(onnx.load(os.path.join(directory, "vision.onnx"), load_external_data=True))
+        references = []
+        for blank, input_pixels in ((False, pixels), (True, torch.zeros_like(pixels))):
+            with self.subTest(blank=blank):
+                with torch.no_grad():
+                    expected_features = model.model.visual(input_pixels, grid).pooler_output.numpy()
+                    reference = model.generate(
+                        prompt,
+                        pixel_values=input_pixels,
+                        image_grid_thw=grid,
+                        mm_token_type_ids=token_types,
+                        max_new_tokens=5,
+                        do_sample=False,
+                        eos_token_id=None,
+                        pad_token_id=2,
+                    )[0].tolist()
+                references.append(reference)
+                (features,) = vision.run(None, {"pixel_values": input_pixels.numpy(), "image_grid_thw": grid.numpy()})
+                np.testing.assert_allclose(features, expected_features, atol=2e-4, rtol=2e-4)
+                self.assertEqual(len(reference), prompt.shape[1] + 5)
+                self.run_onnx_light_generation_test(
+                    directory,
+                    None,
+                    0,
+                    None,
+                    prompt_ids=prompt,
+                    pt_tokens=reference,
+                    extra_feeds={"image_features": features, "position_ids": positions.numpy()},
+                    prefill_only_inputs=["image_features"],
+                )
+        self.assertEqual(len(references), 2)
+        self.assertNotEqual(references[0], references[1])
 
     @hide_stdout()
     def test_fp8_multimodal_onnx_light_generation(self):
