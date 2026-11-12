@@ -101,10 +101,7 @@ class TestRandomQwen3_8(ExtTestCase):
     @requires_onnx_light("0.2.7", cpu_version="0.2.7")
     @hide_stdout()
     def test_qwen3_8_image_features_onnx_light_generate(self):
-        """Native embedding/decode with real HF vision features, not native vision.
-
-        Native vision execution remains blocked by xadupre/onnx-light-cpu#1111.
-        """
+        """Native embedding/decode with real HF vision features, not native vision."""
         import torch
 
         config, model, output_dir = self._build_multimodal_model()
@@ -138,6 +135,73 @@ class TestRandomQwen3_8(ExtTestCase):
             extra_feeds={"image_features": features, "position_ids": positions.numpy()},
             prefill_only_inputs=["image_features"],
         )
+
+    @requires_onnx_light("0.2.7", cpu_version="0.2.7")
+    @hide_stdout()
+    def test_qwen3_8_multimodal_onnx_light_generate(self):
+        import onnx_light.onnx as onnx
+        import torch
+        from onnx_light.onnx.reference import ReferenceEvaluator
+        from onnx_light_cpu import register_kernels_global
+
+        config, model, output_dir = self._build_multimodal_model()
+        register_kernels_global()
+        vision = ReferenceEvaluator(onnx.load(os.path.join(output_dir, "vision.onnx"), load_external_data=True))
+        vc = config.vision_config
+        patch_width = vc.in_channels * vc.temporal_patch_size * vc.patch_size**2
+        for video in (False, True):
+            temporal, height, width = (2, 4, 4) if video else (1, 4, 4)
+            grid = torch.tensor([[temporal, height, width]], dtype=torch.int64)
+            torch.manual_seed(7)
+            pixels = torch.randn(temporal * height * width, patch_width)
+            token = config.video_token_id if video else config.image_token_id
+            tokens_per_frame = height * width // vc.spatial_merge_size**2
+            frame = [config.vision_start_token_id] + [token] * tokens_per_frame + [config.vision_end_token_id]
+            prompt_ids = [3]
+            for frame_index in range(temporal):
+                prompt_ids.extend(frame + [4 + frame_index])
+            prompt = torch.tensor([prompt_ids], dtype=torch.int64)
+            token_types = torch.where(prompt == token, 2 if video else 1, 0)
+            grid_arg = {"video_grid_thw": grid} if video else {"image_grid_thw": grid}
+            positions, _ = model.model.get_rope_index(prompt, token_types, **grid_arg)
+            self.assertTrue(torch.any(positions[1] != positions[2]))
+            references = []
+            for blank, input_pixels in ((False, pixels), (True, torch.zeros_like(pixels))):
+                with self.subTest(media="video" if video else "image", blank=blank):
+                    media = (
+                        {"pixel_values_videos": input_pixels, "video_grid_thw": grid}
+                        if video
+                        else {"pixel_values": input_pixels, "image_grid_thw": grid}
+                    )
+                    (features,) = vision.run(None, {"pixel_values": input_pixels.numpy(), "image_grid_thw": grid.numpy()})
+                    with torch.no_grad():
+                        expected_features = model.model.visual(input_pixels, grid).pooler_output.numpy()
+                        reference = model.generate(
+                            prompt,
+                            mm_token_type_ids=token_types,
+                            **media,
+                            max_new_tokens=5,
+                            do_sample=False,
+                            eos_token_id=None,
+                            pad_token_id=0,
+                        )[0].tolist()
+                    references.append(reference)
+                    np.testing.assert_allclose(features, expected_features, atol=2e-4, rtol=2e-4)
+                    self.assertEqual(len(reference), prompt.shape[1] + 5)
+                    if not video and not blank:
+                        self.assertIn(config.video_token_id, reference[prompt.shape[1] :])
+                    self.run_onnx_light_generation_test(
+                        output_dir,
+                        None,
+                        0,
+                        None,
+                        prompt_ids=prompt,
+                        pt_tokens=reference,
+                        extra_feeds={"image_features": features, "position_ids": positions.numpy()},
+                        prefill_only_inputs=["image_features"],
+                    )
+            self.assertEqual(len(references), 2)
+            self.assertNotEqual(references[0], references[1])
 
     @requires_onnx_light("0.2.7", cpu_version="0.2.7")
     @hide_stdout()
