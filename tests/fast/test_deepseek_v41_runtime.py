@@ -24,18 +24,24 @@ class _HistoryDecoder(torch.nn.Module):
         ) % 16
         return (
             torch.nn.functional.one_hot(target, 16).float(),
-            torch.cat((values, input_ids.float().unsqueeze(-1)), 1)[:, -2:],
+            torch.cat((values, input_ids.to(values.dtype).unsqueeze(-1)), 1)[:, -2:],
             torch.cat((tokens, input_ids), 1)[:, -2:],
         )
 
 
 class TestDeepseekV41Runtime(ExtTestCase):
-    @hide_stdout()
-    def test_empty_heterogeneous_state_and_cached_generation(self):
+    def export_history(self, directory, dtype=torch.float32):
         names = ["input_ids", "position_ids", "token_types", "inputs_embeds", "values", "tokens"]
         outputs = ["logits", "present.values", "present.tokens"]
         ids = torch.tensor([[1, 2]], dtype=torch.int64)
-        args = (ids, ids - 1, torch.full_like(ids, -1), torch.zeros(1, 2, 1), torch.zeros(1, 1, 1), torch.zeros(1, 1, dtype=torch.int64))
+        args = (
+            ids,
+            ids - 1,
+            torch.full_like(ids, -1),
+            torch.zeros(1, 2, 1, dtype=dtype),
+            torch.zeros(1, 1, 1, dtype=dtype),
+            torch.zeros(1, 1, dtype=torch.int64),
+        )
         axes = {name: {0: "batch", 1: name + "_length"} for name in names + outputs}
         graph = trace_v41_model(_HistoryDecoder(), args, names, outputs, axes)
         config = {
@@ -44,18 +50,22 @@ class TestDeepseekV41Runtime(ExtTestCase):
             "decoder": "model.onnx",
             "hidden_size": 1,
             "vocab_size": 16,
-            "io_dtype": "float32",
+            "io_dtype": str(dtype).removeprefix("torch."),
             "eos_token_id": None,
             "context_length": 32,
             "state": [
-                dict(input="values", output="present.values", shape=[1, 0, 1], dtype="float32", initial=[[]]),
+                dict(input="values", output="present.values", shape=[1, 0, 1], dtype=str(dtype).removeprefix("torch."), initial=[[]]),
                 dict(input="tokens", output="present.tokens", shape=[1, 0], dtype="int64", initial=[[]]),
             ],
         }
+        save_model(graph, os.path.join(directory, "model.onnx"))
+        with open(os.path.join(directory, "deepseek_v41_config.json"), "w") as stream:
+            json.dump(config, stream)
+
+    @hide_stdout()
+    def test_empty_heterogeneous_state_and_cached_generation(self):
         with tempfile.TemporaryDirectory() as directory:
-            save_model(graph, os.path.join(directory, "model.onnx"))
-            with open(os.path.join(directory, "deepseek_v41_config.json"), "w") as stream:
-                json.dump(config, stream)
+            self.export_history(directory)
             for backend in ("onnxruntime", "onnx-light", "onnx-light-cpu"):
                 with self.subTest(backend=backend):
                     session = DeepseekV41Session(directory, backend=backend)
@@ -79,6 +89,26 @@ class TestDeepseekV41Runtime(ExtTestCase):
                         session.run([[1, 2], [1, 2]], position_ids=[[0, 1], [1, 2]])
                     with self.assertRaisesRegex(ValueError, "token_types"):
                         session.run([[1, 2]], position_ids=[[0, 1]], token_types=[[-1, 4]])
+
+    @hide_stdout()
+    def test_bf16_dynamic_state_binding_and_output_lifetime(self):
+        import ml_dtypes
+
+        # This graph needs only casts and byte-moving BF16 kernels, allowing
+        # the real ORT binding path to be checked without CUDA arithmetic.
+        with tempfile.TemporaryDirectory() as directory:
+            self.export_history(directory, dtype=torch.bfloat16)
+            session = DeepseekV41Session(directory)
+            initial = session.initial_state(1)
+            self.assertEqual(initial["values"].dtype, np.dtype(ml_dtypes.bfloat16))
+            self.assertEqual(initial["values"].shape, (1, 0, 1))
+            _, state = session.run([[1, 2]], position_ids=[[0, 1]], state=initial)
+            self.assertEqual(state["values"].dtype, np.dtype(ml_dtypes.bfloat16))
+            np.testing.assert_array_equal(state["values"].astype(np.float32), [[[1], [2]]])
+            _, following = session.run([[3]], position_ids=[[2]], state=state)
+            np.testing.assert_array_equal(following["values"].astype(np.float32), [[[2], [3]]])
+            np.testing.assert_array_equal(state["values"].astype(np.float32), [[[1], [2]]])
+            np.testing.assert_array_equal(session.generate([[1, 2]], max_new_tokens=3), [[1, 2, 3, 7, 13]])
 
 
 if __name__ == "__main__":

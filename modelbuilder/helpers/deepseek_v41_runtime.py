@@ -51,6 +51,32 @@ class DeepseekV41Session:
             register_kernels_for_session(session)
         return session
 
+    def _run(self, session, names, feeds):
+        if self.backend != "onnxruntime" or self.config["io_dtype"] != "bfloat16":
+            return session.run(names, feeds)
+        import torch
+        from onnx_light.onnx import TensorProto
+        from onnxruntime import OrtValue
+
+        from .onnx_helper import torch_tensor_to_numpy
+
+        # ORT's NumPy bridge does not accept BF16. Bind its original bits and
+        # let ORT allocate dynamic outputs, including initially empty caches.
+        buffers = {name: np.ascontiguousarray(value).reshape(value.shape) for name, value in feeds.items()}
+        binding = session.io_binding()
+        for name, value in buffers.items():
+            if value.dtype == ml_dtypes.bfloat16:
+                binding.bind_ortvalue_input(name, OrtValue.ortvalue_from_numpy_with_onnx_type(value.view(np.uint16), TensorProto.BFLOAT16))
+            else:
+                binding.bind_cpu_input(name, value)
+        for name in names:
+            binding.bind_output(name, "cpu")
+        session.run_with_iobinding(binding)
+        return [
+            torch_tensor_to_numpy(torch.from_dlpack(value)) if value.element_type() == TensorProto.BFLOAT16 else value.numpy()
+            for value in binding.get_outputs()
+        ]
+
     @staticmethod
     def _dtype(name):
         return ml_dtypes.bfloat16 if name == "bfloat16" else np.dtype(name)
@@ -82,8 +108,8 @@ class DeepseekV41Session:
             self.vision = self._session(self.config["vision"])
         processor = DeepseekV41ImageProcessor(self.config["vision_config"], dtype=self._dtype(self.config["io_dtype"]))
         patches, grid, types = processor(image)
-        features, start, end, newline = self.vision.run(
-            ["image_features", "image_start", "image_end", "image_newline"], {"patches": patches, "grid_shape": grid}
+        features, start, end, newline = self._run(
+            self.vision, ["image_features", "image_start", "image_end", "image_newline"], {"patches": patches, "grid_shape": grid}
         )
         embeddings = np.empty((len(types), self.config["hidden_size"]), dtype=features.dtype)
         embeddings[types == 0] = start
@@ -148,7 +174,7 @@ class DeepseekV41Session:
             **state,
         }
         names = ["logits"] + [spec["output"] for spec in self.config["state"]]
-        result = self.decoder.run(names, feeds)
+        result = self._run(self.decoder, names, feeds)
         return result[0], {spec["input"]: value for spec, value in zip(self.config["state"], result[1:])}
 
     def generate(self, input_ids, *, max_new_tokens=10, token_types=None, inputs_embeds=None, eos_token_id=None):

@@ -57,10 +57,74 @@ state driver rather than a conventional per-layer K/V decoder wrapper:
         np.array([[4, 5, 6]], dtype=np.int64), max_new_tokens=10
     )
 
-The ``"onnx-light-cpu"`` backend is also covered by numerical and generation
-tests. The native ``"onnx-light"`` backend currently rejects the empty-cache
-``Pow`` broadcast (`xadupre/onnx-light#5993
-<https://github.com/xadupre/onnx-light/issues/5993>`_).
+The following matrix describes offline tiny-model validation, not inferred
+support from successful export alone. Each numerical/generation entry covers
+both text and image prompts, prefill and cached decoding.
+
+.. list-table:: DeepSeek-V4.1 precision/backend coverage
+   :header-rows: 1
+   :widths: 10 24 24 24 18
+
+   * - Precision
+     - ORT CPU
+     - ORT CUDA
+     - onnx-light-cpu
+     - Native onnx-light
+   * - FP32
+     - Numerical + generation
+     - Not validated
+     - Numerical + generation
+     - Empty-cache ``Pow`` blocked
+   * - FP16
+     - Numerical; text token parity
+     - Not validated
+     - Not validated
+     - Empty-cache ``Pow`` blocked
+   * - INT4
+     - Numerical + generation
+     - Not validated
+     - Numerical + generation
+     - ``MatMulNBits`` unavailable
+   * - BF16
+     - Arithmetic unsupported
+     - Numerical + generation
+     - ``Where`` unsupported
+     - ``Where`` unsupported
+
+INT4 tests verify packed 4-bit ``MatMulNBits`` weights in both exported
+components. Greedy tokens must match between ORT CPU and onnx-light-cpu running
+the same quantized graph; independent FP32 PyTorch logits bound quantization
+error. Quantization is not assumed to preserve unquantized FP32 argmax.
+Floating FP4 cache values can cross bin boundaries between kernels, so integer
+history is checked exactly while logits use precision-appropriate tolerances.
+
+BF16 CUDA tests use real BF16 inputs, weights and recurrent caches. Text greedy
+tokens are compared exactly with the BF16 PyTorch reference. Image generation
+can diverge at BF16/FP4 rounding boundaries: every generated prefix is replayed
+against independent PyTorch logits, checking numerical discrepancies and that
+the selected token is compatible with the reference error bound.
+Without CUDA the full BF16 generation test is explicitly skipped; export and
+the BF16 runtime binding/lifetime regression still run on CPU.
+
+For BF16 CUDA execution, select the provider explicitly:
+
+.. code-block:: python
+
+    session = DeepseekV41Session(
+        output_dir, providers=["CUDAExecutionProvider"]
+    )
+
+The driver uses ORT I/O binding for BF16 because its ordinary NumPy bridge does
+not accept ``ml_dtypes.bfloat16``. Returned state remains CPU NumPy arrays;
+this is not a GPU-resident-cache implementation or throughput claim.
+ORT CPU BF16 arithmetic is tracked in `microsoft/onnxruntime#28768
+<https://github.com/microsoft/onnxruntime/issues/28768>`_.
+Both onnx-light backends currently reject BF16 ``Where``
+(`xadupre/onnx-light#5998 <https://github.com/xadupre/onnx-light/issues/5998>`_).
+Native empty-cache ``Pow`` broadcasting is tracked in `xadupre/onnx-light#5993
+<https://github.com/xadupre/onnx-light/issues/5993>`_; it also blocks testing
+portable INT4 QDQ graphs without the CPU contrib kernels.
+
 For image prompts, ``session.encode_image(image)`` accepts a local Pillow
 image or RGB NumPy array and returns its token types and embeddings.
 Expand each image placeholder to that many copies of ``image_token_id``;
@@ -75,8 +139,8 @@ the batch; padding and speculative/MTP heads are not supported.
 Prefill attention materializes dense matrices within each submitted chunk.
 For long prompts, call ``run`` on consecutive short chunks while passing
 the returned state, rather than prefilling the whole prompt through ``generate``.
-FP16 rounding and INT4 weight quantization can change greedy token choices;
-exact token parity is checked for FP32, with numerical tolerances for reduced precision.
+Reduced precision and low-bit cache rounding can change greedy token choices;
+the precision-specific numerical and generation guarantees are listed above.
 
 Tests with ONNX Runtime GenAI 0.19.0 and 0.20.0 fail when updating these
 heterogeneous state inputs across generation steps; native integration is tracked in
