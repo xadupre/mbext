@@ -22,6 +22,7 @@ from dataclasses import dataclass, field
 _MODEL_IDS: dict[str, tuple[str, ...]] = {
     "ChatGLMModel": ("THUDM/chatglm3-6b",),
     "DeepseekV3ForCausalLM": ("deepseek-ai/DeepSeek-V3",),
+    "DeepseekV41ForCausalLM": ("deepseek-ai/DeepSeek-V4.1-Flash",),
     "Ernie4_5ForCausalLM": ("baidu/ERNIE-4.5-0.3B-PT",),
     "GemmaForCausalLM": ("google/gemma-2b",),
     "Gemma2ForCausalLM": ("google/gemma-2-2b",),

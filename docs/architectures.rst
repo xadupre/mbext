@@ -33,6 +33,60 @@ Face ``config.json``. To convert a model of a given family, point ``-m`` or
 
 .. supported-architectures::
 
+DeepSeek-V4.1-Flash
+------------------
+
+``deepseek-ai/DeepSeek-V4.1-Flash`` declares ``DeepseekV41ForCausalLM``.
+It is not a DeepSeek-V3 architecture alias. The export includes both the
+language decoder and the vision encoder/projector by default, with a
+``deepseek_v41_config.json`` manifest describing their tensor interfaces.
+The released checkpoint's FP8 matrices and packed FP4 experts are decoded
+before the requested export quantization is applied.
+
+V4.1 carries sliding-window caches, compressed shared KV/indexer caches,
+incomplete compression groups, and integer Engram history. Use its explicit
+state driver rather than a conventional per-layer K/V decoder wrapper:
+
+.. code-block:: python
+
+    import numpy as np
+    from modelbuilder.helpers.deepseek_v41_runtime import DeepseekV41Session
+
+    session = DeepseekV41Session(output_dir, backend="onnxruntime")
+    tokens = session.generate(
+        np.array([[4, 5, 6]], dtype=np.int64), max_new_tokens=10
+    )
+
+The ``"onnx-light-cpu"`` backend is also covered by numerical and generation
+tests. The native ``"onnx-light"`` backend currently rejects the empty-cache
+``Pow`` broadcast (`xadupre/onnx-light#5993
+<https://github.com/xadupre/onnx-light/issues/5993>`_).
+For image prompts, ``session.encode_image(image)`` accepts a local Pillow
+image or RGB NumPy array and returns its token types and embeddings.
+Expand each image placeholder to that many copies of ``image_token_id``;
+place the returned types and embeddings into the corresponding prompt
+positions. Use ``-1`` token types for text, and pass the combined
+``token_types [batch, sequence]`` and
+``inputs_embeds [batch, sequence, hidden_size]`` to ``generate``.
+Image start, end and row-delimiter embeddings are included.
+
+Positions must start at zero and remain contiguous and synchronized across
+the batch; padding and speculative/MTP heads are not supported.
+Prefill attention materializes dense matrices within each submitted chunk.
+For long prompts, call ``run`` on consecutive short chunks while passing
+the returned state, rather than prefilling the whole prompt through ``generate``.
+FP16 rounding and INT4 weight quantization can change greedy token choices;
+exact token parity is checked for FP32, with numerical tolerances for reduced precision.
+
+Tests with ONNX Runtime GenAI 0.19.0 and 0.20.0 fail when updating these
+heterogeneous state inputs across generation steps; native integration is tracked in
+`issue #604 <https://github.com/xadupre/mbext/issues/604>`_.
+No misleading GenAI configuration is emitted. Adapter export,
+``--reuse-weights`` and layer-count overrides are not supported.
+The original model is very large: random-weight offline tests validate
+numerics and cached generation but do not constitute a full-checkpoint
+memory or throughput benchmark.
+
 SmolVLM image inputs
 -------------------
 
