@@ -274,6 +274,9 @@ def create_model(model_name, input_path, output_dir, precision, execution_provid
     from transformers import AutoConfig
 
     from .builders import Model
+    from .models.deepseek_v41 import DeepseekV41Config
+
+    AutoConfig.register("deepseek_v41", DeepseekV41Config, exist_ok=True)
 
     if execution_provider == "any":
         set_io_dtype(precision, execution_provider, extra_options)
@@ -351,6 +354,10 @@ def create_model(model_name, input_path, output_dir, precision, execution_provid
     # List architecture options in alphabetical order
     if private_builder is not None:
         onnx_model = private_builder(config, io_dtype, onnx_dtype, execution_provider, cache_dir, extra_options)
+    elif config.architectures[0] == "DeepseekV41ForCausalLM":
+        from .builders.deepseek_v41 import DeepSeekV41Model
+
+        onnx_model = DeepSeekV41Model(config, io_dtype, onnx_dtype, execution_provider, cache_dir, extra_options)
     elif config.architectures[0] in ("DeepseekV3ForCausalLM", "DeepseekV4ForCausalLM"):
         # Both DeepseekV3ForCausalLM (DeepSeek-V3) and DeepseekV4ForCausalLM
         # (DeepSeek-V4-Flash) share the same MLA+MoE architecture and identical
@@ -699,7 +706,8 @@ def create_model(model_name, input_path, output_dir, precision, execution_provid
                 Model._save_with_reused_weights(
                     model, out_path, data_path, max_shard_size, exports=exports, payloads=reuse.generated_payloads
                 )
-        save_pipeline(output_dir)
+        if getattr(onnx_model, "supports_genai", True):
+            save_pipeline(output_dir)
 
     # Copy Hugging Face processing files to output folder
     onnx_model.save_processing(hf_name, extra_kwargs, output_dir)
