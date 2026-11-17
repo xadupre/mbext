@@ -122,10 +122,13 @@ class TestRandomNemotronBolt(ExtTestCase):
             self.assertTrue(any(node.op_type == "DequantizeLinear" for node in graph.node))
         past = None
         position = 0
+        text_config = model.config.text_config
+        first_shared_layer = text_config.num_hidden_layers - text_config.num_kv_shared_layers
+        self.assertEqual(len(state), 2 * text_config.num_hidden_layers)
         for ids in ([3, 7, 11, 5], [13], [17], [19]):
             input_ids = torch.tensor([ids])
             with torch.no_grad():
-                reference = model(input_ids=input_ids, past_key_values=past, use_cache=True)
+                reference = model(input_ids=input_ids, past_key_values=past, use_cache=True, return_shared_kv_states=True)
             past = reference.past_key_values
             feeds = {
                 "input_ids": input_ids.numpy(),
@@ -151,9 +154,15 @@ class TestRandomNemotronBolt(ExtTestCase):
                 if precision == "fp32":
                     for name in state:
                         layer_id = int(name.split(".")[1])
-                        if layer_id < len(past.layers):
+                        if layer_id < first_shared_layer:
                             cache = past.layers[layer_id]
                             expected = cache.keys if name.endswith(".key") else cache.values
+                        else:
+                            # HF shared layers have no cache storage; they reuse the donor's full K/V.
+                            key, value = reference.shared_kv_states[text_config.layer_types[layer_id]]
+                            expected = key if name.endswith(".key") else value
+                        with self.subTest(cache=name):
+                            self.assertIsNotNone(expected)
                             self.assertEqualArray(
                                 expected.numpy(), outputs[name.replace("past_key_values.", "present.")].cpu().numpy(), atol=1e-4, rtol=1e-4
                             )
