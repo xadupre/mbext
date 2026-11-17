@@ -103,14 +103,24 @@ class TestRandomGemma4(ExtTestCase):
             enable_moe_block=False,
         )
 
-    def common_fast_gemma4_shared_kv_random_weights(self, precision, provider):
+    @classmethod
+    def _make_shared_kv_model(cls, provider="cpu"):
         import torch
         from transformers import AutoModelForCausalLM
 
-        config = self._make_shared_kv_config()
+        config = cls._make_shared_kv_config()
         torch.manual_seed(42)
         model = AutoModelForCausalLM.from_config(config)
         model.eval().to(provider)
+        # Transformers 5.23's shared-KV slicing assumes PLE inputs exist.
+        # Request full reference states after constructing generation_config
+        # so generate() keeps returning token tensors rather than a ModelOutput.
+        model.config.output_hidden_states = True
+        return model
+
+    def common_fast_gemma4_shared_kv_random_weights(self, precision, provider):
+        model = self._make_shared_kv_model(provider)
+        config = model.config
         tokenizer = self.make_word_level_tokenizer(bos_token="<bos>", bos_token_id=2, eos_token="</s>", eos_token_id=1)
         self.run_random_weights_test(
             model=model,
@@ -128,13 +138,8 @@ class TestRandomGemma4(ExtTestCase):
         )
 
     def common_gemma4_shared_kv_greedy_generation(self, precision, provider):
-        import torch
-        from transformers import AutoModelForCausalLM
-
-        config = self._make_shared_kv_config()
-        torch.manual_seed(42)
-        model = AutoModelForCausalLM.from_config(config)
-        model.eval().to(provider)
+        model = self._make_shared_kv_model(provider)
+        config = model.config
         tokenizer = self.make_word_level_tokenizer(bos_token="<bos>", bos_token_id=2, eos_token="</s>", eos_token_id=1)
         self.run_greedy_generation_test(
             model=model,
@@ -389,6 +394,28 @@ class TestRandomGemma4(ExtTestCase):
             cache_dir=cache_dir,
             num_hidden_layers=num_hidden_layers,
         )
+
+    @hide_stdout()
+    def test_gemma4_shared_kv_reference_cpu(self):
+        import torch
+
+        model = self._make_shared_kv_model()
+        config = model.config
+        self.assertEqual(config.hidden_size_per_layer_input, 0)
+        self.assertEqual(config.num_kv_shared_layers, 2)
+        input_ids = torch.tensor([[2, 3, 4, 5]])
+        with torch.no_grad():
+            prefill = model(input_ids[:, :-1], use_cache=True)
+            decoded = model(input_ids[:, -1:], past_key_values=prefill.past_key_values)
+            full = model(input_ids, use_cache=False)
+            generated = model.generate(input_ids, max_new_tokens=2, do_sample=False, pad_token_id=1)
+
+        self.assertEqual(prefill.logits.shape, (1, 3, config.vocab_size))
+        self.assertEqual(len(prefill.hidden_states), config.num_hidden_layers + 1)
+        torch.testing.assert_close(decoded.logits[:, -1], full.logits[:, -1])
+        self.assertIsInstance(generated, torch.Tensor)
+        self.assertEqual(generated.shape, (1, 6))
+        self.assertEqual(generated[0, 4].item(), full.logits[0, -1].argmax().item())
 
     @hide_stdout()
     def test_fast_discrepancy_gemma4_shared_kv_fp32_cpu(self):
