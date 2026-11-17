@@ -197,7 +197,7 @@ def quantize_roundtrip(x, bits=8, block_size=32, scale_format="ue8m0"):
     """
     width = x.shape[-1]
     blocks = _split_last(F.pad(x.float(), (0, -width % block_size)), -1, block_size)
-    amax = blocks.abs().amax(-1, keepdim=True)
+    amax = blocks.abs().amax(blocks.ndim - 1, keepdim=True)
     if bits == 8:
         scale = torch.pow(2.0, torch.ceil(torch.log2(amax.clamp_min(1e-4) / 448)))
         values = _fp8_values(blocks / scale)
@@ -221,7 +221,7 @@ class RMSNorm(nn.Module):
 
     def forward(self, x):
         z = x.float()
-        return (z * torch.rsqrt(z.square().mean(-1, keepdim=True) + self.eps) * self.weight).to(x.dtype)
+        return (z * torch.rsqrt(z.square().mean(z.ndim - 1, keepdim=True) + self.eps) * self.weight).to(x.dtype)
 
 
 class Linear(nn.Linear):
@@ -400,7 +400,8 @@ def _topk_mask(scores, k):
 def select_candidate_blocks(scores, compress_lens, topk_blocks, block_size):
     width = scores.shape[-1]
     blocks = F.pad(scores, (0, -width % block_size), value=-torch.inf)
-    blocks = _split_last(blocks, -1, block_size).amax(-1)
+    blocks = _split_last(blocks, -1, block_size)
+    blocks = blocks.amax(blocks.ndim - 1)
     newest = (compress_lens - 1) // block_size
     indices = torch.arange(blocks.shape[-1], device=scores.device)
     blocks = torch.where(indices == newest, torch.full_like(blocks, torch.inf), blocks)
@@ -552,7 +553,8 @@ class Compressor(nn.Module):
         count = torch.div(start + x.shape[1], ratio, rounding_mode="floor") - first
         groups = torch.arange(count, device=x.device)
         offsets = groups[:, None] * ratio - start.remainder(ratio) + torch.arange(ratio, device=x.device) + ratio - 1
-        pooled = (values[:, offsets] * gates[:, offsets].softmax(-2)).sum(-2)
+        # ORT 1.31 preserves the wrong rank for empty reductions with negative axes.
+        pooled = (values[:, offsets] * gates[:, offsets].softmax(-2)).sum(2)
         pos = ((groups + first) * ratio).unsqueeze(0).expand(x.shape[0], -1)
         return (self.norm(pooled.to(x.dtype)), pos, values[:, -(ratio - 1) :], gates[:, -(ratio - 1) :])
 
@@ -578,7 +580,7 @@ class Indexer(nn.Module):
         weights = self.weights_proj(x) * (self.dim**-0.5 * self.heads**-0.5)
         scores = torch.matmul(q.flatten(1, 2), keys.transpose(1, 2))
         scores = _reshape(scores, x.shape[0], x.shape[1], self.heads, keys.shape[1]).relu()
-        return (scores * weights.unsqueeze(-1)).sum(-2)
+        return (scores * weights.unsqueeze(-1)).sum(2)
 
 
 class Gate(nn.Module):

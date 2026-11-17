@@ -117,6 +117,49 @@ class TestDeepseekV41RandomWeights(ExtTestCase):
         torch.set_num_threads(cls._threads)
         super().tearDownClass()
 
+    @hide_stdout()
+    @torch.no_grad()
+    def test_compressor_empty_group_runtime_shape(self):
+        from onnx_light.onnx import save_model
+        from onnxruntime import InferenceSession
+
+        from modelbuilder.builders.deepseek_v41 import trace_v41_model
+        from modelbuilder.models.deepseek_v41 import Compressor, DeepseekV41TextConfig
+
+        torch.manual_seed(42)
+        config = DeepseekV41TextConfig(hidden_size=2, head_dim=2)
+        module = Compressor(config, 2).eval()
+        hidden = torch.arange(12, dtype=torch.float32).reshape(2, 3, 2) / 4
+        positions = torch.arange(3, 6).expand(2, -1)
+        partial = torch.zeros(2, 1, 2)
+        inputs = ["hidden", "positions", "partial_values", "partial_scores"]
+        outputs = ["pooled", "pooled_positions", "present_values", "present_scores"]
+        axes = {name: {0: "batch"} for name in inputs + outputs}
+        for name in inputs[:2]:
+            axes[name][1] = "sequence"
+        for name in outputs[:2]:
+            axes[name][1] = "groups"
+        graph = trace_v41_model(module, (hidden, positions, partial, partial.clone()), inputs, outputs, axes)
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, "compressor.onnx")
+            save_model(graph, path)
+            session = InferenceSession(path, providers=["CPUExecutionProvider"])
+            for batch in (1, 2):
+                pt_state = [torch.zeros(batch, 1, 2), torch.zeros(batch, 1, 2)]
+                ort_state = [value.numpy() for value in pt_state]
+                start = 0
+                for sequence in (1, 1, 3, 1):
+                    with self.subTest(batch=batch, start=start, sequence=sequence):
+                        x = torch.arange(batch * sequence * 2, dtype=torch.float32).reshape(batch, sequence, 2) / 4
+                        pos = torch.arange(start, start + sequence).expand(batch, -1)
+                        expected = module(x, pos, *pt_state)
+                        actual = session.run(None, dict(zip(inputs, [x.numpy(), pos.numpy(), *ort_state])))
+                        for reference, value in zip(expected, actual):
+                            self.assertEqual(value.shape, tuple(reference.shape))
+                            np.testing.assert_allclose(value, reference.numpy(), atol=1e-6, rtol=1e-5)
+                        pt_state, ort_state = expected[2:], actual[2:]
+                    start += sequence
+
     def export(self, directory, precision="fp32", through_cli=False):
         from safetensors.torch import save_file
 
