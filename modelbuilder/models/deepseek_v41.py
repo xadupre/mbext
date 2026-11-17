@@ -401,6 +401,9 @@ def select_candidate_blocks(scores, compress_lens, topk_blocks, block_size):
     width = scores.shape[-1]
     blocks = F.pad(scores, (0, -width % block_size), value=-torch.inf)
     blocks = _split_last(blocks, -1, block_size)
+    if blocks.dtype == torch.bfloat16:
+        # CUDA ReduceMax has no BF16 kernel; widening is exact for selection.
+        blocks = blocks.float()
     blocks = blocks.amax(blocks.ndim - 1)
     newest = (compress_lens - 1) // block_size
     indices = torch.arange(blocks.shape[-1], device=scores.device)
@@ -797,6 +800,7 @@ class VisionAttention(nn.Module):
     def __init__(self, config):
         super().__init__()
         self.heads = config.num_attention_heads
+        self.scale = (config.hidden_size // self.heads) ** -0.5
         self.wqkv = nn.Linear(config.hidden_size, config.hidden_size * 3)
         self.wo = nn.Linear(config.hidden_size, config.hidden_size)
 
@@ -809,7 +813,7 @@ class VisionAttention(nn.Module):
     def forward(self, x, angle):
         q, k, v = [_split_last(t, self.heads, -1) for t in self.wqkv(x).chunk(3, -1)]
         q, k = self.rotate(q, angle), self.rotate(k, angle)
-        scores = torch.matmul(q.transpose(0, 1), k.permute(1, 2, 0)) * q.shape[-1] ** -0.5
+        scores = torch.matmul(q.transpose(0, 1), k.permute(1, 2, 0)) * self.scale
         output = torch.matmul(scores.softmax(-1), v.transpose(0, 1)).transpose(0, 1)
         return self.wo(output.flatten(-2))
 
@@ -883,7 +887,7 @@ class Aligner(nn.Module):
         cols = (out % ow)[:, None] * ratio + (inner % ratio)[None, :]
         valid = (rows < h) & (cols < w)
         indices = (rows * w + cols).clamp(max=features.shape[0] - 1)
-        gathered = features[indices] * valid.unsqueeze(-1)
+        gathered = features[indices] * valid.unsqueeze(-1).to(features.dtype)
         gathered = gathered.transpose(-2, -1).flatten(-2)
         return self.w2(F.gelu(self.w1(gathered)))
 
