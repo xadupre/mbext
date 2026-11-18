@@ -114,7 +114,11 @@ class KimiK31Model(DeepSeekV41Model):
             "genai_issue": "https://github.com/xadupre/mbext/issues/604",
             "hidden_size": text.hidden_size,
             "vocab_size": text.vocab_size,
-            "eos_token_id": self.kimi_config.eos_token_id,
+            "eos_token_id": (
+                self.kimi_config.eos_token_id
+                if self.kimi_config.eos_token_id is not None
+                else getattr(text, "eos_token_id", None)
+            ),
             "context_length": text.max_position_embeddings,
             "position_state": "positions",
             "io_dtype": str(dtype).removeprefix("torch."),
@@ -147,10 +151,27 @@ class KimiK31Model(DeepSeekV41Model):
             self._components["vision"] = graph
             self._manifest["vision"] = os.path.splitext(self.filename)[0] + ".vision.onnx"
             self._manifest["vision_config"] = vision
+        if (
+            self.onnx_dtype in {TensorProto.INT4, TensorProto.UINT4}
+            and not self.quant_attrs["int4"]["quantize_moe_router"]
+        ):
+            excluded = self.quant_attrs["int4"]["nodes_to_exclude"]
+            excluded.extend(
+                node.name
+                for node in self._components["decoder"].graph.node
+                if node.op_type == "MatMul"
+                and "block_sparse_moe" in node.name
+                and ("gate" in node.name or "router" in node.name)
+                and node.name not in excluded
+            )
 
     def make_genai_config(self, model_name_or_path, extra_kwargs, out_dir):
         if self._manifest is None:
             raise ValueError("Kimi K3.1 config-only export needs explicit recurrent-state metadata.")
+        for filename in ("genai_config.json", "pipeline.onnx"):
+            path = os.path.join(out_dir, filename)
+            if os.path.exists(path):
+                os.remove(path)
         with open(os.path.join(out_dir, "kimi_k31_config.json"), "w") as stream:
             json.dump(self._manifest, stream, indent=2)
         print("Kimi K3.1 uses KimiK31Session, with sequential prefill and explicit recurrent state; native GenAI is blocked by #604.")

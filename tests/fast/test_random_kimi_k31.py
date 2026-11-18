@@ -208,6 +208,9 @@ class TestKimiK31(ExtTestCase):
             decode_mxfp4(packed, torch.tensor([[255]], dtype=torch.uint8), (1, 32))
         config, original = make_tiny_kimi()
         tensors = {name: value.detach().clone() for name, value in original.state_dict().items()}
+        a_log_key = next(name for name in tensors if name.endswith(".A_log"))
+        a_log = tensors[a_log_key]
+        tensors[a_log_key] = torch.cat((a_log, torch.zeros(2, dtype=a_log.dtype)))
         key = "language_model.model.layers.1.block_sparse_moe.experts.0.w1.weight"
         weight = tensors.pop(key)
         tensors[key.removesuffix("weight") + "weight_packed"] = packed.expand(weight.shape[0], -1).contiguous()
@@ -220,8 +223,73 @@ class TestKimiK31(ExtTestCase):
                 loaded = KimiK31ForConditionalGeneration(config)
             KimiK31Checkpoint(directory).load(loaded)
         for name, value in loaded.state_dict().items():
-            expected = (values * 2).expand(weight.shape[0], -1) if name == key else tensors[name]
+            if name == key:
+                expected = (values * 2).expand(weight.shape[0], -1)
+            elif name == a_log_key:
+                expected = original.state_dict()[name]
+            else:
+                expected = tensors[name]
             self.assertEqualArray(expected, value)
+
+    def test_manifest_removes_stale_genai_discovery_files(self):
+        from modelbuilder.builders.kimi_k31 import KimiK31Model
+
+        config, _ = make_tiny_kimi(False)
+        with tempfile.TemporaryDirectory() as directory:
+            builder = KimiK31Model(config, TensorProto.FLOAT, TensorProto.FLOAT, "cpu", directory, {})
+            builder._manifest = {"format": "kimi_k31"}
+            for filename in ("genai_config.json", "pipeline.onnx", "model.onnx"):
+                with open(os.path.join(directory, filename), "w") as stream:
+                    stream.write("stale")
+
+            builder.make_genai_config("", {}, directory)
+
+            self.assertFalse(os.path.exists(os.path.join(directory, "genai_config.json")))
+            self.assertFalse(os.path.exists(os.path.join(directory, "pipeline.onnx")))
+            self.assertExists(os.path.join(directory, "model.onnx"))
+            self.assertExists(os.path.join(directory, "kimi_k31_config.json"))
+
+    def test_manifest_uses_text_config_eos_when_outer_value_is_unset(self):
+        from modelbuilder.builders.kimi_k31 import KimiK31Model
+
+        config, module = make_tiny_kimi(False)
+        config.eos_token_id = None
+        config.text_config.eos_token_id = 17
+        with tempfile.TemporaryDirectory() as directory:
+            builder = KimiK31Model(config, TensorProto.FLOAT, TensorProto.FLOAT, "cpu", directory, {})
+            builder.export_module(module)
+
+        self.assertEqual(builder._manifest["eos_token_id"], 17)
+
+    def test_int4_excludes_traced_moe_router_matmuls_when_disabled(self):
+        from modelbuilder.builders.kimi_k31 import KimiK31Model
+
+        config, module = make_tiny_kimi(False)
+        with tempfile.TemporaryDirectory() as directory:
+            builder = KimiK31Model(config, TensorProto.FLOAT, TensorProto.INT4, "cpu", directory, {})
+            builder.export_module(module)
+            router_nodes = {
+                node.name
+                for node in builder._components["decoder"].graph.node
+                if node.op_type == "MatMul"
+                and "block_sparse_moe" in node.name
+                and ("gate" in node.name or "router" in node.name)
+            }
+
+        self.assertTrue(router_nodes)
+        self.assertTrue(router_nodes.issubset(set(builder.quant_attrs["int4"]["nodes_to_exclude"])))
+        with tempfile.TemporaryDirectory() as directory:
+            quantized_router = KimiK31Model(
+                config,
+                TensorProto.FLOAT,
+                TensorProto.INT4,
+                "cpu",
+                directory,
+                {"int4_quantize_moe_router": True},
+            )
+            quantized_router.export_module(module)
+
+        self.assertFalse(router_nodes.intersection(quantized_router.quant_attrs["int4"]["nodes_to_exclude"]))
 
     @torch.no_grad()
     def test_dsa_dense_selection_oracle(self):

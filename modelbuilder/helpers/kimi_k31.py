@@ -48,6 +48,8 @@ class KimiK31Checkpoint:
             result = decode_mxfp4(self.source.tensor(prefix + "weight_packed"), self.source.tensor(scale_name), shape)
         else:
             raise ValueError(f"Missing Kimi K3.1 checkpoint tensor {name!r}.")
+        if name.endswith(".A_log") and result.ndim == 1 and result.shape[0] > shape[0]:
+            result = result[: shape[0]]
         if tuple(result.shape) != tuple(shape):
             raise ValueError(f"Invalid Kimi tensor shape for {name!r}: {tuple(result.shape)}, expected {tuple(shape)}.")
         return result.to(dtype=dtype)
