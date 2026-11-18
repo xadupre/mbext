@@ -26,7 +26,7 @@ def _json_state(value):
     return value
 
 
-def trace_v41_model(module, args, input_names, output_names, dynamic_axes):
+def trace_v41_model(module, args, input_names, output_names, dynamic_axes, *, opset_version=20):
     """Trace operations in memory, attaching weights through native ONNX APIs."""
     from torch.onnx._internal.torchscript_exporter import utils
     from torch.onnx._internal.torchscript_exporter._globals import GLOBALS
@@ -42,7 +42,7 @@ def trace_v41_model(module, args, input_names, output_names, dynamic_axes):
     operator_type = torch.onnx.OperatorExportTypes.ONNX
     utils._trigger_symbolic_function_registration()
     GLOBALS.in_onnx_export = True
-    GLOBALS.export_onnx_opset_version = 20
+    GLOBALS.export_onnx_opset_version = opset_version
     GLOBALS.operator_export_type = operator_type
     GLOBALS.onnx_shape_inference = True
     try:
@@ -51,7 +51,7 @@ def trace_v41_model(module, args, input_names, output_names, dynamic_axes):
             graph, _, _ = utils._model_to_graph(
                 module, args, input_names=input_names, output_names=output_names, do_constant_folding=False, dynamic_axes=dynamic_axes
             )
-            proto, _, _, _ = graph._export_onnx({}, 20, dynamic_axes, False, operator_type, True, True, {}, True, "", {})
+            proto, _, _, _ = graph._export_onnx({}, opset_version, dynamic_axes, False, operator_type, True, True, {}, True, "", {})
     finally:
         utils._reset_trace_module_map()
         for key, value in settings.items():

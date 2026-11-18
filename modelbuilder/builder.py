@@ -275,8 +275,10 @@ def create_model(model_name, input_path, output_dir, precision, execution_provid
 
     from .builders import Model
     from .models.deepseek_v41 import DeepseekV41Config
+    from .models.kimi_k31 import KimiK31Config
 
     AutoConfig.register("deepseek_v41", DeepseekV41Config, exist_ok=True)
+    AutoConfig.register("kimi_k31", KimiK31Config, exist_ok=True)
 
     if execution_provider == "any":
         set_io_dtype(precision, execution_provider, extra_options)
@@ -481,6 +483,10 @@ def create_model(model_name, input_path, output_dir, precision, execution_provid
         from .builders.mageflow import MageFlowModel
 
         onnx_model = MageFlowModel(config, io_dtype, onnx_dtype, execution_provider, cache_dir, extra_options)
+    elif config.architectures[0] == "KimiK31ForConditionalGeneration":
+        from .builders.kimi_k31 import KimiK31Model
+
+        onnx_model = KimiK31Model(config, io_dtype, onnx_dtype, execution_provider, cache_dir, extra_options)
     elif config.architectures[0] == "MistralForCausalLM":
         from .builders.mistral import MistralModel
 
