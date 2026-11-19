@@ -151,6 +151,95 @@ The original model is very large: random-weight offline tests validate
 numerics and cached generation but do not constitute a full-checkpoint
 memory or throughput benchmark.
 
+Kimi K3.1 Pro
+-------------
+
+``moonshotai/Kimi-K3.1-Pro`` declares
+``KimiK31ForConditionalGeneration``. Its KDA recurrence, positional-encoding-free
+gated DSA, block attention residuals, latent SiTU MoE, and MoonViT/PatchMergerV2
+are exported directly; this is not a Kimi K2 or DeepSeek architecture alias.
+Native BF16 and compressed-tensors MXFP4 checkpoint weights are supported.
+Source MXFP4 weights are decoded before optional ONNX weight quantization.
+
+.. code-block:: bash
+
+    python -m modelbuilder.builder \
+        -m moonshotai/Kimi-K3.1-Pro -o kimi-onnx -p int4 -e cpu -c cache
+
+Use the explicit-state driver, not a conventional per-layer K/V cache wrapper:
+
+.. code-block:: python
+
+    import numpy as np
+    from modelbuilder.helpers.kimi_k31_runtime import KimiK31Session
+
+    session = KimiK31Session("kimi-onnx", backend="onnxruntime")
+    tokens = session.generate(
+        np.array([[4, 5, 6]], dtype=np.int64), max_new_tokens=10
+    )
+
+The decoder graph advances one token at a time; ``run`` and ``generate``
+prefill arbitrary prompt lengths sequentially. This is a correctness-first
+implementation, not a parallel-prefill or throughput-optimized exporter.
+Positions must be contiguous, synchronized across batch rows, and start at
+zero. Padding, packed documents, adapters, tied embeddings, weight reuse,
+extra hidden-state outputs, speculative/MTP heads and layer-count overrides
+are not supported. Change a tiny test config and its one-based attention
+schedule together instead.
+
+For images and video, use the checkpoint's processor for prompt construction,
+resizing, normalization, frame sampling, timestamp tokens and temporal
+grouping. ``session.encode_media(patches, grid_shape)`` accepts one processed
+image or frame group: normalized RGB patches of shape
+``[time * height * width, 3, patch_size, patch_size]`` in time/row/column
+order and ``grid_shape=[time, height, width]``. Spatial grid dimensions must be
+divisible by the merge kernel. Time cannot exceed ``init_pos_emb_time``;
+encode multiple images/groups separately. The encoder pools time and returns
+``[media_tokens, hidden_size]``. Insert these features at expanded media
+placeholder positions, pass ``token_types=1`` there (``-1`` for text), and
+provide aligned ``inputs_embeds [batch, sequence, hidden_size]`` to generation.
+Image/video delimiters and timestamp tokens remain ordinary text embeddings.
+This does not provide raw-file image/video preprocessing in GenAI.
+
+Offline seeded tests cover text, images and temporal frame groups, dynamic
+batches/grids, prefill, growing state, cached decode and greedy generation:
+
+* FP32: numerical and exact token parity with PyTorch on ORT CPU, native
+  onnx-light and onnx-light-cpu.
+* FP16: numerical comparisons and generated-prefix/token-error checks on
+  all three CPU backends.
+* INT4: real packed weights in decoder and vision graphs, independent FP32
+  numerical error bounds, and exact generated-token comparisons between
+  ORT and onnx-light-cpu. Native onnx-light uses the standard INT4 QDQ
+  alternative (``--extra_options use_qdq=true``), not ``MatMulNBits``.
+  The released model's widths are block aligned; native QDQ with partial
+  final blocks is affected by `xadupre/onnx-light#6009
+  <https://github.com/xadupre/onnx-light/issues/6009>`_.
+* BF16: real ORT CUDA execution and generated-prefix/token-error checks.
+  State uses CPU NumPy buffers with bit-preserving BF16 bindings, not
+  GPU-resident caches. ORT CPU arithmetic remains limited by
+  `microsoft/onnxruntime#28768
+  <https://github.com/microsoft/onnxruntime/issues/28768>`_; BF16 ``Where``
+  on both light backends is tracked in `xadupre/onnx-light#5998
+  <https://github.com/xadupre/onnx-light/issues/5998>`_.
+
+Exact DSA-score ties use ONNX's lower-index-first rule, which is not guaranteed
+by PyTorch's ordinary ``topk``. Quantization and reduced precision can change
+near-tie selection and greedy tokens; full-precision argmax is not promised
+for those exports.
+
+``kimi_k31_config.json`` describes the explicit state and both components.
+No GenAI configuration is emitted: reliable heterogeneous recurrent-state
+rebinding is blocked by `issue #604
+<https://github.com/xadupre/mbext/issues/604>`_.
+The 2.8T-parameter checkpoint has not been exported end to end here.
+All decoded weights must currently fit RAM during conversion; external-data
+sharding does not eliminate that memory requirement. The offline tests make
+no full-checkpoint memory, quality or performance claim.
+The tracing path uses Torch's private TorchScript exporter and supports
+ONNX opsets 20--23 (default 23); INT4 QDQ needs at least opset 21.
+All ONNX loading, saving and sharding uses onnx-light.
+
 SmolVLM image inputs
 -------------------
 

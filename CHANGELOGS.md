@@ -7,6 +7,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Model support
 
+- Adds Kimi K3.1 Pro text, image and video-frame-group ONNX export with
+  KDA recurrence, gated DSA, attention residuals, latent SiTU experts and
+  MoonViT/PatchMergerV2. Native MXFP4 weights are decoded before optional
+  export quantization. Explicit-state generation is tested offline; native
+  GenAI recurrent-state integration remains blocked by #604.
 - Adds the Hugging Face BF16 companion of NVIDIA Nemotron 3.5 Bolt E4B through
   the Gemma 4 text exporter, with per-layer embeddings, mixed sliding/global
   head dimensions, shared KV layers, and offline parity/generation tests.

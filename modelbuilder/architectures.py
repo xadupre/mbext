@@ -33,6 +33,7 @@ _MODEL_IDS: dict[str, tuple[str, ...]] = {
     "GptOssForCausalLM": ("openai/gpt-oss-20b",),
     "GraniteForCausalLM": ("ibm-granite/granite-3.0-2b-base",),
     "InternLM2ForCausalLM": ("internlm/internlm2-7b",),
+    "KimiK31ForConditionalGeneration": ("moonshotai/Kimi-K3.1-Pro",),
     "Lfm2ForCausalLM": ("LiquidAI/LFM2-350M",),
     "LlamaForCausalLM": ("meta-llama/Llama-2-7b-hf",),
     "MageFlowForCausalLM": ("microsoft/Mage-Flow",),
