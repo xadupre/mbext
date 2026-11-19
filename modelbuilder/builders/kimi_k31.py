@@ -115,9 +115,7 @@ class KimiK31Model(DeepSeekV41Model):
             "hidden_size": text.hidden_size,
             "vocab_size": text.vocab_size,
             "eos_token_id": (
-                self.kimi_config.eos_token_id
-                if self.kimi_config.eos_token_id is not None
-                else getattr(text, "eos_token_id", None)
+                self.kimi_config.eos_token_id if self.kimi_config.eos_token_id is not None else getattr(text, "eos_token_id", None)
             ),
             "context_length": text.max_position_embeddings,
             "position_state": "positions",
@@ -151,10 +149,7 @@ class KimiK31Model(DeepSeekV41Model):
             self._components["vision"] = graph
             self._manifest["vision"] = os.path.splitext(self.filename)[0] + ".vision.onnx"
             self._manifest["vision_config"] = vision
-        if (
-            self.onnx_dtype in {TensorProto.INT4, TensorProto.UINT4}
-            and not self.quant_attrs["int4"]["quantize_moe_router"]
-        ):
+        if self.onnx_dtype in {TensorProto.INT4, TensorProto.UINT4} and not self.quant_attrs["int4"]["quantize_moe_router"]:
             excluded = self.quant_attrs["int4"]["nodes_to_exclude"]
             excluded.extend(
                 node.name

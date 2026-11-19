@@ -271,21 +271,14 @@ class TestKimiK31(ExtTestCase):
             router_nodes = {
                 node.name
                 for node in builder._components["decoder"].graph.node
-                if node.op_type == "MatMul"
-                and "block_sparse_moe" in node.name
-                and ("gate" in node.name or "router" in node.name)
+                if node.op_type == "MatMul" and "block_sparse_moe" in node.name and ("gate" in node.name or "router" in node.name)
             }
 
         self.assertTrue(router_nodes)
         self.assertTrue(router_nodes.issubset(set(builder.quant_attrs["int4"]["nodes_to_exclude"])))
         with tempfile.TemporaryDirectory() as directory:
             quantized_router = KimiK31Model(
-                config,
-                TensorProto.FLOAT,
-                TensorProto.INT4,
-                "cpu",
-                directory,
-                {"int4_quantize_moe_router": True},
+                config, TensorProto.FLOAT, TensorProto.INT4, "cpu", directory, {"int4_quantize_moe_router": True}
             )
             quantized_router.export_module(module)
 
